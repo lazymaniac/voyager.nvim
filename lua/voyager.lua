@@ -1,5 +1,5 @@
 -- main module file
-local module = require("plugin_name.module")
+local lsp = require("lua.voyager.lsp")
 
 ---@class Config
 ---@field opt string Your config option
@@ -7,7 +7,7 @@ local config = {
   opt = "Hello!",
 }
 
----@class MyModule
+---@class VoyagerModule
 local M = {}
 
 ---@type Config
@@ -21,7 +21,13 @@ M.setup = function(args)
 end
 
 M.hello = function()
-  return module.my_first_function(M.config.opt)
+  return lsp.my_first_function(M.config.opt)
+end
+
+M.get_references = function ()
+  lsp.get_references(function (retval)
+    vim.print(retval)
+  end)
 end
 
 return M
