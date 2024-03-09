@@ -22,22 +22,24 @@ M.setup = function(args)
 end
 
 M.get_references = function()
-  print("get_references")
-
   lsp.get_references(function(locations)
     for client_id, result in pairs(locations) do
       vim.print(result)
       local client = assert(vim.lsp.get_client_by_id(client_id))
       local items = vim.lsp.util.locations_to_items(result.result, client.offset_encoding)
       print("item", items[1].text)
+
       vim.lsp.util.jump_to_location(result.result[1], client.offset_encoding, false)
     end
   end)
 end
 
-M.open_vyager = function ()
-  print("open layout")
-  ui.build_layout()
+M.open_voyager = function ()
+  ui.open_voyager()
+end
+
+M.close_voyager = function ()
+  ui.close_voyager()
 end
 
 return M
