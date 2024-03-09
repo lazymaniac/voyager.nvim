@@ -1,7 +1,10 @@
 local Layout = require("nui.layout")
 local Popup = require("nui.popup")
 
+---Table for layout popups
 local layout_popups = {}
+
+---Reference to nui Layout object
 local layout = {}
 
 ---Build dict with nui border config
@@ -112,6 +115,7 @@ M.open_voyager = function()
   layout:mount()
 end
 
+---Unmound layout and cleanup resources
 M.close_voyager = function ()
   layout:unmount()
   layout = nil
@@ -126,7 +130,7 @@ M.push_outline_item = function(item)
   -- TODO: Push item to outline and decide what to do. If item contains one location then open it in workspace, otherwise move cursor to outine for user to select
 end
 
-M.pop_outline_item = function ()
+M.pop_last_outline_item = function ()
   -- TODO: Pop last item from outline and update workspace
 end
 
