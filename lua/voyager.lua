@@ -1,5 +1,6 @@
 -- main module file
-local lsp = require("lua.voyager.lsp")
+local lsp = require("voyager.lsp")
+local ui = require("voyager.ui")
 
 ---@class Config
 ---@field opt string Your config option
@@ -20,14 +21,23 @@ M.setup = function(args)
   M.config = vim.tbl_deep_extend("force", M.config, args or {})
 end
 
-M.hello = function()
-  return lsp.my_first_function(M.config.opt)
+M.get_references = function()
+  print("get_references")
+
+  lsp.get_references(function(locations)
+    for client_id, result in pairs(locations) do
+      vim.print(result)
+      local client = assert(vim.lsp.get_client_by_id(client_id))
+      local items = vim.lsp.util.locations_to_items(result.result, client.offset_encoding)
+      print("item", items[1].text)
+      vim.lsp.util.jump_to_location(result.result[1], client.offset_encoding, false)
+    end
+  end)
 end
 
-M.get_references = function ()
-  lsp.get_references(function (retval)
-    vim.print(retval)
-  end)
+M.open_vyager = function ()
+  print("open layout")
+  ui.build_layout()
 end
 
 return M
