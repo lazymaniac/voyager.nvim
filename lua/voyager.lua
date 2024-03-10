@@ -34,6 +34,13 @@ M.get_references = function()
   end)
 end
 
+M.get_definition = function()
+  lsp.get_definition(function (locations)
+    
+    
+  end)
+end
+
 M.open_voyager = function ()
   ui.open_voyager()
 end
