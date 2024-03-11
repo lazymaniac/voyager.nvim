@@ -2,6 +2,7 @@ local Layout = require("nui.layout")
 local Popup = require("nui.popup")
 local NuiTree = require("nui.tree")
 local NuiLine = require("nui.line")
+local lsp = require("voyager.lsp")
 
 ---Table for layout components
 local layout_components = {}
@@ -54,13 +55,10 @@ local function close_and_cleanup()
   layout_components = {}
 end
 
----Initialize layout popups if not initialized yet
-local function init_layout_components()
-  local currbuf = vim.api.nvim_get_current_buf()
-
+local function init_workspace_popup(currbuf)
   if not layout_components.workspace then
     layout_components.workspace = Popup({
-      border = get_border_config("rounded", " Workspace ", "left"),
+      border = get_border_config("rounded", "   Workspace ", "left"),
       buf_options = get_buf_options(true, false),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", true),
       enter = true,
@@ -74,11 +72,58 @@ local function init_layout_components()
     layout_components.workspace:map("n", "<ESC>", function()
       close_and_cleanup()
     end, { noremap = true })
+    layout_components.workspace:map("n", "gd", function()
+      lsp.get_definition(function(locations)
+        -- TODO: handle definition
+        --
+        -- NOTE: Code snippet how to handle conversion for location to item and go to location
+        --[[ for client_id, result in pairs(locations) do
+          vim.print(result)
+          local client = assert(vim.lsp.get_client_by_id(client_id))
+          local items = vim.lsp.util.locations_to_items(result.result, client.offset_encoding)
+          print("item", items[1].text)
+          vim.lsp.util.jump_to_location(result.result[1], client.offset_encoding, false)
+        end ]]
+        vim.print(locations)
+      end)
+    end, { noremap = true })
+    layout_components.workspace:map("n", "gr", function()
+      lsp.get_references(function(locations)
+        -- TODO: handle references
+        vim.print(locations)
+      end)
+    end, { noremap = true })
+    layout_components.workspace:map("n", "gI", function()
+      lsp.get_implementations(function(locations)
+        -- TODO: handle implementations
+        vim.print(locations)
+      end)
+    end, { noremap = true })
+    layout_components.workspace:map("n", "gD", function()
+      lsp.get_type_definition(function(locations)
+        -- TODO: handle type definition
+        vim.print(locations)
+      end)
+    end, { noremap = true })
+    layout_components.workspace:map("n", "gC", function()
+      lsp.get_incoming_calls(function(locations)
+        -- TODO: handle incoming calls
+        vim.print(locations)
+      end)
+    end, { noremap = true })
+    layout_components.workspace:map("n", "gG", function()
+      lsp.get_outgoing_calls(function(locations)
+        -- TODO: handle outgoing calls
+        vim.print(locations)
+      end)
+    end, { noremap = true })
   end
+end
 
+local function init_root_popup(currbuf)
   if not layout_components.root then
     layout_components.root = Popup({
-      border = get_border_config("rounded", " Root ", "left"),
+      border = get_border_config("rounded", " 󰑃  Root ", "left"),
       buf_options = get_buf_options(false, true),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
       enter = false,
@@ -91,10 +136,12 @@ local function init_layout_components()
     line:append(root_filename)
     line:render(layout_components.root.bufnr, layout_components.root.ns_id, 1)
   end
+end
 
+local function init_outline_popup()
   if not layout_components.outline then
     layout_components.outline = Popup({
-      border = get_border_config("rounded", " Outline ", "left"),
+      border = get_border_config("rounded", " 󰙮  Outline ", "left"),
       buf_options = get_buf_options(false, true),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
       enter = false,
@@ -114,7 +161,7 @@ local function init_layout_components()
     local tree = NuiTree({
       bufnr = outline_bufnr,
       nodes = {
-        NuiTree.Node({ text = "a" }),
+        NuiTree.Node({ text = "Root " }, {}),
         NuiTree.Node({ text = "b" }, {
           NuiTree.Node({ text = "b-1" }),
           NuiTree.Node({ text = { "b-2", "b-3" } }),
@@ -126,8 +173,13 @@ local function init_layout_components()
   end
 end
 
-local function set_root_filename()
-  -- TODO: set filename ofcurrent buffer in root popup
+---Initialize layout popups if not initialized yet
+local function init_layout_components()
+  local currbuf = vim.api.nvim_get_current_buf()
+
+  init_workspace_popup(currbuf)
+  init_root_popup(currbuf)
+  init_outline_popup()
 end
 
 ---@class UiModule
@@ -168,14 +220,6 @@ end
 
 M.open_location_in_workspace = function(bufnr)
   vim.api.nvim_set_current_buf(bufnr)
-end
-
-M.push_outline_item = function(item)
-  -- TODO: Push item to outline and decide what to do. If item contains one location then open it in workspace, otherwise move cursor to outine for user to select
-end
-
-M.pop_last_outline_item = function()
-  -- TODO: Pop last item from outline and update workspace
 end
 
 return M

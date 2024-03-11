@@ -21,26 +21,6 @@ M.setup = function(args)
   M.config = vim.tbl_deep_extend("force", M.config, args or {})
 end
 
-M.get_references = function()
-  lsp.get_references(function(locations)
-    for client_id, result in pairs(locations) do
-      vim.print(result)
-      local client = assert(vim.lsp.get_client_by_id(client_id))
-      local items = vim.lsp.util.locations_to_items(result.result, client.offset_encoding)
-      print("item", items[1].text)
-
-      vim.lsp.util.jump_to_location(result.result[1], client.offset_encoding, false)
-    end
-  end)
-end
-
-M.get_definition = function()
-  lsp.get_definition(function (locations)
-    
-    
-  end)
-end
-
 M.open_voyager = function ()
   ui.open_voyager()
 end
