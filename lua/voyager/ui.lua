@@ -123,7 +123,7 @@ end
 local function init_root_popup(currbuf)
   if not layout_components.root then
     layout_components.root = Popup({
-      border = get_border_config("rounded", " 󰑃  Root ", "left"),
+      border = get_border_config("rounded", " 󰑃  Start point ", "left"),
       buf_options = get_buf_options(false, true),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
       enter = false,
@@ -151,10 +151,14 @@ local function init_outline_popup()
 
     layout_components.outline:map("n", "q", function()
       close_and_cleanup()
-    end, { noremap = true })
+    end, { noremap = true, desc = "Quit Voyager" })
     layout_components.outline:map("n", "<ESC>", function()
       close_and_cleanup()
-    end, { noremap = true })
+    end, { noremap = true, desc = "Quit Voyager" })
+    layout_components.outline:map("n", "o", function()
+      vim.print(vim.api.nvim_get_current_line())
+      vim.api.nvim_set_current_win(layout_components.workspace.winid)
+    end, { noremap = true, desc = "Open Item in Workspace"})
 
     local outline_bufnr = layout_components.outline.bufnr
 
