@@ -21,11 +21,11 @@ M.setup = function(args)
   M.config = vim.tbl_deep_extend("force", M.config, args or {})
 end
 
-M.open_voyager = function ()
+M.open_voyager = function()
   ui.open_voyager()
 end
 
-M.close_voyager = function ()
+M.close_voyager = function()
   ui.close_voyager()
 end
 

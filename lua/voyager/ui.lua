@@ -158,7 +158,7 @@ local function init_outline_popup()
     layout_components.outline:map("n", "o", function()
       vim.print(vim.api.nvim_get_current_line())
       vim.api.nvim_set_current_win(layout_components.workspace.winid)
-    end, { noremap = true, desc = "Open Item in Workspace"})
+    end, { noremap = true, desc = "Open Item in Workspace" })
 
     local outline_bufnr = layout_components.outline.bufnr
 
@@ -193,16 +193,16 @@ local M = {}
 M.open_voyager = function()
   init_layout_components()
   local workspace_box = Layout.Box(layout_components.workspace, { size = "70%" })
-  local root_box = Layout.Box(layout_components.root, { size = "10%" })
-  local outline_box = Layout.Box(layout_components.outline, { size = "90%" })
+  local root_box = Layout.Box(layout_components.root, { size = 3 })
+  local outline_box = Layout.Box(layout_components.outline, { size = vim.api.nvim_win_get_height(0) - 4 })
 
   layout = Layout(
     {
       position = "50%",
       border = "none",
       size = {
-        width = 0.99,
-        height = 0.99,
+        width = vim.api.nvim_win_get_width(0) - 2,
+        height = vim.api.nvim_win_get_height(0) - 1,
       },
     },
     Layout.Box({
