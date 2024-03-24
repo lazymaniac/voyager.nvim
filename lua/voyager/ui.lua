@@ -10,6 +10,9 @@ local layout_components = {}
 ---Reference to nui Layout object
 local layout = {}
 
+local function get_existing_mapping(mode, lhs)
+end
+
 ---Build dict with nui border config
 ---@param style string one of border styles
 ---@param top_text string text displayed on top border
@@ -49,16 +52,22 @@ local function get_win_options(winblend, winhighlight, number)
   }
 end
 
+---Close layout and free resources
 local function close_and_cleanup()
+  vim.keymap.del("n", "q", { buffer = layout_components.workspace.bufnr })
+  vim.keymap.del("n", "<ESC>", { buffer = layout_components.workspace.bufnr })
+  vim.keymap.del("n", "gd", { buffer = layout_components.workspace.bufnr })
   layout:unmount()
   layout = nil
   layout_components = {}
 end
 
+---Create popups used to construct layout. Apply settings and keymaps
+---@param currbuf integer current buf number used as starting point
 local function init_workspace_popup(currbuf)
   if not layout_components.workspace then
     layout_components.workspace = Popup({
-      border = get_border_config("rounded", "   Workspace ", "left"),
+      border = get_border_config("rounded", "   Workspace: ", "left"),
       buf_options = get_buf_options(true, false),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", true),
       enter = true,
@@ -66,13 +75,13 @@ local function init_workspace_popup(currbuf)
       zindex = 50,
       bufnr = currbuf,
     })
-    layout_components.workspace:map("n", "q", function()
+    vim.keymap.set("n", "q", function()
       close_and_cleanup()
-    end, { noremap = true })
-    layout_components.workspace:map("n", "<ESC>", function()
+    end, { buffer = currbuf })
+    vim.keymap.set("n", "<ECS>", function()
       close_and_cleanup()
-    end, { noremap = true })
-    layout_components.workspace:map("n", "gd", function()
+    end, { buffer = currbuf })
+    vim.keymap.set("n", "gd", function()
       lsp.get_definition(function(locations)
         -- TODO: handle definition
         --
@@ -86,7 +95,7 @@ local function init_workspace_popup(currbuf)
         end ]]
         vim.print(locations)
       end)
-    end, { noremap = true })
+    end, { buffer = currbuf, desc = "VGoto Definition" })
     layout_components.workspace:map("n", "gr", function()
       lsp.get_references(function(locations)
         -- TODO: handle references
@@ -120,6 +129,8 @@ local function init_workspace_popup(currbuf)
   end
 end
 
+---Create popup for start point
+---@param currbuf integer current buffer identifier
 local function init_root_popup(currbuf)
   if not layout_components.root then
     layout_components.root = Popup({
@@ -138,6 +149,7 @@ local function init_root_popup(currbuf)
   end
 end
 
+---Create popup for outline
 local function init_outline_popup()
   if not layout_components.outline then
     layout_components.outline = Popup({
@@ -177,7 +189,7 @@ local function init_outline_popup()
   end
 end
 
----Initialize layout popups if not initialized yet
+---Initialize all layout popups if not initialized yet
 local function init_layout_components()
   local currbuf = vim.api.nvim_get_current_buf()
 
@@ -190,6 +202,7 @@ end
 ---Draws and manages workspace and outline
 local M = {}
 
+---Open Voyager layout and init all resources
 M.open_voyager = function()
   init_layout_components()
   local workspace_box = Layout.Box(layout_components.workspace, { size = "70%" })
