@@ -10,8 +10,8 @@ local layout_components = {}
 ---Reference to nui Layout object
 local layout = {}
 
-local function get_existing_mapping(mode, lhs)
-end
+local actions = { "def", "ref", "type_def", "impl", "inc", "out", "quit" }
+
 
 ---Build dict with nui border config
 ---@param style string one of border styles
@@ -54,9 +54,6 @@ end
 
 ---Close layout and free resources
 local function close_and_cleanup()
-  vim.keymap.del("n", "q", { buffer = layout_components.workspace.bufnr })
-  vim.keymap.del("n", "<ESC>", { buffer = layout_components.workspace.bufnr })
-  vim.keymap.del("n", "gd", { buffer = layout_components.workspace.bufnr })
   layout:unmount()
   layout = nil
   layout_components = {}

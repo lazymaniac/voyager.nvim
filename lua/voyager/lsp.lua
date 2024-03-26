@@ -2,7 +2,7 @@
 ---Handles async calls to LSP
 local M = {}
 
-local function res_isempty(results)
+local function is_response_empty(results)
   if vim.tbl_isempty(results) then
     return true
   end
@@ -33,7 +33,7 @@ local function call_lsp_method(method, callback)
         return
       end
 
-      if results and not res_isempty(results) then
+      if results and not is_response_empty(results) then
         locations = results
       end
       coroutine.resume(co)
