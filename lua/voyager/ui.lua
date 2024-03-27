@@ -1,8 +1,12 @@
+---External dependencies
 local Layout = require("nui.layout")
 local Popup = require("nui.popup")
 local NuiTree = require("nui.tree")
 local NuiLine = require("nui.line")
+
+---Internal dependencies
 local lsp = require("voyager.lsp")
+local keymaps = require("voyager.keymaps")
 
 ---Table for layout components
 local layout_components = {}
@@ -10,10 +14,17 @@ local layout_components = {}
 ---Reference to nui Layout object
 local layout = {}
 
-local actions = { "def", "ref", "type_def", "impl", "inc", "out", "quit" }
+---Goto actions supported by plugins
+local actions = {
+  definition = "def",
+  references = "ref",
+  type_definition = "type_def",
+  implementation = "impl",
+  incoming_calls = "inc",
+  outgoing_calls = "out",
+}
 
-
----Build dict with nui border config
+---Returns tables with nui border config
 ---@param style string one of border styles
 ---@param top_text string text displayed on top border
 ---@param top_align string text alignment on top border
@@ -28,10 +39,10 @@ local function get_border_config(style, top_text, top_align)
   }
 end
 
----Build table with nui buffer options
----@param modifiable boolean
----@param readonly boolean
----@return table
+---Returns table with nui buffer options
+---@param modifiable boolean is buffer modifiable
+---@param readonly boolean is buffer readonly
+---@return table buffer configuration for nui popup
 local function get_buf_options(modifiable, readonly)
   return {
     modifiable = modifiable,
@@ -39,11 +50,11 @@ local function get_buf_options(modifiable, readonly)
   }
 end
 
----Build table with nui window options
----@param winblend integer
----@param winhighlight string
----@param number boolean
----@return table
+---Returns table with nui window options
+---@param winblend integer set window blend
+---@param winhighlight string alter highlights
+---@param number boolean show line nubers
+---@return table window options for nui popup
 local function get_win_options(winblend, winhighlight, number)
   return {
     winblend = winblend,
@@ -52,11 +63,12 @@ local function get_win_options(winblend, winhighlight, number)
   }
 end
 
----Close layout and free resources
+---Close layout, free up resources, and restore global mappings
 local function close_and_cleanup()
   layout:unmount()
   layout = nil
   layout_components = {}
+  keymaps.restore_global_keymaps()
 end
 
 ---Create popups used to construct layout. Apply settings and keymaps
@@ -72,13 +84,16 @@ local function init_workspace_popup(currbuf)
       zindex = 50,
       bufnr = currbuf,
     })
+
     vim.keymap.set("n", "q", function()
       close_and_cleanup()
     end, { buffer = currbuf })
+
     vim.keymap.set("n", "<ECS>", function()
       close_and_cleanup()
     end, { buffer = currbuf })
-    vim.keymap.set("n", "gd", function()
+
+    vim.keymap.set("n", keymaps.get_local_mapping(actions["definition"]), function()
       lsp.get_definition(function(locations)
         -- TODO: handle definition
         --
@@ -92,37 +107,42 @@ local function init_workspace_popup(currbuf)
         end ]]
         vim.print(locations)
       end)
-    end, { buffer = currbuf, desc = "VGoto Definition" })
-    layout_components.workspace:map("n", "gr", function()
+    end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto Definition" })
+
+    vim.keymap.set("n", keymaps.get_local_mapping(actions["references"]), function()
       lsp.get_references(function(locations)
         -- TODO: handle references
         vim.print(locations)
       end)
-    end, { noremap = true })
-    layout_components.workspace:map("n", "gI", function()
+    end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto References" })
+
+    vim.keymap.set("n", keymaps.get_local_mapping(actions["implementation"]), function()
       lsp.get_implementations(function(locations)
         -- TODO: handle implementations
         vim.print(locations)
       end)
-    end, { noremap = true })
-    layout_components.workspace:map("n", "gD", function()
+    end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto Implementation" })
+
+    vim.keymap.set("n", keymaps.get_local_mapping(actions["type_definition"]), function()
       lsp.get_type_definition(function(locations)
         -- TODO: handle type definition
         vim.print(locations)
       end)
-    end, { noremap = true })
-    layout_components.workspace:map("n", "gC", function()
+    end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto Type Definition" })
+
+    vim.keymap.set("n", keymaps.get_local_mapping(actions["incoming_calls"]), function()
       lsp.get_incoming_calls(function(locations)
         -- TODO: handle incoming calls
         vim.print(locations)
       end)
-    end, { noremap = true })
-    layout_components.workspace:map("n", "gG", function()
+    end, { buffer = currbuf, noremap = true, silent = true, desc = "VIncoming Calls" })
+
+    vim.keymap.set("n", keymaps.get_local_mapping(actions["outgoing_calls"]), function()
       lsp.get_outgoing_calls(function(locations)
         -- TODO: handle outgoing calls
         vim.print(locations)
       end)
-    end, { noremap = true })
+    end, { buffer = currbuf, noremap = true, silent = true, desc = "VOutgoing Calls" })
   end
 end
 
@@ -158,16 +178,23 @@ local function init_outline_popup()
       zindex = 50,
     })
 
-    layout_components.outline:map("n", "q", function()
+    vim.keymap.set("n", "q", function()
       close_and_cleanup()
-    end, { noremap = true, desc = "Quit Voyager" })
-    layout_components.outline:map("n", "<ESC>", function()
+    end, { buffer = layout_components.outline.bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
+
+    vim.keymap.set("n", "<ESC>", function()
       close_and_cleanup()
-    end, { noremap = true, desc = "Quit Voyager" })
-    layout_components.outline:map("n", "o", function()
+    end, { buffer = layout_components.outline.bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
+
+    vim.keymap.set("n", "o", function()
       vim.print(vim.api.nvim_get_current_line())
       vim.api.nvim_set_current_win(layout_components.workspace.winid)
-    end, { noremap = true, desc = "Open Item in Workspace" })
+    end, { buffer = layout_components.outline.bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
+
+    vim.keymap.set("n", "<CR>", function()
+      vim.print(vim.api.nvim_get_current_line())
+      vim.api.nvim_set_current_win(layout_components.workspace.winid)
+    end, { buffer = layout_components.outline.bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
 
     local outline_bufnr = layout_components.outline.bufnr
 
@@ -200,7 +227,10 @@ end
 local M = {}
 
 ---Open Voyager layout and init all resources
-M.open_voyager = function()
+---@param user_config table user configuration
+M.open_voyager = function(user_config)
+  keymaps.set_keymaps(user_config.mappings)
+  keymaps.find_conflicting_global_keymaps()
   init_layout_components()
   local workspace_box = Layout.Box(layout_components.workspace, { size = "70%" })
   local root_box = Layout.Box(layout_components.root, { size = 3 })

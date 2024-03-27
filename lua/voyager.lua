@@ -1,11 +1,17 @@
 -- main module file
-local lsp = require("voyager.lsp")
 local ui = require("voyager.ui")
 
 ---@class Config
 ---@field opt string Your config option
 local config = {
-  opt = "Hello!",
+  mappings = {
+    def = "gd", -- Definition
+    ref = "gr", -- References
+    impl = "gI", -- Implementation
+    type_def = "gD", -- Type Definition
+    inc = "gC", -- Incoming Calls
+    out = "gG", -- Outgoing Calls
+  },
 }
 
 ---@class VoyagerModule
@@ -22,7 +28,7 @@ M.setup = function(args)
 end
 
 M.open_voyager = function()
-  ui.open_voyager()
+  ui.open_voyager(M.config)
 end
 
 M.close_voyager = function()
