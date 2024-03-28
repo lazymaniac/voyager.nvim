@@ -27,25 +27,24 @@ end
 
 ---Function to find global mapping which may be in conflict with Voyager mappings. If global mapping exists it will be stored in table for restoring after session is closed.
 M.find_conflicting_global_keymaps = function()
-  --NOTE: Possibly store this value in global variable to reduce calls to vim api
-  local normal_mode_keymaps = vim.api.nvim_get_keymap(mode)
+  local normal_mode_keymaps = vim.api.nvim_buf_get_keymap(0, mode)
 
-  for i, keymap in ipairs(normal_mode_keymaps) do
+  for _, keymap in ipairs(normal_mode_keymaps) do
     for _, lhs in pairs(local_keymap) do
-      if keymap.lhs == " " .. lhs then
-        vim.print("matched keymap", keymap)
+      if keymap.lhs == lhs then
         table.insert(global_keymaps, keymap)
       end
     end
   end
-  vim.print("Found conflicts", global_keymaps)
 end
 
 M.restore_global_keymaps = function()
-  vim.print("Global keymaps", global_keymaps)
   for _, keymap in ipairs(global_keymaps) do
-    vim.print("keymap", keymap)
-    vim.api.nvim_set_keymap(mode, keymap.lhs, keymap.rhs, {
+
+    -- TODO: check if rhs is null then use callback
+    vim.keymap.set(mode, keymap.lhs, keymap.callback, {
+      buffer = keymap.buffer,
+      desc = keymap.desc,
       noremap = (keymap.noremap == 1),
       silent = (keymap.silent == 1),
       expr = (keymap.expr == 1),
