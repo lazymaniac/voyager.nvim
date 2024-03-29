@@ -40,9 +40,8 @@ end
 
 M.restore_global_keymaps = function()
   for _, keymap in ipairs(global_keymaps) do
-
-    -- TODO: check if rhs is null then use callback
-    vim.keymap.set(mode, keymap.lhs, keymap.callback, {
+    local rhs = keymap.callback or keymap.rhs -- Check if rhs is null then use callback
+    vim.keymap.set(mode, keymap.lhs, rhs, {
       buffer = keymap.buffer,
       desc = keymap.desc,
       noremap = (keymap.noremap == 1),
