@@ -1,27 +1,27 @@
 ---External dependencies
-local Layout = require("nui.layout")
-local Popup = require("nui.popup")
+local NuiLayout = require("nui.layout")
+local NuiPopup = require("nui.popup")
 local NuiTree = require("nui.tree")
 local NuiLine = require("nui.line")
 
 ---Internal dependencies
-local lsp = require("voyager.lsp")
-local keymaps = require("voyager.keymaps")
-
----Table for layout components
-local layout_components = {}
+local VoyagerLsp = require("voyager.lsp")
+local VoyagerKeymaps = require("voyager.keymaps")
 
 ---Reference to nui Layout object
 local layout = {}
 
+---Table for layout components
+local layout_components = {}
+
 ---Goto actions supported by plugins
-local actions = {
-  definition = "def",
-  references = "ref",
-  type_definition = "type_def",
-  implementation = "impl",
-  incoming_calls = "inc",
-  outgoing_calls = "out",
+local lsp_actions = {
+  "definition",
+  "references",
+  "implementation",
+  "type_definition",
+  "incoming_calls",
+  "outgoing_calls",
 }
 
 ---Returns tables with nui border config
@@ -68,14 +68,70 @@ local function close_and_cleanup()
   layout:unmount()
   layout = nil
   layout_components = {}
-  keymaps.restore_global_keymaps()
+  VoyagerKeymaps.restore_global_keymaps()
+end
+
+local function set_workspace_popup_keymaps(currbuf)
+  vim.keymap.set("n", "q", function()
+    close_and_cleanup()
+  end, { buffer = currbuf })
+
+  vim.keymap.set("n", "<ECS>", function()
+    close_and_cleanup()
+  end, { buffer = currbuf })
+
+  for _, action in ipairs(lsp_actions) do
+    local handle_function = function()
+      VoyagerLsp["get_" .. action](function(locations)
+        -- Existing implementation required here
+        vim.print(locations) -- placeholder for specific handlers
+      end)
+    end
+    local keymap = VoyagerKeymaps.get_local_mapping(lsp_actions[action].lhs)
+    vim.keymap.set(
+      "n",
+      keymap.lhs,
+      handle_function,
+      { buffer = currbuf, noremap = true, silent = true, desc = keymap.desc }
+    )
+  end
+end
+
+local function set_outline_popup_keymaps(bufnr)
+  vim.keymap.set("n", "q", function()
+    close_and_cleanup()
+  end, { buffer = bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
+
+  vim.keymap.set("n", "<ESC>", function()
+    close_and_cleanup()
+  end, { buffer = bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
+
+  -- Set additional outline-specific bindings
+  local navigation_handler = function()
+    vim.print(vim.api.nvim_get_current_line())
+    vim.api.nvim_set_current_win(layout_components.workspace.winid)
+  end
+
+  vim.keymap.set(
+    "n",
+    "o",
+    navigation_handler,
+    { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" }
+  )
+
+  vim.keymap.set(
+    "n",
+    "<CR>",
+    navigation_handler,
+    { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" }
+  )
 end
 
 ---Create popups used to construct layout. Apply settings and keymaps
 ---@param currbuf integer current buf number used as starting point
 local function init_workspace_popup(currbuf)
   if not layout_components.workspace then
-    layout_components.workspace = Popup({
+    layout_components.workspace = NuiPopup({
       border = get_border_config("rounded", "   Workspace: ", "left"),
       buf_options = get_buf_options(true, false),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", true),
@@ -93,8 +149,8 @@ local function init_workspace_popup(currbuf)
       close_and_cleanup()
     end, { buffer = currbuf })
 
-    vim.keymap.set("n", keymaps.get_local_mapping(actions["definition"]), function()
-      lsp.get_definition(function(locations)
+    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["definition"]), function()
+      VoyagerLsp.get_definition(function(locations)
         -- TODO: handle definition
         --
         -- NOTE: Code snippet how to handle conversion for location to item and go to location
@@ -109,36 +165,36 @@ local function init_workspace_popup(currbuf)
       end)
     end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto Definition" })
 
-    vim.keymap.set("n", keymaps.get_local_mapping(actions["references"]), function()
-      lsp.get_references(function(locations)
+    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["references"]), function()
+      VoyagerLsp.get_references(function(locations)
         -- TODO: handle references
         vim.print(locations)
       end)
     end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto References" })
 
-    vim.keymap.set("n", keymaps.get_local_mapping(actions["implementation"]), function()
-      lsp.get_implementations(function(locations)
+    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["implementation"]), function()
+      VoyagerLsp.get_implementations(function(locations)
         -- TODO: handle implementations
         vim.print(locations)
       end)
     end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto Implementation" })
 
-    vim.keymap.set("n", keymaps.get_local_mapping(actions["type_definition"]), function()
-      lsp.get_type_definition(function(locations)
+    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["type_definition"]), function()
+      VoyagerLsp.get_type_definition(function(locations)
         -- TODO: handle type definition
         vim.print(locations)
       end)
     end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto Type Definition" })
 
-    vim.keymap.set("n", keymaps.get_local_mapping(actions["incoming_calls"]), function()
-      lsp.get_incoming_calls(function(locations)
+    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["incoming_calls"]), function()
+      VoyagerLsp.get_incoming_calls(function(locations)
         -- TODO: handle incoming calls
         vim.print(locations)
       end)
     end, { buffer = currbuf, noremap = true, silent = true, desc = "VIncoming Calls" })
 
-    vim.keymap.set("n", keymaps.get_local_mapping(actions["outgoing_calls"]), function()
-      lsp.get_outgoing_calls(function(locations)
+    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["outgoing_calls"]), function()
+      VoyagerLsp.get_outgoing_calls(function(locations)
         -- TODO: handle outgoing calls
         vim.print(locations)
       end)
@@ -150,7 +206,7 @@ end
 ---@param currbuf integer current buffer identifier
 local function init_root_popup(currbuf)
   if not layout_components.root then
-    layout_components.root = Popup({
+    layout_components.root = NuiPopup({
       border = get_border_config("rounded", " 󰑃  Start point ", "left"),
       buf_options = get_buf_options(false, true),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
@@ -169,7 +225,7 @@ end
 ---Create popup for outline
 local function init_outline_popup()
   if not layout_components.outline then
-    layout_components.outline = Popup({
+    layout_components.outline = NuiPopup({
       border = get_border_config("rounded", " 󰙮  Outline ", "left"),
       buf_options = get_buf_options(false, true),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
@@ -229,14 +285,14 @@ local M = {}
 ---Open Voyager layout and init all resources
 ---@param user_config table user configuration
 M.open_voyager = function(user_config)
-  keymaps.set_keymaps(user_config.mappings)
-  keymaps.find_conflicting_global_keymaps()
+  VoyagerKeymaps.set_keymaps_from_config(user_config.keymaps)
+  VoyagerKeymaps.find_conflicting_global_keymaps()
   init_layout_components()
-  local workspace_box = Layout.Box(layout_components.workspace, { size = "70%" })
-  local root_box = Layout.Box(layout_components.root, { size = 3 })
-  local outline_box = Layout.Box(layout_components.outline, { size = vim.api.nvim_win_get_height(0) - 4 })
+  local workspace_box = NuiLayout.Box(layout_components.workspace, { size = "70%" })
+  local root_box = NuiLayout.Box(layout_components.root, { size = 3 })
+  local outline_box = NuiLayout.Box(layout_components.outline, { size = vim.api.nvim_win_get_height(0) - 4 })
 
-  layout = Layout(
+  layout = NuiLayout(
     {
       position = "50%",
       border = "none",
@@ -245,9 +301,9 @@ M.open_voyager = function(user_config)
         height = vim.api.nvim_win_get_height(0) - 1,
       },
     },
-    Layout.Box({
+    NuiLayout.Box({
       workspace_box,
-      Layout.Box({
+      NuiLayout.Box({
         root_box,
         outline_box,
       }, { dir = "col", size = "30%" }),

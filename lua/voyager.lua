@@ -2,15 +2,15 @@
 local ui = require("voyager.ui")
 
 ---@class Config
----@field opt string Your config option
+---@field keymaps table Keymaps cofniguraiton
 local config = {
-  mappings = {
-    def = "gd", -- Definition
-    ref = "gr", -- References
-    impl = "gI", -- Implementation
-    type_def = "gD", -- Type Definition
-    inc = "gC", -- Incoming Calls
-    out = "gG", -- Outgoing Calls
+  keymaps = {
+    definition = { lhs = "gd", desc = "Goto Definition <gd>" },
+    references = { lhs = "gr", desc = "Goto References <gr>" },
+    implementation = { lhs = "gI", desc = "Goto Implementation <gI>" },
+    type_definitions = { lhs = "gD", desc = "Goto Type Definition <gD>" },
+    incoming_calls = { lhs = "gC", desc = "Incoming Calls <gC>" },
+    outgoing_calls = { lhs = "gG", desc = "Outgoing Calls <gG>" },
   },
 }
 

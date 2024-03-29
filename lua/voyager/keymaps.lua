@@ -2,13 +2,13 @@
 local mode = "n"
 
 ---Table of keys used by plugin to operate on codebase
-local local_keymap = {
-  def = "gd",
-  ref = "gr",
-  impl = "gI",
-  type_def = "gD",
-  inc = "gC",
-  out = "gG",
+local local_keymaps = {
+  definition = { lhs = "gd", desc = "Goto Definition <gd>" },
+  references = { lhs = "gr", desc = "Goto References <gr>" },
+  implementation = { lhs = "gI", desc = "Goto Implementation <gI>" },
+  type_definitions = { lhs = "gD", desc = "Goto Type Definition <gD>" },
+  incoming_calls = { lhs = "gC", desc = "Incoming Calls <gC>" },
+  outgoing_calls = { lhs = "gG", desc = "Outgoing Calls <gG>" },
 }
 
 ---Table of global mappings which are in conflict with plugin mappings. Used to restore them after voyager session is closed or buffer is switched.
@@ -19,9 +19,9 @@ local global_keymaps = {}
 local M = {}
 
 ---Set mappings provided by user
-M.set_keymaps = function(user_keymap)
-  if user_keymap then
-    local_keymap = user_keymap
+M.set_keymaps_from_config = function(config_keymaps)
+  if config_keymaps then
+    local_keymaps = config_keymaps
   end
 end
 
@@ -30,8 +30,8 @@ M.find_conflicting_global_keymaps = function()
   local normal_mode_keymaps = vim.api.nvim_buf_get_keymap(0, mode)
 
   for _, keymap in ipairs(normal_mode_keymaps) do
-    for _, lhs in pairs(local_keymap) do
-      if keymap.lhs == lhs then
+    for _, local_keymap in pairs(local_keymaps) do
+      if keymap.lhs == local_keymap.lhs then
         table.insert(global_keymaps, keymap)
       end
     end
@@ -54,7 +54,7 @@ M.restore_global_keymaps = function()
 end
 
 M.get_local_mapping = function(action)
-  return local_keymap[action]
+  return local_keymaps[action]
 end
 
 return M
