@@ -14,16 +14,6 @@ local layout = {}
 ---Table for layout components
 local layout_components = {}
 
----Goto actions supported by plugins
-local lsp_actions = {
-  "definition",
-  "references",
-  "implementation",
-  "type_definition",
-  "incoming_calls",
-  "outgoing_calls",
-}
-
 ---Returns tables with nui border config
 ---@param style string one of border styles
 ---@param top_text string text displayed on top border
@@ -72,39 +62,29 @@ local function close_and_cleanup()
 end
 
 local function set_workspace_popup_keymaps(currbuf)
-  vim.keymap.set("n", "q", function()
-    close_and_cleanup()
-  end, { buffer = currbuf })
+  -- stylua: ignore
+  vim.keymap.set("n", "q", function() close_and_cleanup() end, { buffer = currbuf })
+  -- stylua: ignore
+  vim.keymap.set("n", "<ECS>", function() close_and_cleanup() end, { buffer = currbuf })
 
-  vim.keymap.set("n", "<ECS>", function()
-    close_and_cleanup()
-  end, { buffer = currbuf })
-
-  for _, action in ipairs(lsp_actions) do
+  local supported_lsp_actions = VoyagerLsp.get_lsp_actions()
+  for _, action in ipairs(supported_lsp_actions) do
     local handle_function = function()
       VoyagerLsp["get_" .. action](function(locations)
-        -- Existing implementation required here
-        vim.print(locations) -- placeholder for specific handlers
+        vim.print(locations) -- FIXME: placeholder for specific handlers
       end)
     end
-    local keymap = VoyagerKeymaps.get_local_mapping(lsp_actions[action].lhs)
-    vim.keymap.set(
-      "n",
-      keymap.lhs,
-      handle_function,
-      { buffer = currbuf, noremap = true, silent = true, desc = keymap.desc }
-    )
+    local keymap = VoyagerKeymaps.get_local_keymap(action)
+    -- stylua: ignore
+    vim.keymap.set( "n", keymap.lhs, handle_function, { buffer = currbuf, noremap = true, silent = true, desc = keymap.desc })
   end
 end
 
 local function set_outline_popup_keymaps(bufnr)
-  vim.keymap.set("n", "q", function()
-    close_and_cleanup()
-  end, { buffer = bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
-
-  vim.keymap.set("n", "<ESC>", function()
-    close_and_cleanup()
-  end, { buffer = bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
+  -- stylua: ignore
+  vim.keymap.set("n", "q", function() close_and_cleanup() end, { buffer = bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
+  -- stylua: ignore
+  vim.keymap.set("n", "<ESC>", function() close_and_cleanup() end, { buffer = bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
 
   -- Set additional outline-specific bindings
   local navigation_handler = function()
@@ -112,19 +92,10 @@ local function set_outline_popup_keymaps(bufnr)
     vim.api.nvim_set_current_win(layout_components.workspace.winid)
   end
 
-  vim.keymap.set(
-    "n",
-    "o",
-    navigation_handler,
-    { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" }
-  )
-
-  vim.keymap.set(
-    "n",
-    "<CR>",
-    navigation_handler,
-    { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" }
-  )
+  -- stylua: ignore
+  vim.keymap.set( "n", "o", navigation_handler, { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
+  -- stylua: ignore
+  vim.keymap.set( "n", "<CR>", navigation_handler, { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
 end
 
 ---Create popups used to construct layout. Apply settings and keymaps
@@ -141,64 +112,7 @@ local function init_workspace_popup(currbuf)
       bufnr = currbuf,
     })
 
-    vim.keymap.set("n", "q", function()
-      close_and_cleanup()
-    end, { buffer = currbuf })
-
-    vim.keymap.set("n", "<ECS>", function()
-      close_and_cleanup()
-    end, { buffer = currbuf })
-
-    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["definition"]), function()
-      VoyagerLsp.get_definition(function(locations)
-        -- TODO: handle definition
-        --
-        -- NOTE: Code snippet how to handle conversion for location to item and go to location
-        --[[ for client_id, result in pairs(locations) do
-          vim.print(result)
-          local client = assert(vim.lsp.get_client_by_id(client_id))
-          local items = vim.lsp.util.locations_to_items(result.result, client.offset_encoding)
-          print("item", items[1].text)
-          vim.lsp.util.jump_to_location(result.result[1], client.offset_encoding, false)
-        end ]]
-        vim.print(locations)
-      end)
-    end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto Definition" })
-
-    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["references"]), function()
-      VoyagerLsp.get_references(function(locations)
-        -- TODO: handle references
-        vim.print(locations)
-      end)
-    end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto References" })
-
-    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["implementation"]), function()
-      VoyagerLsp.get_implementations(function(locations)
-        -- TODO: handle implementations
-        vim.print(locations)
-      end)
-    end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto Implementation" })
-
-    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["type_definition"]), function()
-      VoyagerLsp.get_type_definition(function(locations)
-        -- TODO: handle type definition
-        vim.print(locations)
-      end)
-    end, { buffer = currbuf, noremap = true, silent = true, desc = "VGoto Type Definition" })
-
-    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["incoming_calls"]), function()
-      VoyagerLsp.get_incoming_calls(function(locations)
-        -- TODO: handle incoming calls
-        vim.print(locations)
-      end)
-    end, { buffer = currbuf, noremap = true, silent = true, desc = "VIncoming Calls" })
-
-    vim.keymap.set("n", VoyagerKeymaps.get_local_mapping(lsp_actions["outgoing_calls"]), function()
-      VoyagerLsp.get_outgoing_calls(function(locations)
-        -- TODO: handle outgoing calls
-        vim.print(locations)
-      end)
-    end, { buffer = currbuf, noremap = true, silent = true, desc = "VOutgoing Calls" })
+    set_workspace_popup_keymaps(currbuf)
   end
 end
 
@@ -234,23 +148,7 @@ local function init_outline_popup()
       zindex = 50,
     })
 
-    vim.keymap.set("n", "q", function()
-      close_and_cleanup()
-    end, { buffer = layout_components.outline.bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
-
-    vim.keymap.set("n", "<ESC>", function()
-      close_and_cleanup()
-    end, { buffer = layout_components.outline.bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
-
-    vim.keymap.set("n", "o", function()
-      vim.print(vim.api.nvim_get_current_line())
-      vim.api.nvim_set_current_win(layout_components.workspace.winid)
-    end, { buffer = layout_components.outline.bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
-
-    vim.keymap.set("n", "<CR>", function()
-      vim.print(vim.api.nvim_get_current_line())
-      vim.api.nvim_set_current_win(layout_components.workspace.winid)
-    end, { buffer = layout_components.outline.bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
+    set_outline_popup_keymaps(layout_components.outline.bufnr)
 
     local outline_bufnr = layout_components.outline.bufnr
 

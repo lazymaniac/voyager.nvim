@@ -8,7 +8,7 @@ local config = {
     definition = { lhs = "gd", desc = "Goto Definition <gd>" },
     references = { lhs = "gr", desc = "Goto References <gr>" },
     implementation = { lhs = "gI", desc = "Goto Implementation <gI>" },
-    type_definitions = { lhs = "gD", desc = "Goto Type Definition <gD>" },
+    type_definition = { lhs = "gD", desc = "Goto Type Definition <gD>" },
     incoming_calls = { lhs = "gC", desc = "Incoming Calls <gC>" },
     outgoing_calls = { lhs = "gG", desc = "Outgoing Calls <gG>" },
   },
