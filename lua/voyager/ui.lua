@@ -55,10 +55,12 @@ end
 
 ---Close layout, free up resources, and restore global mappings
 local function close_and_cleanup()
-  layout:unmount()
-  layout = nil
-  layout_components = {}
-  VoyagerKeymaps.restore_global_keymaps()
+  if layout then
+    layout:unmount()
+    layout = nil
+    layout_components = {}
+    VoyagerKeymaps.restore_global_keymaps()
+  end
 end
 
 local function set_workspace_popup_keymaps(currbuf)
@@ -112,27 +114,12 @@ local function init_workspace_popup(currbuf)
       bufnr = currbuf,
     })
 
-    set_workspace_popup_keymaps(currbuf)
-  end
-end
+    local event = require("nui.utils.autocmd").event
+    layout_components.workspace:on({ event.WinClosed }, function()
+      close_and_cleanup()
+    end, { once = true })
 
----Create popup for start point
----@param currbuf integer current buffer identifier
-local function init_root_popup(currbuf)
-  if not layout_components.root then
-    layout_components.root = NuiPopup({
-      border = get_border_config("rounded", " 󰑃  Start point ", "left"),
-      buf_options = get_buf_options(false, true),
-      win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
-      enter = false,
-      focusable = false,
-      zindex = 50,
-    })
-    local line = NuiLine()
-    local root_filename = vim.api.nvim_buf_get_name(currbuf)
-    root_filename = "  " .. string.gsub(root_filename, vim.fn.getcwd(), "")
-    line:append(root_filename)
-    line:render(layout_components.root.bufnr, layout_components.root.ns_id, 1)
+    set_workspace_popup_keymaps(currbuf)
   end
 end
 
@@ -147,6 +134,11 @@ local function init_outline_popup()
       focusable = true,
       zindex = 50,
     })
+    local event = require("nui.utils.autocmd").event
+
+    layout_components.outline:on({ event.WinClosed }, function()
+      close_and_cleanup()
+    end, { once = true })
 
     set_outline_popup_keymaps(layout_components.outline.bufnr)
 
@@ -172,7 +164,6 @@ local function init_layout_components()
   local currbuf = vim.api.nvim_get_current_buf()
 
   init_workspace_popup(currbuf)
-  init_root_popup(currbuf)
   init_outline_popup()
 end
 
@@ -184,11 +175,13 @@ local VoyagerUI = {}
 ---@param user_config table user configuration
 VoyagerUI.open_voyager = function(user_config)
   VoyagerKeymaps.set_keymaps_from_config(user_config.keymaps)
+
   VoyagerKeymaps.find_conflicting_global_keymaps()
+
   init_layout_components()
-  local workspace_box = NuiLayout.Box(layout_components.workspace, { size = "70%" })
-  local root_box = NuiLayout.Box(layout_components.root, { size = 3 })
-  local outline_box = NuiLayout.Box(layout_components.outline, { size = vim.api.nvim_win_get_height(0) - 4 })
+
+  local workspace_box = NuiLayout.Box(layout_components.workspace, { size = "75%" })
+  local outline_box = NuiLayout.Box(layout_components.outline, { size = "25%" })
 
   layout = NuiLayout(
     {
@@ -201,10 +194,7 @@ VoyagerUI.open_voyager = function(user_config)
     },
     NuiLayout.Box({
       workspace_box,
-      NuiLayout.Box({
-        root_box,
-        outline_box,
-      }, { dir = "col", size = "30%" }),
+      outline_box,
     }, { dir = "row" })
   )
 
