@@ -8,32 +8,34 @@ local lsp_actions = {
   "outgoing_calls",
 }
 
----@class LspModule
----Handles async calls to LSP
-local M = {}
--- Utility function to manage spinner display
-local spinner_states = { "-", "\\", "|", "/" }
+-- Utility consts to manage spinner display
+local spinner_states = { " 󱑖  ", " 󱑋  ", " 󱑌  ", " 󱑍  ", " 󱑎  ", " 󱑏  ", " 󱑐  ", " 󱑑  ", " 󱑒  ", " 󱑓  ", " 󱑔  ", " 󱑕  " }
 local spinner_index = 1
 local spinner_buf = nil
+local spinner_win = nil
 
 -- Function to show spinner
 local function spinner_start()
   if not spinner_buf then
     spinner_buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_open_win(spinner_buf, false, {
+    spinner_win = vim.api.nvim_open_win(spinner_buf, false, {
       relative = "cursor",
       row = 1,
       col = 0,
-      width = 10,
+      width = 13,
       height = 1,
       style = "minimal",
+      border = "rounded",
+      zindex = 500
     })
   end
-  -- Update spinner every 100ms
+  -- Update spinner every 30ms
   vim.defer_fn(function()
     -- Rotate spinner
     spinner_index = (spinner_index % #spinner_states) + 1
-    vim.api.nvim_buf_set_lines(spinner_buf, 0, -1, false, { spinner_states[spinner_index] })
+    if spinner_buf then
+      vim.api.nvim_buf_set_lines(spinner_buf, 0, -1, false, { " Loading " .. spinner_states[spinner_index] })
+    end
     -- Continue showing spinner if it hasn't been stopped
     if spinner_buf then
       spinner_start()
@@ -44,6 +46,7 @@ end
 -- Function to stop spinner
 local function spinner_stop()
   if spinner_buf then
+    vim.api.nvim_win_close(spinner_win, true)
     vim.api.nvim_buf_delete(spinner_buf, { force = true })
     spinner_buf = nil
   end
@@ -94,6 +97,10 @@ local function call_lsp_method(method, callback)
   end))
 end
 
+---@class LspModule
+---Handles async calls to LSP
+local M = {}
+
 ---Get references locations
 ---@param callback function locations and items consumer
 M.get_references = function(callback)
@@ -111,7 +118,7 @@ end
 
 ---Get implementations locations and items
 ---@param callback function locations and items consumer
-M.get_implementations = function(callback)
+M.get_implementation = function(callback)
   local method = "textDocument/implementation"
   call_lsp_method(method, callback)
 end
