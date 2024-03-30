@@ -176,13 +176,13 @@ local function init_layout_components()
   init_outline_popup()
 end
 
----@class UiModule
+---@class VoyagerUI
 ---Draws and manages workspace and outline
-local M = {}
+local VoyagerUI = {}
 
 ---Open Voyager layout and init all resources
 ---@param user_config table user configuration
-M.open_voyager = function(user_config)
+VoyagerUI.open_voyager = function(user_config)
   VoyagerKeymaps.set_keymaps_from_config(user_config.keymaps)
   VoyagerKeymaps.find_conflicting_global_keymaps()
   init_layout_components()
@@ -212,12 +212,12 @@ M.open_voyager = function(user_config)
 end
 
 ---Unmound layout and cleanup resources
-M.close_voyager = function()
+VoyagerUI.close_voyager = function()
   close_and_cleanup()
 end
 
-M.open_location_in_workspace = function(bufnr)
+VoyagerUI.open_location_in_workspace = function(bufnr)
   vim.api.nvim_set_current_buf(bufnr)
 end
 
-return M
+return VoyagerUI
