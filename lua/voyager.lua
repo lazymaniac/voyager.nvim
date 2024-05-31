@@ -3,6 +3,8 @@ local ui = require("voyager.ui")
 
 ---@class Config
 ---@field keymaps table Keymaps cofniguraiton
+---TODO: Decide what will be configurable: 
+---1. popup or split? split will require altering existing keymaps
 local config = {
   keymaps = {
     definition = { lhs = "gd", desc = "Goto Definition <gd>" },

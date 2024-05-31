@@ -9,16 +9,11 @@ local VoyagerLsp = require("voyager.lsp")
 local VoyagerKeymaps = require("voyager.keymaps")
 
 ---Reference to nui Layout object
-local layout = {}
+local voyager_layout = {}
 
 ---Table for layout components
 local layout_components = {}
 
----Returns tables with nui border config
----@param style string one of border styles
----@param top_text string text displayed on top border
----@param top_align string text alignment on top border
----@return table table border configuration for nui popup
 local function get_border_config(style, top_text, top_align)
   return {
     style = style,
@@ -29,10 +24,6 @@ local function get_border_config(style, top_text, top_align)
   }
 end
 
----Returns table with nui buffer options
----@param modifiable boolean is buffer modifiable
----@param readonly boolean is buffer readonly
----@return table buffer configuration for nui popup
 local function get_buf_options(modifiable, readonly)
   return {
     modifiable = modifiable,
@@ -40,11 +31,6 @@ local function get_buf_options(modifiable, readonly)
   }
 end
 
----Returns table with nui window options
----@param winblend integer set window blend
----@param winhighlight string alter highlights
----@param number boolean show line nubers
----@return table window options for nui popup
 local function get_win_options(winblend, winhighlight, number)
   return {
     winblend = winblend,
@@ -55,19 +41,30 @@ end
 
 ---Close layout, free up resources, and restore global mappings
 local function close_and_cleanup()
-  if layout then
-    layout:unmount()
-    layout = nil
+  if voyager_layout then
+    voyager_layout:unmount()
+    voyager_layout = nil
     layout_components = {}
     VoyagerKeymaps.restore_global_keymaps()
   end
 end
 
-local function set_workspace_popup_keymaps(currbuf)
+local function set_close_keyamps(bufnr)
   -- stylua: ignore
-  vim.keymap.set("n", "q", function() close_and_cleanup() end, { buffer = currbuf })
+  vim.keymap.set("n", "q", function() close_and_cleanup() end, { buffer = bufnr })
   -- stylua: ignore
-  vim.keymap.set("n", "<ECS>", function() close_and_cleanup() end, { buffer = currbuf })
+  vim.keymap.set("n", "<ECS>", function() close_and_cleanup() end, { buffer = bufnr })
+end
+
+local function setup_close_event(nui_popup)
+  local event = require("nui.utils.autocmd").event
+  nui_popup:on({ event.WinClosed }, function()
+    close_and_cleanup()
+  end, { once = true })
+end
+
+local function set_workspace_popup_keymaps(bufnr)
+  set_close_keyamps(bufnr)
 
   local supported_lsp_actions = VoyagerLsp.get_lsp_actions()
   for _, action in ipairs(supported_lsp_actions) do
@@ -78,17 +75,31 @@ local function set_workspace_popup_keymaps(currbuf)
     end
     local keymap = VoyagerKeymaps.get_local_keymap(action)
     -- stylua: ignore
-    vim.keymap.set( "n", keymap.lhs, handle_function, { buffer = currbuf, noremap = true, silent = true, desc = keymap.desc })
+    vim.keymap.set( "n", keymap.lhs, handle_function, { buffer = bufnr, noremap = true, silent = true, desc = keymap.desc })
   end
 end
 
-local function set_outline_popup_keymaps(bufnr)
-  -- stylua: ignore
-  vim.keymap.set("n", "q", function() close_and_cleanup() end, { buffer = bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
-  -- stylua: ignore
-  vim.keymap.set("n", "<ESC>", function() close_and_cleanup() end, { buffer = bufnr, noremap = true, silent = true, desc = "Quit Voyager" })
+local function set_line_highlight(bufnr, ns_id, lnum, hl_group)
+  local buf = vim.api.nvim_get_current_buf()
+  if bufnr ~= buf and bufnr ~= -1 then
+    return vim.notify("Buffer does not exist.")
+  end
 
-  -- Set additional outline-specific bindings
+  -- Clear any existing highlighting on the line to avoid duplicates.
+  vim.api.nvim_buf_clear_namespace(bufnr, ns_id, lnum, lnum)
+  vim.api.nvim_buf_add_highlight(bufnr, ns_id, hl_group, lnum, 0, -1)
+end
+
+
+-- Define a local function to create a new highlight group
+local function create_voyager_namespace()
+    vim.api.nvim_create_namespace('Voyager')
+end
+
+
+local function set_outline_popup_keymaps(bufnr)
+  set_close_keyamps(bufnr)
+
   local navigation_handler = function()
     vim.print(vim.api.nvim_get_current_line())
     vim.api.nvim_set_current_win(layout_components.workspace.winid)
@@ -104,8 +115,11 @@ end
 ---@param currbuf integer current buf number used as starting point
 local function init_workspace_popup(currbuf)
   if not layout_components.workspace then
+    local root_filename = vim.api.nvim_buf_get_name(currbuf)
+    root_filename = "  " .. string.gsub(root_filename, vim.fn.getcwd(), "")
+
     layout_components.workspace = NuiPopup({
-      border = get_border_config("rounded", "   Workspace: ", "left"),
+      border = get_border_config("rounded", "   :" .. root_filename, "left"),
       buf_options = get_buf_options(true, false),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", true),
       enter = true,
@@ -114,40 +128,35 @@ local function init_workspace_popup(currbuf)
       bufnr = currbuf,
     })
 
-    local event = require("nui.utils.autocmd").event
-    layout_components.workspace:on({ event.WinClosed }, function()
-      close_and_cleanup()
-    end, { once = true })
+    setup_close_event(layout_components.workspace)
 
     set_workspace_popup_keymaps(currbuf)
   end
 end
 
 ---Create popup for outline
-local function init_outline_popup()
+local function init_outline_popup(currbuf)
   if not layout_components.outline then
     layout_components.outline = NuiPopup({
-      border = get_border_config("rounded", " 󰙮  Outline ", "left"),
+      border = get_border_config("rounded", " 󰙮  Outline ", "center"),
       buf_options = get_buf_options(false, true),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
       enter = false,
       focusable = true,
       zindex = 50,
     })
-    local event = require("nui.utils.autocmd").event
 
-    layout_components.outline:on({ event.WinClosed }, function()
-      close_and_cleanup()
-    end, { once = true })
+    setup_close_event(layout_components.outline)
 
     set_outline_popup_keymaps(layout_components.outline.bufnr)
 
-    local outline_bufnr = layout_components.outline.bufnr
+    local root_filename = vim.api.nvim_buf_get_name(currbuf)
+    root_filename = string.gsub(root_filename, vim.fn.getcwd(), "")
 
     local tree = NuiTree({
-      bufnr = outline_bufnr,
+      bufnr = layout_components.outline.bufnr,
       nodes = {
-        NuiTree.Node({ text = "Root " }, {}),
+        NuiTree.Node({ text = "ROOT: " .. root_filename }, {}),
         NuiTree.Node({ text = "b" }, {
           NuiTree.Node({ text = "b-1" }),
           NuiTree.Node({ text = { "b-2", "b-3" } }),
@@ -164,7 +173,7 @@ local function init_layout_components()
   local currbuf = vim.api.nvim_get_current_buf()
 
   init_workspace_popup(currbuf)
-  init_outline_popup()
+  init_outline_popup(currbuf)
 end
 
 ---@class VoyagerUI
@@ -183,7 +192,7 @@ VoyagerUI.open_voyager = function(user_config)
   local workspace_box = NuiLayout.Box(layout_components.workspace, { size = "75%" })
   local outline_box = NuiLayout.Box(layout_components.outline, { size = "25%" })
 
-  layout = NuiLayout(
+  voyager_layout = NuiLayout(
     {
       position = "50%",
       border = "none",
@@ -198,7 +207,7 @@ VoyagerUI.open_voyager = function(user_config)
     }, { dir = "row" })
   )
 
-  layout:mount()
+  voyager_layout:mount()
 end
 
 ---Unmound layout and cleanup resources
