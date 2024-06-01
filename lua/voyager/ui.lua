@@ -2,7 +2,6 @@
 local NuiLayout = require("nui.layout")
 local NuiPopup = require("nui.popup")
 local NuiTree = require("nui.tree")
-local NuiLine = require("nui.line")
 
 ---Internal dependencies
 local VoyagerLsp = require("voyager.lsp")

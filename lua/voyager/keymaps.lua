@@ -25,7 +25,7 @@ VoyagerKeymaps.set_keymaps_from_config = function(config_keymaps)
   end
 end
 
----Function to find global mapping which may be in conflict with Voyager mappings. If global mapping exists it will be stored in table for restoring after session is closed.
+---Function to find global mapping which may be in conflict with Voyager mappings. If global mapping exists it will be stored in table for restoring after session is finished.
 VoyagerKeymaps.find_conflicting_global_keymaps = function()
   local normal_mode_keymaps = vim.api.nvim_buf_get_keymap(0, mode)
 
