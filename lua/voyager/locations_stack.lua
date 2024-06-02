@@ -6,7 +6,7 @@ local locations_stack = {}
 
 ---Push new locations for provided lsp method.
 ---@param parent table Original location.
----@param method str Lsp method used to obtain new locatiosn.
+---@param method string Lsp method used to obtain new locatiosn.
 ---@param locations any New locations returened by lsp.
 LocationsStack.push_locations = function(parent, method, locations)
   if locations then
@@ -26,6 +26,12 @@ end
 ---Get locations from last lsp method call.
 LocationsStack.get_last_locations = function()
   return locations_stack[#locations_stack]
+end
+
+---Get current locations stack
+---@return table current stack
+LocationsStack.get_all = function ()
+  return locations_stack
 end
 
 return LocationsStack

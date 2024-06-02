@@ -14,19 +14,19 @@ local local_keymaps = {
 ---Table of global mappings which are in conflict with plugin mappings. Used to restore them after voyager session is closed or buffer is switched.
 local global_keymaps = {}
 
----@class VoyagerKeymaps
+---@class Keymaps
 ---Utility class to manipulate global and voyager mappings
-local VoyagerKeymaps = {}
+local Keymaps = {}
 
 ---Set mappings provided by user
-VoyagerKeymaps.set_keymaps_from_config = function(config_keymaps)
+Keymaps.set_keymaps_from_config = function(config_keymaps)
   if config_keymaps then
     local_keymaps = config_keymaps
   end
 end
 
 ---Function to find global mapping which may be in conflict with Voyager mappings. If global mapping exists it will be stored in table for restoring after session is finished.
-VoyagerKeymaps.find_conflicting_global_keymaps = function()
+Keymaps.find_conflicting_global_keymaps = function()
   local normal_mode_keymaps = vim.api.nvim_buf_get_keymap(0, mode)
 
   for _, keymap in ipairs(normal_mode_keymaps) do
@@ -38,7 +38,7 @@ VoyagerKeymaps.find_conflicting_global_keymaps = function()
   end
 end
 
-VoyagerKeymaps.restore_global_keymaps = function()
+Keymaps.restore_global_keymaps = function()
   for _, keymap in ipairs(global_keymaps) do
     local rhs = keymap.callback or keymap.rhs -- Check if rhs is null then use callback
     vim.keymap.set(mode, keymap.lhs, rhs, {
@@ -53,8 +53,8 @@ VoyagerKeymaps.restore_global_keymaps = function()
   end
 end
 
-VoyagerKeymaps.get_local_keymap = function(action)
+Keymaps.get_local_keymap = function(action)
   return local_keymaps[action]
 end
 
-return VoyagerKeymaps
+return Keymaps

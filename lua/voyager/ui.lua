@@ -4,12 +4,12 @@ local NuiPopup = require("nui.popup")
 local NuiTree = require("nui.tree")
 
 ---Internal dependencies
-local VoyagerLsp = require("voyager.lsp")
-local VoyagerKeymaps = require("voyager.keymaps")
+local LspClient = require("voyager.lsp_client")
+local Keymaps = require("voyager.keymaps")
 local LocationsStack = require("voyager.locations_stack")
 
 ---Reference to nui Layout object
-local voyager_layout = {}
+local layout = {}
 
 ---Table for layout components
 local layout_components = {}
@@ -41,11 +41,11 @@ end
 
 ---Close layout, free up resources, and restore global mappings
 local function close_and_cleanup()
-  if voyager_layout then
-    voyager_layout:unmount()
-    voyager_layout = nil
+  if layout then
+    layout:unmount()
+    layout = nil
     layout_components = {}
-    VoyagerKeymaps.restore_global_keymaps()
+    Keymaps.restore_global_keymaps()
   end
 end
 
@@ -66,30 +66,31 @@ end
 local function set_workspace_popup_keymaps(bufnr)
   set_close_keyamps(bufnr)
 
-  local supported_lsp_actions = VoyagerLsp.get_lsp_actions()
+  local supported_lsp_actions = LspClient.get_lsp_actions()
   for _, action in ipairs(supported_lsp_actions) do
     local handle_function = function()
-      VoyagerLsp["get_" .. action](function(locations)
-        for _, client in pairs(locations) do
-          local items = vim.lsp.util.locations_to_items(client.result, vim.lsp.get_clients({ burnr = 0 })[1].offset_encoding)
-          for _, location in pairs(client.result) do
-            local uri = location.targetUri or location.uri
-            if uri == nil then
-              return
-            end
-            local buf = vim.uri_to_bufnr(uri)
-            if not vim.api.nvim_buf_is_loaded(buf) then
-              vim.fn.bufload(buf)
-            end
-            local range = location.targetRange or location.range
-            local contents = vim.api.nvim_buf_get_lines(buf, range.start.line, range["end"].line + 1, false)
-            vim.print("contents", contents)
-          end
-        end
+      LspClient["get_" .. action](function()
+        vim.print('locations_stack', LocationsStack.get_all())
+        -- for _, client in pairs(locations) do
+        --   local items = vim.lsp.util.locations_to_items(client.result, vim.lsp.get_clients({ burnr = 0 })[1].offset_encoding)
+        --   for _, location in pairs(client.result) do
+        --     local uri = location.targetUri or location.uri
+        --     if uri == nil then
+        --       return
+        --     end
+        --     local buf = vim.uri_to_bufnr(uri)
+        --     if not vim.api.nvim_buf_is_loaded(buf) then
+        --       vim.fn.bufload(buf)
+        --     end
+        --     local range = location.targetRange or location.range
+        --     local contents = vim.api.nvim_buf_get_lines(buf, range.start.line, range["end"].line + 1, false)
+        --     vim.print("contents", contents)
+        --   end
+        -- end
         -- FIXME: placeholder for specific handlers
       end)
     end
-    local keymap = VoyagerKeymaps.get_local_keymap(action)
+    local keymap = Keymaps.get_local_keymap(action)
     -- stylua: ignore
     vim.keymap.set( "n", keymap.lhs, handle_function, { buffer = bufnr, noremap = true, silent = true, desc = keymap.desc })
   end
@@ -190,23 +191,23 @@ local function init_layout_components()
   init_outline_popup(currbuf)
 end
 
----@class VoyagerUI
+---@class UI
 ---Draws and manages workspace and outline
-local VoyagerUI = {}
+local UI = {}
 
 ---Open Voyager layout and init all resources
 ---@param user_config table user configuration
-VoyagerUI.open_voyager = function(user_config)
-  VoyagerKeymaps.set_keymaps_from_config(user_config.keymaps)
+UI.open_voyager = function(user_config)
+  Keymaps.set_keymaps_from_config(user_config.keymaps)
 
-  VoyagerKeymaps.find_conflicting_global_keymaps()
+  Keymaps.find_conflicting_global_keymaps()
 
   init_layout_components()
 
   local workspace_box = NuiLayout.Box(layout_components.workspace, { size = "75%" })
   local outline_box = NuiLayout.Box(layout_components.outline, { size = "25%" })
 
-  voyager_layout = NuiLayout(
+  layout = NuiLayout(
     {
       position = "50%",
       border = "none",
@@ -221,16 +222,16 @@ VoyagerUI.open_voyager = function(user_config)
     }, { dir = "row" })
   )
 
-  voyager_layout:mount()
+  layout:mount()
 end
 
 ---Unmound layout and cleanup resources
-VoyagerUI.close_voyager = function()
+UI.close_voyager = function()
   close_and_cleanup()
 end
 
-VoyagerUI.open_location_in_workspace = function(bufnr)
+UI.open_location_in_workspace = function(bufnr)
   vim.api.nvim_set_current_buf(bufnr)
 end
 
-return VoyagerUI
+return UI

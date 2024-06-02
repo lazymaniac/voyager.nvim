@@ -1,4 +1,4 @@
-local VoyagerSpinner = require("voyager.spinner")
+local Spinner = require("voyager.spinner")
 local LocationsStack = require("voyager.locations_stack")
 
 ---Goto actions supported by plugin
@@ -37,7 +37,7 @@ local function call_lsp_method(method, callback)
     local locations = {}
     local co = coroutine.running()
 
-    VoyagerSpinner.start()
+    -- Spinner.start()
 
     vim.lsp.buf_request_all(curbuf, method, position_params, function(results)
       if not results or vim.tbl_isempty(results) then
@@ -53,61 +53,62 @@ local function call_lsp_method(method, callback)
     coroutine.yield()
 
     LocationsStack.push_locations({ cword_symbol = cword_symbol, cline = cline }, method, locations)
-    callback(locations)
-    VoyagerSpinner.stop()
+    vim.print('calling callback')
+    callback()
+    -- Spinner.stop()
   end))
 end
 
----@class VoyagerLsp
+---@class LspClient
 ---Handles async calls to LSP
-local VoyagerLsp = {}
+local LspClient = {}
 
 ---Get references locations
 ---@param callback function locations and items consumer
-VoyagerLsp.get_references = function(callback)
+LspClient.get_references = function(callback)
   local method = "textDocument/references"
   call_lsp_method(method, callback)
 end
 
 ---Get definition location and item
 ---@param callback function locations and items consumer
-VoyagerLsp.get_definition = function(callback)
+LspClient.get_definition = function(callback)
   local method = "textDocument/definition"
   call_lsp_method(method, callback)
 end
 
 ---Get implementations locations and items
 ---@param callback function locations and items consumer
-VoyagerLsp.get_implementation = function(callback)
+LspClient.get_implementation = function(callback)
   local method = "textDocument/implementation"
   call_lsp_method(method, callback)
 end
 
 ---Get type definition location and item
 ---@param callback function locations and items consumer
-VoyagerLsp.get_type_definition = function(callback)
+LspClient.get_type_definition = function(callback)
   local method = "textDocument/typeDefinition"
   call_lsp_method(method, callback)
 end
 
 ---Get incoming calls locations and items
 ---@param callback function locations and items consumer
-VoyagerLsp.get_incoming_calls = function(callback)
+LspClient.get_incoming_calls = function(callback)
   local method = "callHierarchy/incomingCalls"
   call_lsp_method(method, callback)
 end
 
 ---Get outgoing calls locations and items
 ---@param callback function locations and items consumer
-VoyagerLsp.get_outgoing_calls = function(callback)
+LspClient.get_outgoing_calls = function(callback)
   local method = "callHierarchy/outgoingCalls"
   call_lsp_method(method, callback)
 end
 
 ---Return table with supported lsp goto actions
 ---@return table table with supported lsp actions
-VoyagerLsp.get_lsp_actions = function()
+LspClient.get_lsp_actions = function()
   return lsp_actions
 end
 
-return VoyagerLsp
+return LspClient
