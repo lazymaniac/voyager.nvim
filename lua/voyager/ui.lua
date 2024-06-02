@@ -6,6 +6,7 @@ local NuiTree = require("nui.tree")
 ---Internal dependencies
 local VoyagerLsp = require("voyager.lsp")
 local VoyagerKeymaps = require("voyager.keymaps")
+local LocationsStack = require("voyager.locations_stack")
 
 ---Reference to nui Layout object
 local voyager_layout = {}
@@ -69,7 +70,23 @@ local function set_workspace_popup_keymaps(bufnr)
   for _, action in ipairs(supported_lsp_actions) do
     local handle_function = function()
       VoyagerLsp["get_" .. action](function(locations)
-        vim.print(locations) -- FIXME: placeholder for specific handlers
+        for _, client in pairs(locations) do
+          local items = vim.lsp.util.locations_to_items(client.result, vim.lsp.get_clients({ burnr = 0 })[1].offset_encoding)
+          for _, location in pairs(client.result) do
+            local uri = location.targetUri or location.uri
+            if uri == nil then
+              return
+            end
+            local buf = vim.uri_to_bufnr(uri)
+            if not vim.api.nvim_buf_is_loaded(buf) then
+              vim.fn.bufload(buf)
+            end
+            local range = location.targetRange or location.range
+            local contents = vim.api.nvim_buf_get_lines(buf, range.start.line, range["end"].line + 1, false)
+            vim.print("contents", contents)
+          end
+        end
+        -- FIXME: placeholder for specific handlers
       end)
     end
     local keymap = VoyagerKeymaps.get_local_keymap(action)
@@ -89,12 +106,10 @@ local function set_line_highlight(bufnr, ns_id, lnum, hl_group)
   vim.api.nvim_buf_add_highlight(bufnr, ns_id, hl_group, lnum, 0, -1)
 end
 
-
 -- Define a local function to create a new highlight group
 local function create_voyager_namespace()
-    vim.api.nvim_create_namespace('Voyager')
+  vim.api.nvim_create_namespace("Voyager")
 end
-
 
 local function set_outline_popup_keymaps(bufnr)
   set_close_keyamps(bufnr)

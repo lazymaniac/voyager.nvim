@@ -1,6 +1,7 @@
-local VoyagerSpinner = require('voyager.spinner')
+local VoyagerSpinner = require("voyager.spinner")
+local LocationsStack = require("voyager.locations_stack")
 
----Goto actions supported by plugins
+---Goto actions supported by plugin
 local lsp_actions = {
   "definition",
   "references",
@@ -24,9 +25,11 @@ end
 
 local function call_lsp_method(method, callback)
   local curbuf = vim.api.nvim_get_current_buf()
-  local params = vim.lsp.util.make_position_params()
+  local position_params = vim.lsp.util.make_position_params()
+  local cword_symbol = vim.fn.expand("<cword>")
+  local cline = vim.api.nvim_buf_get_lines(0, position_params.position.line, position_params.position.line + 1, true)[1]
 
-  params.context = {
+  position_params.context = {
     includeDeclaration = true,
   }
 
@@ -36,8 +39,7 @@ local function call_lsp_method(method, callback)
 
     VoyagerSpinner.start()
 
-    vim.lsp.buf_request_all(curbuf, method, params, function(results)
-
+    vim.lsp.buf_request_all(curbuf, method, position_params, function(results)
       if not results or vim.tbl_isempty(results) then
         vim.notify("Nothing found")
         return
@@ -50,6 +52,7 @@ local function call_lsp_method(method, callback)
     end)
     coroutine.yield()
 
+    LocationsStack.push_locations({ cword_symbol = cword_symbol, cline = cline }, method, locations)
     callback(locations)
     VoyagerSpinner.stop()
   end))
@@ -63,7 +66,6 @@ local VoyagerLsp = {}
 ---@param callback function locations and items consumer
 VoyagerLsp.get_references = function(callback)
   local method = "textDocument/references"
-  print("calling method get_references")
   call_lsp_method(method, callback)
 end
 
