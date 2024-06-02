@@ -1,7 +1,7 @@
 local Spinner = require("voyager.spinner")
 local LocationsStack = require("voyager.locations_stack")
 
----Goto actions supported by plugin
+---LSP methods supported by plugin
 local lsp_actions = {
   "definition",
   "references",
@@ -34,10 +34,9 @@ local function call_lsp_method(method, callback)
   }
 
   coroutine.resume(coroutine.create(function()
-    local locations = {}
     local co = coroutine.running()
 
-    -- Spinner.start()
+    Spinner.start()
 
     vim.lsp.buf_request_all(curbuf, method, position_params, function(results)
       if not results or vim.tbl_isempty(results) then
@@ -46,16 +45,15 @@ local function call_lsp_method(method, callback)
       end
 
       if results and not is_response_empty(results) then
-        locations = results
+        LocationsStack.push_locations({ cword_symbol = cword_symbol, cline = cline }, method, results)
+        callback()
       end
       coroutine.resume(co)
     end)
     coroutine.yield()
 
-    LocationsStack.push_locations({ cword_symbol = cword_symbol, cline = cline }, method, locations)
-    vim.print('calling callback')
-    callback()
-    -- Spinner.stop()
+    Spinner.stop()
+
   end))
 end
 
@@ -64,42 +62,42 @@ end
 local LspClient = {}
 
 ---Get references locations
----@param callback function locations and items consumer
+---@param callback function
 LspClient.get_references = function(callback)
   local method = "textDocument/references"
   call_lsp_method(method, callback)
 end
 
 ---Get definition location and item
----@param callback function locations and items consumer
+---@param callback function
 LspClient.get_definition = function(callback)
   local method = "textDocument/definition"
   call_lsp_method(method, callback)
 end
 
 ---Get implementations locations and items
----@param callback function locations and items consumer
+---@param callback function
 LspClient.get_implementation = function(callback)
   local method = "textDocument/implementation"
   call_lsp_method(method, callback)
 end
 
 ---Get type definition location and item
----@param callback function locations and items consumer
+---@param callback function
 LspClient.get_type_definition = function(callback)
   local method = "textDocument/typeDefinition"
   call_lsp_method(method, callback)
 end
 
 ---Get incoming calls locations and items
----@param callback function locations and items consumer
+---@param callback function
 LspClient.get_incoming_calls = function(callback)
   local method = "callHierarchy/incomingCalls"
   call_lsp_method(method, callback)
 end
 
 ---Get outgoing calls locations and items
----@param callback function locations and items consumer
+---@param callback function 
 LspClient.get_outgoing_calls = function(callback)
   local method = "callHierarchy/outgoingCalls"
   call_lsp_method(method, callback)

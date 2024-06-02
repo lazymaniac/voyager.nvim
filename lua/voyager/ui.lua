@@ -70,6 +70,7 @@ local function set_workspace_popup_keymaps(bufnr)
   for _, action in ipairs(supported_lsp_actions) do
     local handle_function = function()
       LspClient["get_" .. action](function()
+        vim.print('executing callback')
         vim.print('locations_stack', LocationsStack.get_all())
         -- for _, client in pairs(locations) do
         --   local items = vim.lsp.util.locations_to_items(client.result, vim.lsp.get_clients({ burnr = 0 })[1].offset_encoding)

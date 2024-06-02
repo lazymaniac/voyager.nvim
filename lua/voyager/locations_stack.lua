@@ -7,10 +7,10 @@ local locations_stack = {}
 ---Push new locations for provided lsp method.
 ---@param parent table Original location.
 ---@param method string Lsp method used to obtain new locatiosn.
----@param locations any New locations returened by lsp.
+---@param locations object New locations returened by lsp.
 LocationsStack.push_locations = function(parent, method, locations)
-  if locations then
-    locations_stack:insert({
+  if parent and method and locations then
+    table.insert(locations_stack, {
       parent = parent,
       method = method,
       locations = locations,
@@ -30,7 +30,8 @@ end
 
 ---Get current locations stack
 ---@return table current stack
-LocationsStack.get_all = function ()
+LocationsStack.get_all = function()
+  vim.print('get_all')
   return locations_stack
 end
 
