@@ -31,7 +31,6 @@ end
 ---Get current locations stack
 ---@return table current stack
 LocationsStack.get_all = function()
-  vim.print('get_all')
   return locations_stack
 end
 
