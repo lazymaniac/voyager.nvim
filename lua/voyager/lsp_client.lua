@@ -26,9 +26,6 @@ end
 local function call_lsp_method(method, callback)
   local curbuf = vim.api.nvim_get_current_buf()
   local position_params = vim.lsp.util.make_position_params()
-  local cword_symbol = vim.fn.expand("<cword>")
-  local cline = vim.api.nvim_buf_get_lines(0, position_params.position.line, position_params.position.line + 1, true)[1]
-  local cfile = position_params.textDocument.uri:gsub("file://", ""):gsub(vim.fn.getcwd(), "..")
 
   position_params.context = {
     includeDeclaration = true,
@@ -46,7 +43,14 @@ local function call_lsp_method(method, callback)
       end
 
       if results and not is_response_empty(results) then
-        LocationsStack.push_locations({ cword_symbol = cword_symbol, cline = cline, cfile = cfile }, method, results)
+        -- Build parent dtails
+        local parent = {
+          cword_symbol = vim.fn.expand("<cword>"),
+          cline = vim.api.nvim_buf_get_lines(0, position_params.position.line, position_params.position.line + 1, true)[1],
+          cfile = position_params.textDocument.uri:gsub("file://", ""):gsub(vim.fn.getcwd(), ".."),
+          line_num = position_params.position.line,
+        }
+        LocationsStack.push_locations(parent, method, results)
         callback()
       end
       coroutine.resume(co)

@@ -1,7 +1,8 @@
 ---External dependencies
 local NuiLayout = require("nui.layout")
 local NuiPopup = require("nui.popup")
-local NuiTree = require("nui.tree")
+local NuiLine = require("nui.line")
+local NuiText = require("nui.text")
 
 ---Internal dependencies
 local LspClient = require("voyager.lsp_client")
@@ -13,6 +14,14 @@ local layout = {}
 
 ---Table for layout components
 local layout_components = {}
+
+local icons = {
+  current = "  ",
+  outline = " 󰯓 ",
+  root = " 󰾕 ",
+  selected = " 󱔲 ",
+  select = " 󰾙 ",
+}
 
 local function get_border_config(style, top_text, top_align)
   return {
@@ -63,31 +72,99 @@ local function setup_close_event(nui_popup)
   end, { once = true })
 end
 
+local function pretty_lsp_method(lsp_method)
+  if lsp_method == "textDocument/references" then
+    return "Ref"
+  elseif lsp_method == "textDocument/definition" then
+    return "Def"
+  elseif lsp_method == "textDocument/implementation" then
+    return "Impl"
+  elseif lsp_method == "textDocument/typeDefinition" then
+    return "Type"
+  elseif lsp_method == "callHierarchy/incomingCalls" then
+    return "Inc"
+  elseif lsp_method == "callHierarchy/outgoingCalls" then
+    return "Out"
+  end
+end
+
+local function redraw_outline()
+  -- TODO: pull latest data from locations stack and redraw outline state
+  local locations = LocationsStack.get_all()
+  local lines = {}
+  for _, lsp_result in ipairs(locations) do
+    local method = pretty_lsp_method(lsp_result.method)
+    table.insert(
+      lines,
+      NuiLine({
+        NuiText(
+          icons.root
+            .. " "
+            .. method
+            .. ": ["
+            .. lsp_result.parent.cword_symbol
+            .. "]"
+            .. " @ "
+            .. lsp_result.parent.cfile
+            .. ":"
+            .. lsp_result.parent.line_num,
+          "@attribute"
+        ),
+      })
+    )
+
+    table.insert(lines, NuiLine({ NuiText(" --- ") }))
+
+    for client_id, lsp_client in pairs(lsp_result.locations) do
+      local items =
+        vim.lsp.util.locations_to_items(lsp_client.result, vim.lsp.get_clients({ burnr = 0 })[client_id].offset_encoding)
+      vim.print(items)
+      for _, item in ipairs(items) do
+        vim.print("item", item)
+        table.insert(
+          lines,
+          NuiLine({
+            NuiText("location"),
+          })
+        )
+      end
+    end
+  end
+
+  vim.api.nvim_set_option_value("modifiable", true, { buf = layout_components.outline.bufnr })
+  vim.api.nvim_set_option_value("readonly", false, { buf = layout_components.outline.bufnr })
+  for i, line in ipairs(lines) do
+    line:render(layout_components.outline.bufnr, -1, i + 1)
+  end
+  vim.api.nvim_set_option_value("modifiable", false, { buf = layout_components.outline.bufnr })
+  vim.api.nvim_set_option_value("readonly", true, { buf = layout_components.outline.bufnr })
+  -- for _, client in pairs(locations) do
+  --   local items = vim.lsp.util.locations_to_items(client.result, vim.lsp.get_clients({ burnr = 0 })[1].offset_encoding)
+  --   for _, location in pairs(client.result) do
+  --     local uri = location.targetUri or location.uri
+  --     if uri == nil then
+  --       return
+  --     end
+  --     local buf = vim.uri_to_bufnr(uri)
+  --     if not vim.api.nvim_buf_is_loaded(buf) then
+  --       vim.fn.bufload(buf)
+  --     end
+  --     local range = location.targetRange or location.range
+  --     local contents = vim.api.nvim_buf_get_lines(buf, range.start.line, range["end"].line + 1, false)
+  --     vim.print("contents", contents)
+  --   end
+  -- end
+end
+
 local function set_workspace_popup_keymaps(bufnr)
   set_close_keyamps(bufnr)
 
+  -- Set keymaps for each lsp actions
   local supported_lsp_actions = LspClient.get_lsp_actions()
   for _, action in ipairs(supported_lsp_actions) do
     local handle_function = function()
       LspClient["get_" .. action](function()
-        vim.print('locations_stack', LocationsStack.get_all())
-        -- for _, client in pairs(locations) do
-        --   local items = vim.lsp.util.locations_to_items(client.result, vim.lsp.get_clients({ burnr = 0 })[1].offset_encoding)
-        --   for _, location in pairs(client.result) do
-        --     local uri = location.targetUri or location.uri
-        --     if uri == nil then
-        --       return
-        --     end
-        --     local buf = vim.uri_to_bufnr(uri)
-        --     if not vim.api.nvim_buf_is_loaded(buf) then
-        --       vim.fn.bufload(buf)
-        --     end
-        --     local range = location.targetRange or location.range
-        --     local contents = vim.api.nvim_buf_get_lines(buf, range.start.line, range["end"].line + 1, false)
-        --     vim.print("contents", contents)
-        --   end
-        -- end
-        -- FIXME: placeholder for specific handlers
+        redraw_outline()
       end)
     end
     local keymap = Keymaps.get_local_keymap(action)
@@ -117,7 +194,7 @@ local function set_outline_popup_keymaps(bufnr)
 
   local navigation_handler = function()
     vim.print(vim.api.nvim_get_current_line())
-    -- TODO: open new location in workspace
+    -- TODO: open selected location in workspace
     vim.api.nvim_set_current_win(layout_components.workspace.winid)
   end
 
@@ -133,10 +210,10 @@ end
 local function init_workspace_popup(currbuf)
   if not layout_components.workspace then
     local root_filename = vim.api.nvim_buf_get_name(currbuf)
-    root_filename = "  " .. string.gsub(root_filename, vim.fn.getcwd(), "")
+    root_filename = " .." .. string.gsub(root_filename, vim.fn.getcwd(), "")
 
     layout_components.workspace = NuiPopup({
-      border = get_border_config("rounded", "   :" .. root_filename, "left"),
+      border = get_border_config("rounded", icons.current .. " :" .. root_filename, "center"),
       buf_options = get_buf_options(true, false),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", true),
       enter = true,
@@ -155,7 +232,7 @@ end
 local function init_outline_popup(currbuf)
   if not layout_components.outline then
     layout_components.outline = NuiPopup({
-      border = get_border_config("rounded", " 󰙮  Outline ", "center"),
+      border = get_border_config("rounded", icons.outline .. " Outline ", "center"),
       buf_options = get_buf_options(false, true),
       win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
       enter = false,
@@ -166,22 +243,6 @@ local function init_outline_popup(currbuf)
     setup_close_event(layout_components.outline)
 
     set_outline_popup_keymaps(layout_components.outline.bufnr)
-
-    local root_filename = vim.api.nvim_buf_get_name(currbuf)
-    root_filename = string.gsub(root_filename, vim.fn.getcwd(), "")
-
-    local tree = NuiTree({
-      bufnr = layout_components.outline.bufnr,
-      nodes = {
-        NuiTree.Node({ text = "ROOT: " .. root_filename }, {}),
-        NuiTree.Node({ text = "b" }, {
-          NuiTree.Node({ text = "b-1" }),
-          NuiTree.Node({ text = { "b-2", "b-3" } }),
-        }),
-      },
-    })
-
-    tree:render()
   end
 end
 
