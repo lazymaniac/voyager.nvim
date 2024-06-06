@@ -28,6 +28,7 @@ local function call_lsp_method(method, callback)
   local position_params = vim.lsp.util.make_position_params()
   local cword_symbol = vim.fn.expand("<cword>")
   local cline = vim.api.nvim_buf_get_lines(0, position_params.position.line, position_params.position.line + 1, true)[1]
+  local cfile = position_params.textDocument.uri:gsub("file://", ""):gsub(vim.fn.getcwd(), "..")
 
   position_params.context = {
     includeDeclaration = true,
@@ -45,7 +46,7 @@ local function call_lsp_method(method, callback)
       end
 
       if results and not is_response_empty(results) then
-        LocationsStack.push_locations({ cword_symbol = cword_symbol, cline = cline }, method, results)
+        LocationsStack.push_locations({ cword_symbol = cword_symbol, cline = cline, cfile = cfile }, method, results)
         callback()
       end
       coroutine.resume(co)
@@ -53,7 +54,6 @@ local function call_lsp_method(method, callback)
     coroutine.yield()
 
     Spinner.stop()
-
   end))
 end
 
@@ -97,7 +97,7 @@ LspClient.get_incoming_calls = function(callback)
 end
 
 ---Get outgoing calls locations and items
----@param callback function 
+---@param callback function
 LspClient.get_outgoing_calls = function(callback)
   local method = "callHierarchy/outgoingCalls"
   call_lsp_method(method, callback)
