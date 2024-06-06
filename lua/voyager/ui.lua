@@ -117,6 +117,7 @@ local function set_outline_popup_keymaps(bufnr)
 
   local navigation_handler = function()
     vim.print(vim.api.nvim_get_current_line())
+    -- TODO: open new location in workspace
     vim.api.nvim_set_current_win(layout_components.workspace.winid)
   end
 
@@ -124,6 +125,7 @@ local function set_outline_popup_keymaps(bufnr)
   vim.keymap.set( "n", "o", navigation_handler, { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
   -- stylua: ignore
   vim.keymap.set( "n", "<CR>", navigation_handler, { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
+  -- TODO: add keymaps to manage outline items like removing last added locations and selecting other parent or saving current stack locations.
 end
 
 ---Create popups used to construct layout. Apply settings and keymaps
