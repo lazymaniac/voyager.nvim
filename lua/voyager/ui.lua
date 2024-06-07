@@ -57,8 +57,6 @@ local function focus_outline()
   vim.api.nvim_set_current_win(layout_components.outline.winid)
 end
 
-local function open_location_under_cursor() end
-
 local function build_outline_content()
   local locations = LocationsStack.get_all()
   for index, lsp_result in ipairs(locations) do
@@ -158,17 +156,14 @@ local function set_outline_popup_keymaps(bufnr)
     local location = line_to_location[selected_line].location
     local uri = location.uri or location.targetUri
     if uri == nil then
-      return false
+      return
     end
     local dest_bufnr = vim.uri_to_bufnr(uri)
     vim.api.nvim_win_set_buf(layout_components.workspace.winid, dest_bufnr)
     local range = location.range or location.targetSelectionRange
     if range then
-      -- Jump to new location (adjusting for encoding of characters)
-      local row = range.start.line
-      local col = range.start.character
       vim.api.nvim_set_current_win(layout_components.workspace.winid)
-      vim.api.nvim_win_set_cursor(layout_components.workspace.winid, { row + 1, col })
+      vim.api.nvim_win_set_cursor(layout_components.workspace.winid, { range.start.line + 1, range.start.character })
       vim.api.nvim_win_call(layout_components.outline.winid, function()
         -- Open folds under the cursor
         vim.cmd("normal! zv")
@@ -257,7 +252,6 @@ UI.open_voyager = function(user_config)
   layout = NuiLayout(
     {
       position = "50%",
-      border = "none",
       size = {
         width = vim.api.nvim_win_get_width(0) - 2,
         height = vim.api.nvim_win_get_height(0) - 1,

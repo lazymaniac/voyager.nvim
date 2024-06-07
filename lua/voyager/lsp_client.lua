@@ -28,7 +28,7 @@ local function call_lsp_method(method, callback)
   local position_params = vim.lsp.util.make_position_params()
 
   position_params.context = {
-    includeDeclaration = false,
+    includeDeclaration = true,
   }
 
   coroutine.resume(coroutine.create(function()
