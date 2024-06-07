@@ -8,6 +8,9 @@ local NuiText = require("nui.text")
 local LspClient = require("voyager.lsp_client")
 local Keymaps = require("voyager.keymaps")
 local LocationsStack = require("voyager.locations_stack")
+local LspUtils = require("voyager.utils.lsp_utils")
+local UiUtils = require("voyager.utils.ui_utils")
+local LuaUtils = require("voyager.utils.lua_utils")
 
 ---Reference to nui Layout object
 local layout = {}
@@ -25,31 +28,6 @@ local icons = {
   selected = " 󱔲 ",
   select = " 󰾙 ",
 }
-
-local function get_border_config(style, top_text, top_align)
-  return {
-    style = style,
-    text = {
-      top = top_text,
-      top_align = top_align,
-    },
-  }
-end
-
-local function get_buf_options(modifiable, readonly)
-  return {
-    modifiable = modifiable,
-    readonly = readonly,
-  }
-end
-
-local function get_win_options(winblend, winhighlight, number)
-  return {
-    winblend = winblend,
-    winhighlight = winhighlight,
-    number = number,
-  }
-end
 
 ---Close layout, free up resources, and restore global mappings
 local function close_and_cleanup()
@@ -75,38 +53,19 @@ local function setup_close_event(nui_popup)
   end, { once = true })
 end
 
-local function pretty_lsp_method(lsp_method)
-  if lsp_method == "textDocument/references" then
-    return "Ref"
-  elseif lsp_method == "textDocument/definition" then
-    return "Def"
-  elseif lsp_method == "textDocument/implementation" then
-    return "Impl"
-  elseif lsp_method == "textDocument/typeDefinition" then
-    return "Type"
-  elseif lsp_method == "callHierarchy/incomingCalls" then
-    return "Inc"
-  elseif lsp_method == "callHierarchy/outgoingCalls" then
-    return "Out"
-  end
-end
-
 local function redraw_outline()
   -- TODO: pull latest data from locations stack and redraw outline state
   local locations = LocationsStack.get_all()
   for index, lsp_result in ipairs(locations) do
-    local method = pretty_lsp_method(lsp_result.method)
-    local parent_text = " "
-      .. index
-      .. ". "
-      .. method
-      .. ": ["
-      .. lsp_result.parent.cword_symbol
-      .. "]"
-      .. " @ "
-      .. lsp_result.parent.cfile
-      .. ":"
-      .. lsp_result.parent.line_num
+    local method = LspUtils.pretty_lsp_method(lsp_result.method)
+    local parent_text = string.format(
+      "%d. %s: [%s] @ %s:%d",
+      index,
+      method,
+      lsp_result.parent.cword_symbol,
+      lsp_result.parent.cfile,
+      lsp_result.parent.line_num
+    )
 
     line_to_location[parent_text] = {
       line = NuiLine({
@@ -118,9 +77,10 @@ local function redraw_outline()
     for _, lsp_client in pairs(lsp_result.locations) do
       for i, location in ipairs(lsp_client.result) do
         local uri = location.targetUri or location.uri
-        if uri == nil then
+        if not uri then
           return
         end
+
         local buf = vim.uri_to_bufnr(uri)
         if not vim.api.nvim_buf_is_loaded(buf) then
           vim.fn.bufload(buf)
@@ -128,14 +88,13 @@ local function redraw_outline()
         local range = location.targetRange or location.range
         -- local contents = vim.api.nvim_buf_get_lines(buf, range.start.line, range["end"].line + 1, false)
 
-        local location_text = " "
-          .. index
-          .. "."
-          .. i
-          .. ". "
-          .. string.gsub(uri, "^%s", ""):gsub(vim.fn.getcwd(), ""):gsub("file://", "")
-          .. ":"
-          .. range.start.line
+        local location_text = string.format(
+          "%d.%d. %s:%d",
+          index,
+          i,
+          uri:gsub("^%s", ""):gsub(vim.fn.getcwd(), ""):gsub("file://", ""),
+          range.start.line
+        )
 
         line_to_location[location_text] = {
           line = NuiLine({
@@ -147,21 +106,14 @@ local function redraw_outline()
     end
   end
 
-  vim.api.nvim_set_option_value("modifiable", true, { buf = layout_components.outline.bufnr })
-  vim.api.nvim_set_option_value("readonly", false, { buf = layout_components.outline.bufnr })
+  local outline_bufnr = layout_components.outline.bufnr
+  UiUtils.unlock_buffer(outline_bufnr)
   local i = 1
-  local keys = {}
-  for key in pairs(line_to_location) do
-    table.insert(keys, key)
-  end
-  table.sort(keys)
-  for _, k in ipairs(keys) do
-    vim.print(line_to_location[k])
-    line_to_location[k].line:render(layout_components.outline.bufnr, -1, i)
+  for _, k in ipairs(LuaUtils.table_sort_keys(line_to_location)) do
+    line_to_location[k].line:render(outline_bufnr, -1, i)
     i = i + 1
   end
-  vim.api.nvim_set_option_value("modifiable", false, { buf = layout_components.outline.bufnr })
-  vim.api.nvim_set_option_value("readonly", true, { buf = layout_components.outline.bufnr })
+  UiUtils.lock_buffer(outline_bufnr)
 end
 
 local function set_workspace_popup_keymaps(bufnr)
@@ -221,9 +173,9 @@ local function init_workspace_popup(currbuf)
     root_filename = " .." .. string.gsub(root_filename, vim.fn.getcwd(), "")
 
     layout_components.workspace = NuiPopup({
-      border = get_border_config("rounded", icons.current .. " :" .. root_filename, "center"),
-      buf_options = get_buf_options(true, false),
-      win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", true),
+      border = UiUtils.get_border_config("rounded", icons.current .. " :" .. root_filename, "center"),
+      buf_options = UiUtils.get_buf_options(true, false),
+      win_options = UiUtils.get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", true),
       enter = true,
       focusable = true,
       zindex = 50,
@@ -240,9 +192,9 @@ end
 local function init_outline_popup(currbuf)
   if not layout_components.outline then
     layout_components.outline = NuiPopup({
-      border = get_border_config("rounded", icons.outline .. " Outline ", "center"),
-      buf_options = get_buf_options(false, true),
-      win_options = get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
+      border = UiUtils.get_border_config("rounded", icons.outline .. " Outline ", "center"),
+      buf_options = UiUtils.get_buf_options(false, true),
+      win_options = UiUtils.get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", false),
       enter = false,
       focusable = true,
       zindex = 50,
