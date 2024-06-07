@@ -53,13 +53,12 @@ local function setup_close_event(nui_popup)
   end, { once = true })
 end
 
-local function redraw_outline()
-  -- TODO: pull latest data from locations stack and redraw outline state
+local function build_outline_content()
   local locations = LocationsStack.get_all()
   for index, lsp_result in ipairs(locations) do
     local method = LspUtils.pretty_lsp_method(lsp_result.method)
-    local parent_text = string.format(
-      "%d. %s: [%s] @ %s:%d",
+    local origin_text = string.format(
+      " %d. %s: [%s] @ %s:%d",
       index,
       method,
       lsp_result.parent.cword_symbol,
@@ -67,9 +66,9 @@ local function redraw_outline()
       lsp_result.parent.line_num
     )
 
-    line_to_location[parent_text] = {
+    line_to_location[origin_text] = {
       line = NuiLine({
-        NuiText(parent_text, "@attribute"),
+        NuiText(origin_text, "@attribute"),
       }),
       location = nil,
     }
@@ -89,7 +88,7 @@ local function redraw_outline()
         -- local contents = vim.api.nvim_buf_get_lines(buf, range.start.line, range["end"].line + 1, false)
 
         local location_text = string.format(
-          "%d.%d. %s:%d",
+          " %d.%d. %s:%d",
           index,
           i,
           uri:gsub("^%s", ""):gsub(vim.fn.getcwd(), ""):gsub("file://", ""),
@@ -105,7 +104,9 @@ local function redraw_outline()
       end
     end
   end
+end
 
+local function render_outline_content()
   local outline_bufnr = layout_components.outline.bufnr
   UiUtils.unlock_buffer(outline_bufnr)
   local i = 1
@@ -114,6 +115,11 @@ local function redraw_outline()
     i = i + 1
   end
   UiUtils.lock_buffer(outline_bufnr)
+end
+
+local function redraw_outline()
+  build_outline_content()
+  render_outline_content()
 end
 
 local function set_workspace_popup_keymaps(bufnr)
