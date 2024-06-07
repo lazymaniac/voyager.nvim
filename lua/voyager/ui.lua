@@ -15,6 +15,9 @@ local layout = {}
 ---Table for layout components
 local layout_components = {}
 
+---Holds current state of outline
+local line_to_location = {}
+
 local icons = {
   current = "  ",
   outline = " 󰯓 ",
@@ -91,69 +94,74 @@ end
 local function redraw_outline()
   -- TODO: pull latest data from locations stack and redraw outline state
   local locations = LocationsStack.get_all()
-  local lines = {}
-  for _, lsp_result in ipairs(locations) do
+  for index, lsp_result in ipairs(locations) do
     local method = pretty_lsp_method(lsp_result.method)
-    table.insert(
-      lines,
-      NuiLine({
-        NuiText(
-          icons.root
-            .. " "
-            .. method
-            .. ": ["
-            .. lsp_result.parent.cword_symbol
-            .. "]"
-            .. " @ "
-            .. lsp_result.parent.cfile
-            .. ":"
-            .. lsp_result.parent.line_num,
-          "@attribute"
-        ),
-      })
-    )
+    local parent_text = " "
+      .. index
+      .. ". "
+      .. method
+      .. ": ["
+      .. lsp_result.parent.cword_symbol
+      .. "]"
+      .. " @ "
+      .. lsp_result.parent.cfile
+      .. ":"
+      .. lsp_result.parent.line_num
 
-    table.insert(lines, NuiLine({ NuiText(" --- ") }))
+    line_to_location[parent_text] = {
+      line = NuiLine({
+        NuiText(parent_text, "@attribute"),
+      }),
+      location = nil,
+    }
 
-    for client_id, lsp_client in pairs(lsp_result.locations) do
-      local items =
-        vim.lsp.util.locations_to_items(lsp_client.result, vim.lsp.get_clients({ burnr = 0 })[client_id].offset_encoding)
-      vim.print(items)
-      for _, item in ipairs(items) do
-        vim.print("item", item)
-        table.insert(
-          lines,
-          NuiLine({
-            NuiText("location"),
-          })
-        )
+    for _, lsp_client in pairs(lsp_result.locations) do
+      for i, location in ipairs(lsp_client.result) do
+        local uri = location.targetUri or location.uri
+        if uri == nil then
+          return
+        end
+        local buf = vim.uri_to_bufnr(uri)
+        if not vim.api.nvim_buf_is_loaded(buf) then
+          vim.fn.bufload(buf)
+        end
+        local range = location.targetRange or location.range
+        -- local contents = vim.api.nvim_buf_get_lines(buf, range.start.line, range["end"].line + 1, false)
+
+        local location_text = " "
+          .. index
+          .. "."
+          .. i
+          .. ". "
+          .. string.gsub(uri, "^%s", ""):gsub(vim.fn.getcwd(), ""):gsub("file://", "")
+          .. ":"
+          .. range.start.line
+
+        line_to_location[location_text] = {
+          line = NuiLine({
+            NuiText(location_text),
+          }),
+          location = location,
+        }
       end
     end
   end
 
   vim.api.nvim_set_option_value("modifiable", true, { buf = layout_components.outline.bufnr })
   vim.api.nvim_set_option_value("readonly", false, { buf = layout_components.outline.bufnr })
-  for i, line in ipairs(lines) do
-    line:render(layout_components.outline.bufnr, -1, i + 1)
+  local i = 1
+  local keys = {}
+  for key in pairs(line_to_location) do
+    table.insert(keys, key)
+  end
+  table.sort(keys)
+  for _, k in ipairs(keys) do
+    vim.print(line_to_location[k])
+    line_to_location[k].line:render(layout_components.outline.bufnr, -1, i)
+    i = i + 1
   end
   vim.api.nvim_set_option_value("modifiable", false, { buf = layout_components.outline.bufnr })
   vim.api.nvim_set_option_value("readonly", true, { buf = layout_components.outline.bufnr })
-  -- for _, client in pairs(locations) do
-  --   local items = vim.lsp.util.locations_to_items(client.result, vim.lsp.get_clients({ burnr = 0 })[1].offset_encoding)
-  --   for _, location in pairs(client.result) do
-  --     local uri = location.targetUri or location.uri
-  --     if uri == nil then
-  --       return
-  --     end
-  --     local buf = vim.uri_to_bufnr(uri)
-  --     if not vim.api.nvim_buf_is_loaded(buf) then
-  --       vim.fn.bufload(buf)
-  --     end
-  --     local range = location.targetRange or location.range
-  --     local contents = vim.api.nvim_buf_get_lines(buf, range.start.line, range["end"].line + 1, false)
-  --     vim.print("contents", contents)
-  --   end
-  -- end
 end
 
 local function set_workspace_popup_keymaps(bufnr)
