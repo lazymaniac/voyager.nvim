@@ -57,9 +57,7 @@ local function focus_outline()
   vim.api.nvim_set_current_win(layout_components.outline.winid)
 end
 
-local function open_location_under_cursor()
-
-end
+local function open_location_under_cursor() end
 
 local function build_outline_content()
   local locations = LocationsStack.get_all()
@@ -71,7 +69,7 @@ local function build_outline_content()
       method,
       lsp_result.parent.cword_symbol,
       lsp_result.parent.cfile,
-      lsp_result.parent.line_num
+      lsp_result.parent.line_num + 1
     )
 
     line_to_location[origin_text] = {
@@ -100,7 +98,7 @@ local function build_outline_content()
           index,
           i,
           uri:gsub("^%s", ""):gsub(vim.fn.getcwd(), ""):gsub("file://", ""),
-          range.start.line
+          range.start.line + 1
         )
 
         line_to_location[location_text] = {
@@ -170,15 +168,35 @@ local function set_outline_popup_keymaps(bufnr)
   set_close_keyamps(bufnr)
 
   local navigation_handler = function()
-    vim.print(vim.api.nvim_get_current_line())
-    -- TODO: open selected location in workspace
-    vim.api.nvim_set_current_win(layout_components.workspace.winid)
+    local line_position = vim.api.nvim_win_get_cursor(layout_components.outline.winid)
+    local selected_line =
+      vim.api.nvim_buf_get_lines(layout_components.outline.bufnr, line_position[1] - 1, line_position[1], true)[1]
+    local location = line_to_location[selected_line].location
+    local uri = location.uri or location.targetUri
+    if uri == nil then
+      return false
+    end
+    local dest_bufnr = vim.uri_to_bufnr(uri)
+    vim.api.nvim_win_set_buf(layout_components.workspace.winid, dest_bufnr)
+    local range = location.range or location.targetSelectionRange
+    if range then
+      -- Jump to new location (adjusting for encoding of characters)
+      local row = range.start.line
+      local col = range.start.character
+      vim.api.nvim_set_current_win(layout_components.workspace.winid)
+      vim.api.nvim_win_set_cursor(layout_components.workspace.winid, { row + 1, col })
+      vim.api.nvim_win_call(layout_components.outline.winid, function()
+        -- Open folds under the cursor
+        vim.cmd("normal! zv")
+      end)
+    end
   end
 
   -- stylua: ignore
   vim.keymap.set( "n", "o", navigation_handler, { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
   -- stylua: ignore
   vim.keymap.set( "n", "<CR>", navigation_handler, { buffer = bufnr, noremap = true, silent = true, desc = "Open Item in Workspace" })
+
   -- TODO: add keymaps to manage outline items like removing last added locations and selecting other parent or saving current stack locations.
 end
 
@@ -192,7 +210,12 @@ local function init_workspace_popup(currbuf)
     layout_components.workspace = NuiPopup({
       border = UiUtils.get_border_config("rounded", icons.current .. " :" .. root_filename, "center"),
       buf_options = UiUtils.get_buf_options(true, false),
-      win_options = UiUtils.get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", vim.o.number, vim.o.relativenumber),
+      win_options = UiUtils.get_win_options(
+        0,
+        "Normal:Normal,FloatBorder:FloatBorder",
+        vim.o.number,
+        vim.o.relativenumber
+      ),
       enter = true,
       focusable = true,
       zindex = 50,
