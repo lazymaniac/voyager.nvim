@@ -148,22 +148,6 @@ local function set_workspace_popup_keymaps(bufnr)
   end
 end
 
-local function set_line_highlight(bufnr, ns_id, lnum, hl_group)
-  local buf = vim.api.nvim_get_current_buf()
-  if bufnr ~= buf and bufnr ~= -1 then
-    return vim.notify("Buffer does not exist.")
-  end
-
-  -- Clear any existing highlighting on the line to avoid duplicates.
-  vim.api.nvim_buf_clear_namespace(bufnr, ns_id, lnum, lnum)
-  vim.api.nvim_buf_add_highlight(bufnr, ns_id, hl_group, lnum, 0, -1)
-end
-
--- Define a local function to create a new highlight group
-local function create_voyager_namespace()
-  vim.api.nvim_create_namespace("Voyager")
-end
-
 local function set_outline_popup_keymaps(bufnr)
   set_close_keyamps(bufnr)
 
