@@ -53,6 +53,14 @@ local function setup_close_event(nui_popup)
   end, { once = true })
 end
 
+local function focus_outline()
+  vim.api.nvim_set_current_win(layout_components.outline.winid)
+end
+
+local function open_location_under_cursor()
+
+end
+
 local function build_outline_content()
   local locations = LocationsStack.get_all()
   for index, lsp_result in ipairs(locations) do
@@ -115,6 +123,9 @@ local function render_outline_content()
     i = i + 1
   end
   UiUtils.lock_buffer(outline_bufnr)
+  if i > 1 then
+    focus_outline()
+  end
 end
 
 local function redraw_outline()
@@ -181,7 +192,7 @@ local function init_workspace_popup(currbuf)
     layout_components.workspace = NuiPopup({
       border = UiUtils.get_border_config("rounded", icons.current .. " :" .. root_filename, "center"),
       buf_options = UiUtils.get_buf_options(true, false),
-      win_options = UiUtils.get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", true),
+      win_options = UiUtils.get_win_options(0, "Normal:Normal,FloatBorder:FloatBorder", vim.o.number, vim.o.relativenumber),
       enter = true,
       focusable = true,
       zindex = 50,
@@ -252,6 +263,7 @@ UI.open_voyager = function(user_config)
   )
 
   layout:mount()
+  redraw_outline()
 end
 
 ---Unmound layout and cleanup resources

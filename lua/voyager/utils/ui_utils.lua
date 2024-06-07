@@ -29,11 +29,12 @@ UiUtils.get_buf_options = function(modifiable, readonly)
   }
 end
 
-UiUtils.get_win_options = function(winblend, winhighlight, number)
+UiUtils.get_win_options = function(winblend, winhighlight, number, relativenumber)
   return {
     winblend = winblend,
     winhighlight = winhighlight,
     number = number,
+    relativenumber = relativenumber
   }
 end
 
