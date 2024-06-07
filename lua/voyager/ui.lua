@@ -154,8 +154,11 @@ local function set_outline_popup_keymaps(bufnr)
     local selected_line =
       vim.api.nvim_buf_get_lines(layout_components.outline.bufnr, line_position[1] - 1, line_position[1], true)[1]
     local location = line_to_location[selected_line].location
+    if not location then
+      return
+    end
     local uri = location.uri or location.targetUri
-    if uri == nil then
+    if not uri then
       return
     end
     local dest_bufnr = vim.uri_to_bufnr(uri)
