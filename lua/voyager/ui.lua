@@ -225,6 +225,19 @@ local function init_outline_popup(currbuf)
     setup_close_event(layout_components.outline)
 
     set_outline_popup_keymaps(layout_components.outline.bufnr)
+    vim.api.nvim_create_autocmd({ "CursorMoved" }, {
+      buffer = layout_components.outline.bufnr,
+      callback = function()
+        local line_position = vim.api.nvim_win_get_cursor(layout_components.outline.winid)
+        local selected_line =
+          vim.api.nvim_buf_get_lines(layout_components.outline.bufnr, line_position[1] - 1, line_position[1], true)[1]
+        local location = line_to_location[selected_line].location
+        if not location then
+          return
+        end
+        vim.lsp.util.preview_location(location, {zindex = 51})
+      end,
+    })
   end
 end
 
