@@ -11,16 +11,10 @@ local lsp_actions = {
   "outgoing_calls",
 }
 
-local function is_response_empty(results)
-  if vim.tbl_isempty(results) then
-    return true
-  end
-  for _, res in pairs(results) do
-    if res.result and #res.result > 0 then
-      return false
-    end
-  end
-  return true
+local function are_results_empty(results)
+  return vim.tbl_isempty(results) or not next(vim.tbl_filter(function(result_item)
+    return result_item.result and #result_item.result > 0
+  end, results))
 end
 
 local function call_lsp_method(method, callback)
@@ -42,7 +36,7 @@ local function call_lsp_method(method, callback)
         return
       end
 
-      if results and not is_response_empty(results) then
+      if results and not are_results_empty(results) then
         -- Build parent dtails
         local parent = {
           cword_symbol = vim.fn.expand("<cword>"),
