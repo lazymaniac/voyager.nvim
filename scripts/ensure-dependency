@@ -1,0 +1,64 @@
+#!/bin/sh
+set -eu
+
+mode=$1
+name=$2
+url=$3
+revision=$4
+target=$5
+
+current_revision() {
+  git -C "$target" rev-parse HEAD 2>/dev/null || true
+}
+
+dependency_is_clean() {
+  test -z "$(git -C "$target" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
+}
+
+dependency_is_exact() {
+  test -d "$target/.git" &&
+    test "$(git -C "$target" remote get-url origin 2>/dev/null || true)" = "$url" &&
+    test "$(current_revision)" = "$revision" &&
+    dependency_is_clean
+}
+
+if [ "$mode" = "check" ]; then
+  if ! dependency_is_exact; then
+    echo "$name is missing, dirty, from the wrong origin, or not pinned to $revision; run 'make deps'" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+if [ "$mode" != "install" ]; then
+  echo "usage: ensure-dependency install|check NAME URL REVISION TARGET" >&2
+  exit 2
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+case "$target" in
+  "$repo_root"/.deps/*) ;;
+  *)
+    echo "refusing to modify dependency outside $repo_root/.deps: $target" >&2
+    exit 2
+    ;;
+esac
+
+if [ ! -d "$target/.git" ]; then
+  if [ -e "$target" ]; then
+    echo "$target exists but is not a dependency checkout; remove it manually" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$target")"
+  git clone --filter=blob:none --no-checkout "$url" "$target"
+fi
+
+if [ "$(git -C "$target" remote get-url origin 2>/dev/null || true)" != "$url" ]; then
+  echo "$name has an unexpected origin; remove $target manually" >&2
+  exit 1
+fi
+
+git -C "$target" fetch --depth=1 origin "$revision"
+git -C "$target" checkout --detach --force "$revision"
+git -C "$target" clean -ffdx
+dependency_is_exact

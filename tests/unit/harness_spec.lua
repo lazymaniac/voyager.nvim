@@ -1,0 +1,6 @@
+describe("Voyager test runtime", function()
+  it("loads Voyager and its pinned NUI dependency", function()
+    assert.is_table(require("voyager"))
+    assert.is_table(require("nui.popup"))
+  end)
+end)
