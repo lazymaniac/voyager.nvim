@@ -1,12 +1,16 @@
 NVIM ?= nvim
 STYLUA ?= stylua
+CONTAINER ?= docker
 ROOT := $(abspath .)
 DEPS := $(ROOT)/.deps
 PLENARY := $(DEPS)/plenary.nvim
 NUI := $(DEPS)/nui.nvim
+PANVIMDOC := $(DEPS)/panvimdoc
 PLENARY_REV := 50012918b2fc8357b87cff2a7f7f0446e47da174
 NUI_REV := f535005e6ad1016383f24e39559833759453564e
+PANVIMDOC_REV := 662fb20304d20c539fb48a0bda628f5165507de7
 STYLUA_VERSION := 2.5.2
+DOC_DATE := 2026 August 01
 TEST_ENV := env VOYAGER_TEST_ROOT=$(ROOT) NVIM_APPNAME=voyager-test XDG_CONFIG_HOME=$(ROOT)/.tmp/test/config XDG_CACHE_HOME=$(ROOT)/.tmp/test/cache XDG_STATE_HOME=$(ROOT)/.tmp/test/state XDG_DATA_HOME=$(ROOT)/.tmp/test/data
 TEST_NVIM := $(TEST_ENV) $(NVIM) --headless --noplugin -i NONE -u tests/minimal_init.lua
 E2E_PROJECT := $(ROOT)/.tmp/e2e-project
@@ -21,15 +25,17 @@ else
 UNIT_COMMAND := lua require('tests.run_file')('$(TEST_FILE)')
 endif
 
-.PHONY: deps check-deps check-stylua test test-unit test-e2e format format-check
+.PHONY: deps check-deps check-stylua test test-unit test-e2e format format-check docs help-check
 
 deps:
 	@scripts/ensure-dependency install plenary.nvim https://github.com/nvim-lua/plenary.nvim.git $(PLENARY_REV) $(PLENARY)
 	@scripts/ensure-dependency install nui.nvim https://github.com/MunifTanjim/nui.nvim.git $(NUI_REV) $(NUI)
+	@scripts/ensure-dependency install panvimdoc https://github.com/kdheepak/panvimdoc.git $(PANVIMDOC_REV) $(PANVIMDOC)
 
 check-deps:
 	@scripts/ensure-dependency check plenary.nvim https://github.com/nvim-lua/plenary.nvim.git $(PLENARY_REV) $(PLENARY)
 	@scripts/ensure-dependency check nui.nvim https://github.com/MunifTanjim/nui.nvim.git $(NUI_REV) $(NUI)
+	@scripts/ensure-dependency check panvimdoc https://github.com/kdheepak/panvimdoc.git $(PANVIMDOC_REV) $(PANVIMDOC)
 
 test: test-unit test-e2e
 
@@ -55,3 +61,12 @@ format: check-stylua
 
 format-check: check-stylua
 	@$(STYLUA) --check lua plugin tests
+
+docs: check-deps
+	@$(CONTAINER) build -t voyager-panvimdoc:4.0.1 $(PANVIMDOC)
+	@$(CONTAINER) run --rm -v $(ROOT):/work -w /work voyager-panvimdoc:4.0.1 --project-name voyager --input-file README.md --vim-version "Neovim 0.12.4" --toc true --description "Persistent branching LSP navigation flows" --title-date-pattern "$(DOC_DATE)" --dedup-subheadings true --demojify true --treesitter true --ignore-rawblocks true --doc-mapping false --doc-mapping-project-name true --shift-heading-level-by 0 --increment-heading-level-by 0
+
+help-check:
+	@$(MAKE) docs
+	@$(NVIM) --headless -u NONE -i NONE -c "helptags doc" -c "qa!"
+	@git diff --exit-code -- doc/voyager.txt doc/tags
