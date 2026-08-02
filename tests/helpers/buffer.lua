@@ -110,10 +110,17 @@ function M.new(spec)
       if text == nil or byte_col > #text then
         return nil
       end
-      local left = text:sub(1, byte_col):match("[%w_]+$") or ""
-      local right = text:sub(byte_col + 1):match("^[%w_]+") or ""
-      local word = left .. right
-      return word ~= "" and word or nil
+      local search = 1
+      while search <= #text do
+        local start_byte, end_byte = text:find("[%w_]+", search)
+        if not start_byte then
+          return nil
+        end
+        if start_byte - 1 <= byte_col and byte_col < end_byte then
+          return text:sub(start_byte, end_byte)
+        end
+        search = end_byte + 1
+      end
     end,
     random = function(length)
       return string.rep("\1", length)
