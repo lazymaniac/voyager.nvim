@@ -15,6 +15,15 @@ local function local_map(bufnr, normalized_lhs)
   end
 end
 
+local function global_map(normalized_lhs)
+  for _, map in ipairs(vim.api.nvim_get_keymap("n")) do
+    local lhs_ok, lhs = pcall(normalized, map.lhs)
+    if (lhs_ok and lhs == normalized_lhs) or map.lhsraw == normalized_lhs or map.lhsrawalt == normalized_lhs then
+      return map
+    end
+  end
+end
+
 local function restore_map(bufnr, map)
   local rhs = map.callback or map.rhs
   vim.keymap.set("n", map.lhs, rhs, {
@@ -52,11 +61,13 @@ function Registry:apply_buffer(bufnr, generation, mappings, wrapper_factory)
       local key = record_key(generation, bufnr, normalized_lhs)
       if not self._records[key] then
         local original = local_map(bufnr, normalized_lhs)
+        local effective = original or global_map(normalized_lhs)
         local wrapper = wrapper_factory(action_name)
         vim.keymap.set("n", lhs, wrapper, {
           buffer = bufnr,
           desc = "Voyager: " .. action_name,
           silent = true,
+          nowait = effective ~= nil and effective.nowait == 1,
         })
         self._records[key] = {
           generation = generation,

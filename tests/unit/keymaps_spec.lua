@@ -138,4 +138,31 @@ describe("Voyager keymaps", function()
     assert.is_false(registry:is_installed(live, "gd"))
     vim.api.nvim_buf_delete(live, { force = true })
   end)
+
+  it("inherits nowait from the effective global mapping", function()
+    local buffer = vim.api.nvim_create_buf(true, false)
+    local original = function() end
+    vim.keymap.set("n", "gr", original, { nowait = true })
+
+    local registry = Keymaps.new({ notify = function() end })
+    registry:apply_buffer(buffer, 12, { references = "gr" }, function()
+      return function() end
+    end)
+
+    local wrapped = vim.api.nvim_buf_call(buffer, function()
+      return vim.fn.maparg("gr", "n", false, true)
+    end)
+    assert.equals(1, wrapped.buffer)
+    assert.equals(1, wrapped.nowait)
+
+    registry:restore_all(12)
+    local revealed = vim.api.nvim_buf_call(buffer, function()
+      return vim.fn.maparg("gr", "n", false, true)
+    end)
+    assert.equals(original, revealed.callback)
+    assert.equals(1, revealed.nowait)
+
+    vim.keymap.del("n", "gr")
+    vim.api.nvim_buf_delete(buffer, { force = true })
+  end)
 end)
