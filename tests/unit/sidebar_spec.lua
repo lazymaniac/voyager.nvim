@@ -1,3 +1,5 @@
+local Config = require("voyager.config")
+local FakePopup = require("tests.helpers.fake_popup")
 local Fixtures = require("tests.helpers.flow")
 local Locator = require("voyager.locator")
 local Sidebar = require("voyager.sidebar")
@@ -116,5 +118,247 @@ describe("Voyager sidebar projection", function()
     assert.matches("^%s+✎", note.text)
     assert.is_true(vim.fn.strdisplaywidth(note.text) <= 20)
     assert.matches("…$", note.text)
+  end)
+end)
+
+describe("Voyager sidebar popup", function()
+  local function ui_state(overrides)
+    return vim.tbl_extend("force", {
+      columns = 120,
+      lines = 40,
+      tabline_rows = 1,
+      statusline_rows = 1,
+      cmdheight = 1,
+    }, overrides or {})
+  end
+
+  local function noop_handlers(overrides)
+    local noop = function() end
+    return vim.tbl_extend("force", {
+      activate = noop,
+      note = noop,
+      save = noop,
+      load = noop,
+      toggle = noop,
+      close = noop,
+      external_close = noop,
+    }, overrides or {})
+  end
+
+  it("computes outer geometry for both sides and editor chrome", function()
+    assert.same({ row = 1, col = 78, width = 42, height = 37 }, Sidebar.compute_geometry(
+      { side = "right", width = 42, border = "rounded" },
+      ui_state()
+    ))
+    assert.same({ row = 2, col = 0, width = 28, height = 24 }, Sidebar.compute_geometry(
+      { side = "left", width = 42, border = "rounded" },
+      ui_state({ columns = 30, lines = 30, tabline_rows = 2, statusline_rows = 2, cmdheight = 2 })
+    ))
+
+    for width = 20, 23 do
+      local geometry = assert(Sidebar.compute_geometry(
+        { side = "right", width = width, border = "rounded" },
+        ui_state({ columns = 30, lines = 12, tabline_rows = 0, statusline_rows = 1, cmdheight = 1 })
+      ))
+      assert.equals(width, geometry.width)
+      assert.equals(30 - width, geometry.col)
+    end
+  end)
+
+  it("rejects editor grids and usable heights below their minimums", function()
+    local geometry, reason = Sidebar.compute_geometry(
+      { side = "right", width = 20, border = "rounded" },
+      ui_state({ columns = 23, lines = 12, tabline_rows = 0, statusline_rows = 1, cmdheight = 1 })
+    )
+    assert.is_nil(geometry)
+    assert.equals("editor must be at least 24 columns wide", reason)
+
+    geometry, reason = Sidebar.compute_geometry(
+      { side = "right", width = 20, border = "rounded" },
+      ui_state({ columns = 24, lines = 6, tabline_rows = 1, statusline_rows = 1, cmdheight = 1 })
+    )
+    assert.is_nil(geometry)
+    assert.equals("editor must have at least 4 usable rows", reason)
+
+    assert.same({ row = 1, col = 4, width = 20, height = 4 }, Sidebar.compute_geometry(
+      { side = "right", width = 20, border = "rounded" },
+      ui_state({ columns = 24, lines = 7, tabline_rows = 1, statusline_rows = 1, cmdheight = 1 })
+    ))
+  end)
+
+  it("owns one scratch popup and delegates buffer-local typed actions", function()
+    local fake = FakePopup.new()
+    local calls = {}
+    local config = Config.resolve()
+    local sidebar = Sidebar.new({
+      sidebar = config.sidebar,
+      keymaps = config.sidebar_keymaps,
+      handlers = noop_handlers({
+        activate = function(row) calls.activate = row end,
+        note = function(row) calls.note = row end,
+        save = function() calls.save = true end,
+        load = function() calls.load = true end,
+        toggle = function(row) calls.toggle = row end,
+        close = function() calls.close = true end,
+      }),
+      popup_factory = fake.factory,
+      ui_state = ui_state,
+      notify = function() end,
+    })
+
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+    assert.is_true(sidebar:is_mounted())
+    assert.equals(1, #fake.factory_calls)
+    assert.same({ row = 1, col = 78 }, fake.factory_calls[1].position)
+    assert.same({ width = 40, height = 35 }, fake.factory_calls[1].size)
+    assert.equals("nofile", vim.bo[fake.bufnr].buftype)
+    assert.equals(0, fake.focus_count)
+
+    local flow = Fixtures.branched_flow()
+    sidebar:render(flow, { dirty = false, request_count = 0 })
+    assert.equals(flow.root.id, sidebar:selected_row().owner_id)
+    assert.is_true(sidebar:owns_window(fake.winid))
+
+    fake.press("<CR>")
+    fake.press("n")
+    fake.press("za")
+    fake.press("s")
+    fake.press("L")
+    fake.press("q")
+    assert.equals("location", calls.activate.kind)
+    assert.equals(flow.root.id, calls.note.owner_id)
+    assert.equals(flow.root.id, calls.toggle.owner_id)
+    assert.is_true(calls.save)
+    assert.is_true(calls.load)
+    assert.is_true(calls.close)
+
+    sidebar:unmount({ owned = true })
+    assert.is_false(vim.api.nvim_buf_is_valid(fake.bufnr))
+  end)
+
+  it("preserves selection and focus across renders and collapsed fallback", function()
+    local fake = FakePopup.new()
+    local sidebar = Sidebar.new({
+      sidebar = { side = "right", width = 42, border = "rounded" },
+      keymaps = {},
+      handlers = noop_handlers(),
+      popup_factory = fake.factory,
+      ui_state = ui_state,
+      notify = function() end,
+    })
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+
+    local flow = Fixtures.branched_flow()
+    local action = flow.root.actions[1]
+    local selected = action.results[2]
+    sidebar:render(flow, { dirty = false, request_count = 0 })
+    local rows = Sidebar.project(flow, 40, {})
+    local _, selected_index = row_for(rows, "location", selected.id)
+    fake.set_cursor_line(selected_index + 1)
+    local source_win = vim.api.nvim_get_current_win()
+
+    sidebar:render(flow, { dirty = true, request_count = 1 })
+    assert.equals(selected.id, sidebar:selected_row().owner_id)
+    assert.equals(source_win, vim.api.nvim_get_current_win())
+    assert.equals(0, fake.focus_count)
+
+    assert.is_true(flow:toggle(action.id))
+    sidebar:render(flow, { dirty = true, request_count = 0 })
+    assert.equals("action", sidebar:selected_row().kind)
+    assert.equals(action.id, sidebar:selected_row().owner_id)
+    assert.equals(source_win, vim.api.nvim_get_current_win())
+
+    sidebar:unmount({ owned = true })
+  end)
+
+  it("hides on invalid remount and distinguishes owned from external closes", function()
+    local fake = FakePopup.new()
+    local state = ui_state()
+    local external_closes = 0
+    local sidebar = Sidebar.new({
+      sidebar = { side = "right", width = 20, border = "rounded" },
+      keymaps = {},
+      handlers = noop_handlers({
+        external_close = function() external_closes = external_closes + 1 end,
+      }),
+      popup_factory = fake.factory,
+      ui_state = function() return vim.deepcopy(state) end,
+      notify = function() end,
+    })
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+
+    state.columns = 23
+    local mounted, reason = sidebar:remount({ tabpage = 1, focus = false })
+    assert.is_nil(mounted)
+    assert.equals("editor must be at least 24 columns wide", reason)
+    assert.is_false(sidebar:is_mounted())
+    assert.equals(0, external_closes)
+
+    state.columns = 80
+    assert.is_true(sidebar:remount({ tabpage = 1, focus = false }))
+    assert.is_true(sidebar:is_mounted())
+    assert.equals(0, fake.focus_count)
+    assert.equals(0, external_closes)
+
+    fake.external_close()
+    assert.is_false(sidebar:is_mounted())
+    assert.equals(1, external_closes)
+
+    assert.is_true(sidebar:remount({ tabpage = 1, focus = false }))
+    sidebar:unmount({ owned = true })
+    assert.equals(1, external_closes)
+  end)
+
+  it("mounts only a scratch popup and preserves the source window", function()
+    local source = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(source, vim.fn.tempname() .. ".lua")
+    vim.api.nvim_set_current_buf(source)
+    vim.bo[source].modifiable = true
+    vim.bo[source].readonly = false
+    local source_win = vim.api.nvim_get_current_win()
+    local windows_before = #vim.api.nvim_list_wins()
+    local noop = function() end
+
+    local sidebar = Sidebar.new({
+      sidebar = { side = "right", width = 20, border = "rounded" },
+      keymaps = {
+        jump_or_toggle = false,
+        note = false,
+        save = false,
+        load = false,
+        toggle = false,
+        close = false,
+      },
+      handlers = {
+        activate = noop,
+        note = noop,
+        save = noop,
+        load = noop,
+        toggle = noop,
+        close = noop,
+        external_close = noop,
+      },
+      notify = noop,
+    })
+
+    assert.is_true(sidebar:mount({ tabpage = vim.api.nvim_get_current_tabpage(), focus = false }))
+    assert.equals(source_win, vim.api.nvim_get_current_win())
+    assert.equals(source, vim.api.nvim_win_get_buf(source_win))
+    assert.is_true(vim.bo[source].modifiable)
+    assert.is_false(vim.bo[source].readonly)
+    assert.equals(windows_before + 1, #vim.api.nvim_list_wins())
+
+    local popup_win
+    for _, winid in ipairs(vim.api.nvim_list_wins()) do
+      if sidebar:owns_window(winid) then
+        popup_win = winid
+      end
+    end
+    assert.is_not_nil(popup_win)
+    assert.equals("nofile", vim.bo[vim.api.nvim_win_get_buf(popup_win)].buftype)
+
+    sidebar:unmount({ owned = true })
+    assert.equals(windows_before, #vim.api.nvim_list_wins())
+    vim.api.nvim_buf_delete(source, { force = true })
   end)
 end)

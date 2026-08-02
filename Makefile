@@ -13,7 +13,7 @@ TEST_NVIM := $(TEST_ENV) $(NVIM) --headless --noplugin -i NONE -u tests/minimal_
 ifeq ($(strip $(TEST_FILE)),)
 UNIT_COMMAND := PlenaryBustedDirectory tests/unit { minimal_init = 'tests/minimal_init.lua' }
 else
-UNIT_COMMAND := PlenaryBustedFile $(TEST_FILE)
+UNIT_COMMAND := lua require('plenary.busted').run('$(TEST_FILE)')
 endif
 
 .PHONY: deps check-deps check-stylua test test-unit format format-check
