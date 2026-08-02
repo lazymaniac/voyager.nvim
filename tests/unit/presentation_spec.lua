@@ -219,6 +219,28 @@ describe("Voyager LSP presentation", function()
     assert.same({ "loc-result" }, current)
   end)
 
+  it("tracks a non-initial result selected from the native quickfix list", function()
+    local env = fixture()
+    local first = tagged_item(env, "first")
+    local second = tagged_item(env, "second")
+    second.node_id = "loc-second"
+    local instance, current = presenter(env, nil, {
+      resolve_node = function(node_id)
+        if node_id == "loc-result" or node_id == "loc-second" then
+          return env.location
+        end
+      end,
+    })
+
+    instance:present(env.context, { first, second }, Actions.get("implementation"))
+    vim.cmd("clast")
+    assert.equals(2, vim.fn.getqflist({ idx = 0 }).idx)
+
+    instance:on_cursor_moved(vim.api.nvim_get_current_win())
+
+    assert.same({ "loc-second" }, current)
+  end)
+
   it("uses a location-list owner fallback and preserves call objects", function()
     local env = fixture()
     local call = {

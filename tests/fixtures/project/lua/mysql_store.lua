@@ -1,4 +1,4 @@
--- Intentionally unformatted: the emoji must precede `save` on the same line.
+-- Intentionally unformatted: the emoji must precede the symbol on the next line.
 local marker = "😀"; local function save(value)
   return marker .. ":mysql:" .. value
 end

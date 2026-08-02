@@ -161,19 +161,18 @@ function Presentation:_open_list(context, action, list_items, presentation_token
     vim.api.nvim_win_call(owner_winid, function()
       vim.cmd("lopen")
     end)
-    info = vim.fn.getloclist(owner_winid, { id = 0, idx = 0 })
+    info = vim.fn.getloclist(owner_winid, { id = 0 })
     kind = "loclist"
   else
     vim.fn.setqflist({}, " ", list_opts)
     vim.cmd("botright copen")
-    info = vim.fn.getqflist({ id = 0, idx = 0 })
+    info = vim.fn.getqflist({ id = 0 })
     kind = "quickfix"
   end
   self._observer = {
     kind = kind,
     owner_winid = owner_winid,
     list_id = info.id,
-    index = info.idx,
     generation = context.generation,
     request_token = context.request_token,
     presentation_token = presentation_token,
@@ -233,13 +232,7 @@ function Presentation:on_cursor_moved(winid)
   end
   local observer = self._observer
   local list = self:_active_list()
-  if
-    not observer
-    or not list
-    or list.id ~= observer.list_id
-    or list.idx ~= observer.index
-    or type(list.items) ~= "table"
-  then
+  if not observer or not list or list.id ~= observer.list_id or type(list.items) ~= "table" then
     return
   end
   local item = list.items[list.idx]
