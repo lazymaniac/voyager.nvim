@@ -37,6 +37,7 @@ describe("Voyager runtime", function()
       "current_buf",
       "current_win",
       "current_tabpage",
+      "open_folds",
       "get_clients",
       "make_position_params",
       "timer",

@@ -236,6 +236,55 @@ describe("Voyager sidebar popup", function()
     assert.is_false(vim.api.nvim_buf_is_valid(fake.bufnr))
   end)
 
+  it("passes every selected row type while lifecycle keys remain row-independent", function()
+    local fake = FakePopup.new()
+    local calls = { activate = {}, note = {}, toggle = {}, save = 0, load = 0, close = 0 }
+    local config = Config.resolve()
+    local sidebar = Sidebar.new({
+      sidebar = config.sidebar,
+      keymaps = config.sidebar_keymaps,
+      handlers = noop_handlers({
+        activate = function(row) table.insert(calls.activate, row) end,
+        note = function(row) table.insert(calls.note, row) end,
+        toggle = function(row) table.insert(calls.toggle, row) end,
+        save = function() calls.save = calls.save + 1 end,
+        load = function() calls.load = calls.load + 1 end,
+        close = function() calls.close = calls.close + 1 end,
+      }),
+      popup_factory = fake.factory,
+      ui_state = ui_state,
+      notify = function() end,
+    })
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+    local flow = Fixtures.branched_flow()
+    sidebar:render(flow, { dirty = true, request_count = 0 })
+    local rows = Sidebar.project(flow, 40, {})
+    local targets = {
+      assert(row_for(rows, "location", flow.root.id)),
+      assert(row_for(rows, "action", flow.root.actions[1].id)),
+      (assert(row_for(rows, "note", flow.root.actions[1].results[1].id))),
+    }
+
+    for _, target in ipairs(targets) do
+      local _, index = row_for(rows, target.kind, target.owner_id)
+      fake.set_cursor_line(index + 1)
+      fake.press("<CR>")
+      fake.press("n")
+      fake.press("za")
+      fake.press("s")
+      fake.press("L")
+      fake.press("q")
+    end
+
+    for _, name in ipairs({ "activate", "note", "toggle" }) do
+      assert.same({ "location", "action", "note" }, vim.tbl_map(function(row) return row.kind end, calls[name]))
+    end
+    assert.equals(3, calls.save)
+    assert.equals(3, calls.load)
+    assert.equals(3, calls.close)
+    sidebar:unmount({ owned = true })
+  end)
+
   it("preserves selection and focus across renders and collapsed fallback", function()
     local fake = FakePopup.new()
     local sidebar = Sidebar.new({

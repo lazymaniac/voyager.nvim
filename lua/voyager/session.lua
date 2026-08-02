@@ -79,6 +79,8 @@ function M.new(opts)
     _presenter_factory = opts.presenter_factory,
     _ui = opts.ui,
     _generation = 0,
+    _interaction_counter = 0,
+    _interaction_tokens = {},
   }, Session)
 end
 
@@ -645,12 +647,439 @@ function Session:set_current(node_id)
   return true
 end
 
+function Session:_replace_interaction_token(kind)
+  self._interaction_counter = self._interaction_counter + 1
+  local state = self._state
+  local token = {
+    kind = kind,
+    value = self._interaction_counter,
+    state = state,
+    generation = state and state.generation or self._generation,
+    flow_id = state and state.flow and state.flow.flow_id or nil,
+    active = self:is_active(),
+  }
+  self._interaction_tokens[kind] = token.value
+  return token
+end
+
+function Session:_valid_interaction(token)
+  if type(token) ~= "table" or self._interaction_tokens[token.kind] ~= token.value then
+    return false
+  end
+  if token.active ~= self:is_active() or token.state ~= self._state then
+    return false
+  end
+  if token.active then
+    local state = self._state
+    return state.generation == token.generation and state.flow.flow_id == token.flow_id
+  end
+  return self._generation == token.generation
+end
+
+function Session:_consume_interaction(token)
+  if not self:_valid_interaction(token) then
+    return false
+  end
+  self._interaction_tokens[token.kind] = nil
+  return true
+end
+
+function Session:_notify_inapplicable(operation, row)
+  local kind = type(row) == "table" and row.kind or "unknown"
+  self._ui.notify(string.format("Voyager: cannot %s from a %s row", operation, kind), vim.log.levels.INFO)
+end
+
+function Session:_jump_to_location(state, node_id, mark_current)
+  if self._state ~= state or not self:is_active() then
+    return false
+  end
+  local node = state.flow:location(node_id)
+  if not node then
+    self._ui.notify("Voyager: location is no longer available", vim.log.levels.WARN)
+    return false
+  end
+  local winid = self:choose_jump_window()
+  if not winid then
+    return false
+  end
+  local target, reason = state.locator:open_target(node.location)
+  if not target then
+    node.stale = true
+    node.stale_reason = tostring(reason or "location is stale")
+    self:_render(state)
+    self._ui.notify(
+      "Voyager: could not open " .. tostring(node.location.symbol or "location") .. ": " .. node.stale_reason,
+      vim.log.levels.WARN
+    )
+    return false
+  end
+
+  local was_stale = node.stale == true
+  node.stale = false
+  node.stale_reason = nil
+  self._runtime.set_current_win(winid)
+  self._runtime.set_win_buf(winid, target.bufnr)
+  self._runtime.set_win_cursor(winid, { target.row, target.col })
+  self._runtime.open_folds(winid)
+  self:_record_source_window(state, winid)
+  if mark_current == false then
+    if was_stale then
+      self:_render(state)
+    end
+    return true
+  end
+  if not self:set_current(node_id) and was_stale then
+    self:_render(state)
+  end
+  return true
+end
+
+function Session:activate_row(row)
+  if not self:is_active() then
+    return false
+  end
+  if type(row) ~= "table" or type(row.owner_id) ~= "string" then
+    self:_notify_inapplicable("activate", row)
+    return false
+  end
+  if row.kind == "action" then
+    return self:toggle_row(row)
+  end
+  if row.kind ~= "location" and row.kind ~= "note" then
+    self:_notify_inapplicable("activate", row)
+    return false
+  end
+  return self:_jump_to_location(self._state, row.owner_id, true)
+end
+
+function Session:toggle_row(row)
+  if not self:is_active() then
+    return false
+  end
+  local node = type(row) == "table" and self._state.flow:find(row.owner_id) or nil
+  if type(row) ~= "table" or row.kind ~= "action" or not node or node.kind ~= "action" then
+    self:_notify_inapplicable("toggle", row)
+    return false
+  end
+  local changed = self._state.flow:toggle(row.owner_id)
+  if changed then
+    self:_render(self._state)
+  end
+  return changed
+end
+
+local function normalize_note(value)
+  local normalized = vim.trim(value:gsub("[\r\n]+", " "))
+  return normalized ~= "" and normalized or nil
+end
+
+function Session:edit_note(row)
+  if not self:is_active() then
+    return nil
+  end
+  if type(row) ~= "table" or (row.kind ~= "location" and row.kind ~= "note") then
+    self:_notify_inapplicable("edit a note", row)
+    return nil
+  end
+  local state = self._state
+  local node_id = row.owner_id
+  local node = state.flow:location(node_id)
+  if not node then
+    self._ui.notify("Voyager: note location is no longer available", vim.log.levels.WARN)
+    return nil
+  end
+  local token = self:_replace_interaction_token("note_input")
+  self._ui.input({
+    prompt = "Voyager note",
+    default = node.note or "",
+  }, function(value)
+    if not self:_consume_interaction(token) or value == nil or type(value) ~= "string" then
+      return
+    end
+    local active = self._state
+    if not active or not active.flow:location(node_id) then
+      return
+    end
+    if active.flow:set_note(node_id, normalize_note(value)) then
+      self:_render(active)
+    end
+  end)
+  return true
+end
+
 function Session:_invalidate_interactions(state)
   state.interaction_token = state.interaction_token + 1
   state.interaction_tokens = {}
+  self._interaction_counter = self._interaction_counter + 1
+  self._interaction_tokens = {}
   state.presentation_token = state.presentation_token + 1
   state.current_claim_token = state.current_claim_token + 1
   state.manual_claim_token = state.manual_claim_token + 1
+end
+
+function Session:_lifecycle_busy(operation)
+  local phase = self._state and self._state.phase or "inactive"
+  self._ui.notify(
+    string.format("Voyager: cannot %s while session is %s", operation, phase),
+    vim.log.levels.INFO
+  )
+end
+
+function Session:_remount_after_interaction(state)
+  if self._state ~= state or not self:is_active() then
+    return false
+  end
+  if not state.sidebar:is_mounted() then
+    local mounted, reason = state.sidebar:remount({
+      tabpage = self._runtime.current_tabpage(),
+      focus = false,
+    })
+    if not mounted then
+      self._ui.notify("Voyager: " .. tostring(reason), vim.log.levels.WARN)
+      return false
+    end
+  end
+  self:_render(state)
+  return true
+end
+
+function Session:_decide_dirty(intent, continuation)
+  local state = self._state
+  if not state or state.phase ~= "active" then
+    self:_lifecycle_busy(intent)
+    return false
+  end
+  state.phase = "deciding"
+  self._interaction_tokens.note_input = nil
+  self._interaction_tokens.flow_picker = nil
+  local token = self:_replace_interaction_token("dirty_decision")
+  self._ui.select({ "Save", "Discard", "Cancel" }, {
+    prompt = "Save changes to Voyager flow?",
+  }, function(choice)
+    if not self:_consume_interaction(token) or self._state ~= state or state.phase ~= "deciding" then
+      return
+    end
+    state.phase = "active"
+    if choice == "Save" then
+      self:save(continuation)
+    elseif choice == "Discard" then
+      continuation()
+    else
+      self:_remount_after_interaction(state)
+    end
+  end)
+  return true
+end
+
+function Session:save(on_success)
+  if not self:is_active() then
+    self._ui.notify("Voyager: no active flow to save", vim.log.levels.INFO)
+    return nil
+  end
+  local state = self._state
+  if state.phase ~= "active" then
+    self:_lifecycle_busy("save")
+    return nil
+  end
+
+  state.phase = "saving"
+  local called, saved, reason = pcall(state.store.save, state.store, state.flow)
+  if not called then
+    reason = saved
+    saved = nil
+  end
+  if self._state ~= state or state.phase ~= "saving" then
+    return nil
+  end
+  state.phase = "active"
+  if not saved then
+    self._ui.notify("Voyager save failed: " .. tostring(reason or "unknown error"), vim.log.levels.ERROR)
+    self:_remount_after_interaction(state)
+    return nil
+  end
+
+  self:_render(state)
+  if type(on_success) == "function" then
+    on_success()
+  end
+  return true
+end
+
+function Session:_load_context(active)
+  local runtime = self._runtime
+  local context = {
+    bufnr = runtime.current_buf(),
+    winid = runtime.current_win(),
+    tabpage = runtime.current_tabpage(),
+  }
+  if active and not self:_eligible_window(self._state, context.winid) then
+    local source = self:choose_jump_window()
+    if source then
+      context.winid = source
+      context.bufnr = runtime.win_buf(source)
+    end
+  end
+  return context
+end
+
+function Session:_jump_loaded_current(state)
+  local node = state.flow:location(state.flow.current_node_id)
+  if not node then
+    return false
+  end
+  return self:_jump_to_location(state, node.id, false)
+end
+
+function Session:_install_loaded_flow(candidate, project_root_value, config, locator, store, load_context)
+  local old = self:is_active() and self._state or nil
+  local previous_generation = old and old.generation or self._generation
+  local current = candidate:location(candidate.current_node_id)
+  local stale = current == nil
+  if current then
+    local stale_ok, stale_result = pcall(locator.is_stale, locator, current.location)
+    stale = not stale_ok or stale_result == true
+  end
+  if stale then
+    candidate:set_current(candidate.root.id)
+  end
+
+  local staged = self:_stage_state({
+    phase = "active",
+    generation = previous_generation + 1,
+    config = config,
+    flow = candidate,
+    project_root = project_root_value,
+    locator = locator,
+    store = store,
+    origin_buf = load_context.bufnr,
+    origin_win = load_context.winid,
+    tabpage = load_context.tabpage,
+    source_windows = old and vim.deepcopy(old.source_windows) or nil,
+  })
+  local source_windows = {}
+  for _, winid in ipairs(staged.source_windows) do
+    if self:_eligible_window(staged, winid) then
+      table.insert(source_windows, winid)
+    end
+  end
+  if #source_windows == 0 and self:_eligible_window(staged, load_context.winid) then
+    table.insert(source_windows, load_context.winid)
+  end
+  staged.source_windows = source_windows
+
+  if old then
+    old.sidebar:unmount({ owned = true })
+  end
+  local mounted, mount_reason = staged.sidebar:mount({
+    tabpage = load_context.tabpage,
+    focus = false,
+  })
+  if not mounted then
+    mount_reason = mount_reason or "could not mount sidebar"
+    staged.sidebar:unmount({ owned = true })
+    if old then
+      local restored = old.sidebar:mount({ tabpage = load_context.tabpage, focus = false })
+      if restored then
+        self:_render(old)
+      end
+    end
+    self._ui.notify("Voyager load failed: " .. tostring(mount_reason), vim.log.levels.ERROR)
+    return nil, mount_reason
+  end
+
+  if old then
+    old.phase = "replacing"
+    old.generation = staged.generation
+    self:_invalidate_interactions(old)
+    for _, handle in pairs(old.request_handles) do
+      pcall(handle.cancel, handle, "load")
+    end
+    old.request_handles = {}
+    old.request_count = 0
+    old.presenter:invalidate()
+    old.keymaps:restore_all(previous_generation)
+    self:_delete_autocmds(old)
+  else
+    self._interaction_counter = self._interaction_counter + 1
+    self._interaction_tokens = {}
+  end
+
+  self._generation = staged.generation
+  self._state = staged
+  self:_register_autocmds(staged)
+  self:_apply_source_mappings(staged)
+  self:_render(staged)
+  self:_jump_loaded_current(staged)
+  return true
+end
+
+function Session:load()
+  local active = self:is_active()
+  if active and self._state.phase ~= "active" then
+    self:_lifecycle_busy("load")
+    return nil
+  end
+  local load_context = self:_load_context(active)
+  local project_root_value
+  if active then
+    project_root_value = self._state.project_root
+  elseif self:_is_normal_named_buffer(load_context.bufnr) then
+    local discovery = self._store_factory(nil)
+    project_root_value = discovery:project_root(
+      load_context.bufnr,
+      self._runtime.get_clients({ bufnr = load_context.bufnr }),
+      self._runtime.cwd()
+    )
+  else
+    project_root_value = realpath(self._runtime, self._runtime.cwd())
+  end
+
+  local config = self._config_provider()
+  local locator = self._locator_factory(project_root_value, config.storage.resolve_uri)
+  local store = self._store_factory(locator)
+  local listed, entries, warnings = pcall(store.list, store, project_root_value)
+  if not listed then
+    self._ui.notify("Voyager load failed: " .. tostring(entries), vim.log.levels.ERROR)
+    return nil
+  end
+  entries = entries or {}
+  for _, warning in ipairs(warnings or {}) do
+    self._ui.notify(warning, vim.log.levels.WARN)
+  end
+  if #entries == 0 then
+    self._ui.notify("Voyager: no saved flows for " .. project_root_value, vim.log.levels.INFO)
+    return nil
+  end
+
+  local token = self:_replace_interaction_token("flow_picker")
+  self._ui.select(entries, {
+    prompt = "Load Voyager flow",
+    format_item = function(entry)
+      return string.format("%s — %s — %s", entry.name, entry.display_path, entry.updated_at)
+    end,
+  }, function(entry)
+    if not self:_consume_interaction(token) or entry == nil then
+      return
+    end
+    local loaded, candidate, load_error = pcall(store.load, store, entry, project_root_value)
+    if not loaded then
+      load_error = candidate
+      candidate = nil
+    end
+    if not candidate then
+      self._ui.notify("Voyager load failed: " .. tostring(load_error or "unknown error"), vim.log.levels.ERROR)
+      return
+    end
+    local function install()
+      return self:_install_loaded_flow(candidate, project_root_value, config, locator, store, load_context)
+    end
+    if self:is_active() and self._state.flow:is_dirty() then
+      self:_decide_dirty("load", install)
+    else
+      install()
+    end
+  end)
+  return true
 end
 
 function Session:_teardown(source)
@@ -683,7 +1112,19 @@ function Session:_teardown(source)
 end
 
 function Session:close(source)
-  return self:_teardown(source or "close")
+  if not self:is_active() then
+    return false
+  end
+  local state = self._state
+  if state.phase ~= "active" then
+    self:_lifecycle_busy("close")
+    return false
+  end
+  source = source or "close"
+  if state.flow:is_dirty() then
+    return self:_decide_dirty("close", function() self:_teardown(source) end)
+  end
+  return self:_teardown(source)
 end
 
 function Session:shutdown()

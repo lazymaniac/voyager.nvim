@@ -80,6 +80,11 @@ function M.native()
     set_win_buf = vim.api.nvim_win_set_buf,
     win_cursor = vim.api.nvim_win_get_cursor,
     set_win_cursor = vim.api.nvim_win_set_cursor,
+    open_folds = function(winid)
+      vim.api.nvim_win_call(winid, function()
+        vim.cmd("normal! zv")
+      end)
+    end,
     set_current_win = vim.api.nvim_set_current_win,
     win_tab = vim.api.nvim_win_get_tabpage,
     win_config = vim.api.nvim_win_get_config,

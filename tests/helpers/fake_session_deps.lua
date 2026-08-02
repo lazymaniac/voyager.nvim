@@ -100,6 +100,91 @@ local function fake_sidebar(env)
   return sidebar
 end
 
+local function fake_keymaps()
+  local keymaps = {
+    applied_buffers = {},
+    apply_calls = {},
+    restored_generations = {},
+  }
+  function keymaps:apply_buffer(bufnr, generation, mappings, wrapper_factory)
+    table.insert(self.applied_buffers, bufnr)
+    table.insert(self.apply_calls, {
+      bufnr = bufnr,
+      generation = generation,
+      mappings = vim.deepcopy(mappings),
+      wrapper_factory = wrapper_factory,
+    })
+  end
+  function keymaps:restore_all(generation)
+    table.insert(self.restored_generations, generation)
+  end
+  return keymaps
+end
+
+local function fake_presenter()
+  local presenter = { invalidate_calls = 0, cursor_calls = {}, present_calls = {} }
+  function presenter:invalidate()
+    self.invalidate_calls = self.invalidate_calls + 1
+  end
+  function presenter:on_cursor_moved(winid)
+    table.insert(self.cursor_calls, winid)
+  end
+  function presenter:present(context, items, action)
+    table.insert(self.present_calls, {
+      context = vim.deepcopy(context),
+      items = vim.deepcopy(items),
+      action = vim.deepcopy(action),
+    })
+    if self.on_present then
+      self.on_present(context, items, action)
+    end
+  end
+  return presenter
+end
+
+local function fake_lsp()
+  local lsp = { starts = {}, handles = {} }
+  function lsp:start(action_name, context, callback)
+    if self.start_error then
+      error(self.start_error)
+    end
+    local handle = { cancel_calls = {}, supersede_calls = 0, done = false }
+    function handle:cancel(reason)
+      table.insert(self.cancel_calls, reason)
+    end
+    function handle:supersede_interactive()
+      self.supersede_calls = self.supersede_calls + 1
+      if self.on_supersede then
+        self.on_supersede()
+      end
+    end
+    function handle:is_done()
+      return self.done
+    end
+    table.insert(self.starts, {
+      action_name = action_name,
+      context = vim.deepcopy(context),
+      callback = callback,
+      handle = handle,
+    })
+    table.insert(self.handles, handle)
+    if self.auto_outcome then
+      handle.done = true
+      callback(vim.deepcopy(self.auto_outcome))
+      if self.complete_twice then
+        callback(vim.deepcopy(self.auto_outcome))
+      end
+    end
+    return handle
+  end
+  function lsp:complete(index, outcome)
+    local start = assert(self.starts[index])
+    start.handle.done = true
+    start.callback(vim.deepcopy(outcome))
+  end
+  return lsp
+end
+
 function M.new(overrides)
   overrides = overrides or {}
   local env = {
@@ -126,6 +211,7 @@ function M.new(overrides)
     cursor_word = "main",
     cursor_word_start = 6,
     cursor_word_end = 10,
+    fold_open_calls = {},
   }
   env.buffers[env.origin_buf] = {
     name = overrides.buffer_name or "/project/lua/main.lua",
@@ -182,6 +268,17 @@ function M.new(overrides)
       assert(env.windows[winid] and env.windows[winid].valid ~= false)
       env.current_win_id = winid
       env.current_tabpage_id = env.windows[winid].tabpage
+    end,
+    set_win_buf = function(winid, bufnr)
+      assert(env.windows[winid] and env.buffers[bufnr])
+      env.windows[winid].bufnr = bufnr
+    end,
+    set_win_cursor = function(winid, cursor)
+      assert(env.windows[winid])
+      env.windows[winid].cursor = vim.deepcopy(cursor)
+    end,
+    open_folds = function(winid)
+      table.insert(env.fold_open_calls, winid)
     end,
     buffer_valid = function(bufnr)
       return env.buffers[bufnr] ~= nil and env.buffers[bufnr].valid ~= false
@@ -269,90 +366,85 @@ function M.new(overrides)
 
   env.config = Config.resolve()
   env.sidebar = fake_sidebar(env)
-  env.keymaps = {
-    applied_buffers = {},
-    apply_calls = {},
-    restored_generations = {},
-  }
-  function env.keymaps:apply_buffer(bufnr, generation, mappings, wrapper_factory)
-    table.insert(self.applied_buffers, bufnr)
-    table.insert(self.apply_calls, {
-      bufnr = bufnr,
-      generation = generation,
-      mappings = vim.deepcopy(mappings),
-      wrapper_factory = wrapper_factory,
-    })
-  end
-  function env.keymaps:restore_all(generation)
-    table.insert(self.restored_generations, generation)
-  end
-
-  env.presenter = { invalidate_calls = 0, cursor_calls = {}, present_calls = {} }
-  function env.presenter:invalidate()
-    self.invalidate_calls = self.invalidate_calls + 1
-  end
-  function env.presenter:on_cursor_moved(winid)
-    table.insert(self.cursor_calls, winid)
-  end
-
-  function env.presenter:present(context, items, action)
-    table.insert(self.present_calls, {
-      context = vim.deepcopy(context),
-      items = vim.deepcopy(items),
-      action = vim.deepcopy(action),
-    })
-    if self.on_present then
-      self.on_present(context, items, action)
-    end
-  end
-
-  env.lsp = { starts = {}, handles = {} }
-  function env.lsp:start(action_name, context, callback)
-    if self.start_error then
-      error(self.start_error)
-    end
-    local handle = { cancel_calls = {}, supersede_calls = 0, done = false }
-    function handle:cancel(reason)
-      table.insert(self.cancel_calls, reason)
-    end
-    function handle:supersede_interactive()
-      self.supersede_calls = self.supersede_calls + 1
-      if self.on_supersede then
-        self.on_supersede()
-      end
-    end
-    function handle:is_done()
-      return self.done
-    end
-    table.insert(self.starts, {
-      action_name = action_name,
-      context = vim.deepcopy(context),
-      callback = callback,
-      handle = handle,
-    })
-    table.insert(self.handles, handle)
-    if self.auto_outcome then
-      handle.done = true
-      callback(vim.deepcopy(self.auto_outcome))
-      if self.complete_twice then
-        callback(vim.deepcopy(self.auto_outcome))
-      end
-    end
-    return handle
-  end
-  function env.lsp:complete(index, outcome)
-    local start = assert(self.starts[index])
-    start.handle.done = true
-    start.callback(vim.deepcopy(outcome))
-  end
+  env.keymaps = fake_keymaps()
+  env.presenter = fake_presenter()
+  env.lsp = fake_lsp()
   env.locator = {
     _project_root = env.project_root,
-    is_stale = function() return false end,
+    stale = false,
+    open_target_calls = {},
   }
-  env.store = { project_root_calls = {} }
+  function env.locator:is_stale()
+    return self.stale, self.stale and (self.stale_reason or "location is stale") or nil
+  end
+  function env.locator:open_target(location)
+    table.insert(self.open_target_calls, vim.deepcopy(location))
+    local stale, reason = self:is_stale(location)
+    if stale then
+      return nil, reason
+    end
+    if self.open_target_error then
+      return nil, self.open_target_error
+    end
+    if self.open_target_result then
+      return vim.deepcopy(self.open_target_result)
+    end
+    return {
+      bufnr = env.origin_buf,
+      row = location.range.start.line + 1,
+      col = location.range.start.character,
+    }
+  end
+
+  env.store = {
+    project_root_calls = {},
+    save_calls = {},
+    list_calls = {},
+    load_calls = {},
+    entries = {},
+    warnings = {},
+  }
   function env.store:project_root(bufnr, clients, cwd)
     table.insert(self.project_root_calls, { bufnr = bufnr, clients = clients, cwd = cwd })
     return env.project_root
+  end
+  function env.store:save(flow)
+    table.insert(self.save_calls, flow)
+    if self.save_error then
+      return nil, self.save_error
+    end
+    local document = {}
+    for _, key in ipairs({
+      "schema_version",
+      "position_encoding",
+      "revision",
+      "flow_id",
+      "name",
+      "root_key",
+      "created_at",
+      "updated_at",
+      "current_node_id",
+      "root",
+    }) do
+      document[key] = vim.deepcopy(flow[key])
+    end
+    document.revision = document.revision + 1
+    flow:mark_saved(document)
+    return document
+  end
+  function env.store:list(project_root)
+    table.insert(self.list_calls, project_root)
+    if self.list_error then
+      error(self.list_error)
+    end
+    return vim.deepcopy(self.entries), vim.deepcopy(self.warnings)
+  end
+  function env.store:load(entry, project_root)
+    table.insert(self.load_calls, { vim.deepcopy(entry), project_root })
+    if self.load_error then
+      return nil, self.load_error
+    end
+    return self.load_result
   end
 
   local flow_module = {}
@@ -364,6 +456,19 @@ function M.new(overrides)
     return flow
   end
   env.flow_module = flow_module
+
+  function env:new_sidebar()
+    return fake_sidebar(self)
+  end
+  function env:new_keymaps()
+    return fake_keymaps()
+  end
+  function env:new_presenter()
+    return fake_presenter()
+  end
+  function env:new_lsp()
+    return fake_lsp()
+  end
 
   function env:session_options()
     return {
@@ -381,19 +486,27 @@ function M.new(overrides)
       end,
       keymaps_factory = function()
         env.keymaps_factory_calls = env.keymaps_factory_calls + 1
-        return env.keymaps
+        local value = env.next_keymaps or env.keymaps
+        env.next_keymaps = nil
+        return value
       end,
       sidebar_factory = function(config)
         table.insert(env.sidebar_factory_calls, vim.deepcopy(config))
-        return env.sidebar
+        local value = env.next_sidebar or env.sidebar
+        env.next_sidebar = nil
+        return value
       end,
       lsp_factory = function(locator, config)
         table.insert(env.lsp_factory_calls, { locator = locator, config = vim.deepcopy(config) })
-        return env.lsp
+        local value = env.next_lsp or env.lsp
+        env.next_lsp = nil
+        return value
       end,
       presenter_factory = function(config)
         table.insert(env.presenter_factory_calls, vim.deepcopy(config))
-        return env.presenter
+        local value = env.next_presenter or env.presenter
+        env.next_presenter = nil
+        return value
       end,
       ui = { input = env.runtime.input, select = env.runtime.select, notify = env.runtime.notify },
     }
