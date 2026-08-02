@@ -274,4 +274,63 @@ describe("Voyager standard LSP facade", function()
     client:reply_late(nil, {})
     assert.equals(1, #completed)
   end)
+
+  it("routes call actions through prepare discovery with facade-level ownership", function()
+    local first_client = FakeClient.new({ id = 1, name = "alpha", offset_encoding = "utf-16" })
+    local captures = {}
+    local completed = {}
+    local underlying = { cancel_count = 0, supersede_count = 0, done = false }
+    function underlying:cancel()
+      self.cancel_count = self.cancel_count + 1
+    end
+    function underlying:supersede_interactive()
+      self.supersede_count = self.supersede_count + 1
+    end
+    function underlying:is_done()
+      return self.done
+    end
+    local call_hierarchy = {
+      start = function(opts)
+        table.insert(captures, opts)
+        return underlying
+      end,
+    }
+    local service = Lsp.new({
+      actions = Actions,
+      normalizer = {},
+      request_group = { start = function() error("standard request group must not start") end },
+      call_hierarchy = call_hierarchy,
+      get_clients = function(filter)
+        assert.same({ bufnr = 3, method = "textDocument/prepareCallHierarchy" }, filter)
+        return { first_client }
+      end,
+      make_position_params = function() return {} end,
+      timer = function() end,
+      select = function() end,
+    })
+
+    local first_context = context()
+    local handle = service:start("incoming_calls", first_context, function(outcome)
+      table.insert(completed, outcome)
+    end)
+    assert.equals(1, #captures)
+    assert.equals(12, captures[1].context.request_token)
+    assert.equals(1, captures[1].clients[1].id)
+    assert.equals("alpha", captures[1].clients[1].name)
+    assert.is_true(captures[1].owns_presentation(12))
+    handle:supersede_interactive()
+    assert.equals(1, underlying.supersede_count)
+
+    local second_context = context()
+    second_context.request_token = 13
+    service:start("incoming_calls", second_context, function() end)
+    assert.is_false(captures[1].owns_presentation(12))
+    assert.is_true(captures[2].owns_presentation(13))
+
+    captures[1].on_complete({ status = "empty", items = {}, locations = {}, failures = {} })
+    captures[1].on_complete({ status = "error", items = {}, locations = {}, failures = {} })
+    assert.equals(1, #completed)
+    assert.equals("empty", completed[1].status)
+    assert.equals("callHierarchy/incomingCalls", completed[1].method)
+  end)
 end)

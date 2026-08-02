@@ -73,6 +73,7 @@ function M.new(deps)
     _actions = deps.actions,
     _normalizer = deps.normalizer,
     _request_group = deps.request_group,
+    _call_hierarchy = deps.call_hierarchy or require("voyager.lsp.call_hierarchy"),
     _get_clients = deps.get_clients,
     _make_position_params = deps.make_position_params,
     _timer = deps.timer,
@@ -114,9 +115,36 @@ function Lsp:start(action_name, context, on_complete)
     return state.done
   end
 
-  local clients = snapshots(self._get_clients({ bufnr = context.bufnr, method = action.method }))
+  self._presentation_token = context.request_token
+  local discovery_method = action.prepare_method or action.method
+  local clients = snapshots(self._get_clients({ bufnr = context.bufnr, method = discovery_method }))
   if #clients == 0 then
     finish("unsupported", {}, {}, {})
+    return handle
+  end
+
+  if action.prepare_method then
+    state.request_handle = self._call_hierarchy.start({
+      action = action,
+      context = context,
+      clients = clients,
+      request_stage = self._request_group.start,
+      normalizer = self._normalizer,
+      timer = self._timer,
+      make_position_params = self._make_position_params,
+      select = self._select,
+      owns_presentation = function(token)
+        return self._presentation_token == token
+      end,
+      on_complete = function(call_outcome)
+        finish(call_outcome.status, call_outcome.items, call_outcome.locations, call_outcome.failures)
+      end,
+    })
+    function handle:supersede_interactive()
+      if not state.done and state.request_handle then
+        state.request_handle:supersede_interactive()
+      end
+    end
     return handle
   end
 
