@@ -2,6 +2,7 @@ NVIM ?= nvim
 STYLUA ?= stylua
 CONTAINER ?= docker
 LUAROCKS ?= luarocks
+GO ?= go
 ROOT := $(abspath .)
 DEPS := $(ROOT)/.deps
 PLENARY := $(DEPS)/plenary.nvim
@@ -18,6 +19,10 @@ ROCK_BUILD_OUTPUT := $(ROOT)/voyager.nvim-scm-1.all.rock
 ROCK_ARTIFACT_DIR := $(ROOT)/.tmp/artifacts
 ROCK_FILE := $(ROCK_ARTIFACT_DIR)/voyager.nvim-scm-1.all.rock
 ROCK_TREE := $(ROOT)/.tmp/rocks
+ACTIONLINT_VERSION := 1.7.12
+ACTIONLINT_REV := 914e7df21a07ef503a81201c76d2b11c789d3fca
+ACTIONLINT_DIR := $(ROOT)/.tmp/tools/actionlint-$(ACTIONLINT_REV)
+ACTIONLINT_BIN := $(ACTIONLINT_DIR)/actionlint
 TEST_ENV := env VOYAGER_TEST_ROOT=$(ROOT) NVIM_APPNAME=voyager-test XDG_CONFIG_HOME=$(ROOT)/.tmp/test/config XDG_CACHE_HOME=$(ROOT)/.tmp/test/cache XDG_STATE_HOME=$(ROOT)/.tmp/test/state XDG_DATA_HOME=$(ROOT)/.tmp/test/data
 TEST_NVIM := $(TEST_ENV) $(NVIM) --headless --noplugin -i NONE -u tests/minimal_init.lua
 E2E_PROJECT := $(ROOT)/.tmp/e2e-project
@@ -32,7 +37,7 @@ else
 UNIT_COMMAND := lua require('tests.run_file')('$(TEST_FILE)')
 endif
 
-.PHONY: deps check-deps check-stylua check-luarocks test test-unit test-e2e format format-check docs help-check rock rock-smoke
+.PHONY: deps check-deps check-stylua check-luarocks check-actionlint test test-unit test-e2e format format-check docs help-check rock rock-smoke workflow-lint
 
 deps:
 	@scripts/ensure-dependency install plenary.nvim https://github.com/nvim-lua/plenary.nvim.git $(PLENARY_REV) $(PLENARY)
@@ -104,3 +109,14 @@ rock-smoke: rock
 	  $(NVIM) --headless --noplugin -u NONE -i NONE \
 	    --cmd 'execute "set runtimepath^=" .. fnameescape($$VOYAGER_ROCK_DIR)' \
 	    -c "runtime plugin/voyager.lua" -l tests/smoke/installed.lua
+
+$(ACTIONLINT_BIN):
+	@command -v $(GO) >/dev/null 2>&1 || { echo "Go is required to install actionlint $(ACTIONLINT_VERSION)" >&2; exit 1; }
+	@mkdir -p "$(ACTIONLINT_DIR)"
+	@GOBIN="$(ACTIONLINT_DIR)" $(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_REV)
+
+check-actionlint: $(ACTIONLINT_BIN)
+	@actual="$$($(ACTIONLINT_BIN) -version | sed -n '1s/^v//p')"; test "$$actual" = "$(ACTIONLINT_VERSION)" || { echo "expected actionlint $(ACTIONLINT_VERSION), got $$actual" >&2; exit 1; }
+
+workflow-lint: check-actionlint
+	@$(ACTIONLINT_BIN) .github/workflows/*.yml

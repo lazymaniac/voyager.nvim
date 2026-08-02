@@ -1,0 +1,69 @@
+name: quality
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    env:
+      LUAROCKS_VERSION: 3.13.0
+      LUAROCKS_SHA512: 44381bb7fd3d474f92b0d2d0bf492246907f88ac6d5bdbb30b889222d755681777042195cfbfa136c068e05db78896760d5aea28c2f60a46d2f30c4c28ba704b
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Neovim 0.12.4
+        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7
+        with:
+          neovim: true
+          version: v0.12.4
+
+      - name: Check Lua formatting with StyleLua 2.5.2
+        uses: JohnnyMorganz/stylua-action@479972f01e665acfcba96ada452c36608bdbbb5e
+        with:
+          version: v2.5.2
+          args: --check lua plugin tests
+
+      - name: Install Lua 5.1 build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential curl lua5.1 liblua5.1-0-dev
+
+      - name: Install LuaRocks 3.13.0
+        run: |
+          archive=/tmp/luarocks-${LUAROCKS_VERSION}.tar.gz
+          source_dir=/tmp/luarocks-${LUAROCKS_VERSION}
+          curl --fail --location --silent --show-error \
+            --output "$archive" \
+            "https://luarocks.github.io/luarocks/releases/luarocks-${LUAROCKS_VERSION}.tar.gz"
+          echo "${LUAROCKS_SHA512}  ${archive}" | sha512sum --check --strict
+          tar --extract --gzip --file "$archive" --directory /tmp
+          cd "$source_dir"
+          ./configure --lua-version=5.1 --with-lua-include=/usr/include/lua5.1
+          make
+          sudo make install
+          test "$(luarocks --version | awk 'NR == 1 { print $NF }')" = "$LUAROCKS_VERSION"
+
+      - name: Install pinned test and documentation dependencies
+        run: make deps
+
+      - name: Run unit and restart E2E tests
+        run: make test
+
+      - name: Verify generated help and tags
+        run: make help-check
+
+      - name: Build and smoke-load installed rock
+        run: make rock-smoke
+
+      - name: Verify local actionlint 1.7.12 target
+        run: make workflow-lint
+
+      - name: Lint workflows through the pinned action wrapper
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7
+        with:
+          version: 1.7.12

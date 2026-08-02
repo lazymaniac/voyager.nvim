@@ -112,9 +112,12 @@ describe("Voyager public interface", function()
     vim.cmd("VoyagerSave")
     vim.cmd("VoyagerLoad")
     vim.cmd("VoyagerClose")
-    assert.same({ "open", "focus", "save", "load", "close" }, vim.tbl_map(function(call)
-      return call.name
-    end, env.calls))
+    assert.same(
+      { "open", "focus", "save", "load", "close" },
+      vim.tbl_map(function(call)
+        return call.name
+      end, env.calls)
+    )
     assert.equals("command", env.close_source)
     assert.equals(1, env.native_calls)
     assert.equals(1, env.runtime_calls)
@@ -150,9 +153,12 @@ describe("Voyager public interface", function()
     Voyager.save()
     Voyager.load()
     Voyager.close()
-    assert.same({ "focus", "save", "load", "close" }, vim.tbl_map(function(call)
-      return call.name
-    end, env.calls))
+    assert.same(
+      { "focus", "save", "load", "close" },
+      vim.tbl_map(function(call)
+        return call.name
+      end, env.calls)
+    )
 
     Voyager.setup({ sidebar = { width = 55 } })
     Voyager._reset_for_tests()

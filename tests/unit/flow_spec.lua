@@ -251,20 +251,26 @@ describe("Voyager flow", function()
 
     assert.equals(latest.created_at, merged.created_at)
     assert.equals(latest.revision + 1, merged.revision)
-    assert.same({
-      "textDocument/references",
-      "textDocument/implementation",
-      "textDocument/definition",
-    }, vim.tbl_map(function(action)
-      return action.method
-    end, merged.root.actions))
+    assert.same(
+      {
+        "textDocument/references",
+        "textDocument/implementation",
+        "textDocument/definition",
+      },
+      vim.tbl_map(function(action)
+        return action.method
+      end, merged.root.actions)
+    )
     assert.equals(node_id("action", 10), merged.root.actions[1].id)
     assert.equals(node_id("action", 21), merged.root.actions[2].id)
     assert.equals(node_id("loc", 22), merged.root.actions[2].results[1].id)
     assert.equals(node_id("action", 23), merged.root.actions[3].id)
-    assert.same({ "references", "implementations", "definition" }, vim.tbl_map(function(action)
-      return action.label
-    end, merged.root.actions))
+    assert.same(
+      { "references", "implementations", "definition" },
+      vim.tbl_map(function(action)
+        return action.label
+      end, merged.root.actions)
+    )
     assert.equals(active.root.id, merged.root.id)
   end)
 

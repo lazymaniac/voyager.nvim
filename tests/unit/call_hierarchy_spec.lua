@@ -21,7 +21,9 @@ local function new_harness(opts)
   local normalization_calls = {}
   local ownership_checks = {}
   local owns = opts.owns ~= false
-  local clients = vim.tbl_map(function(client) return client:snapshot() end, opts.clients or {})
+  local clients = vim.tbl_map(function(client)
+    return client:snapshot()
+  end, opts.clients or {})
   local action = Actions.get(opts.action or "incoming_calls")
   local normalizer = {
     call_sites = function(_, direction, client, selected, calls)
@@ -87,7 +89,9 @@ local function new_harness(opts)
     completions = completions,
     normalization_calls = normalization_calls,
     ownership_checks = ownership_checks,
-    set_owns = function(value) owns = value end,
+    set_owns = function(value)
+      owns = value
+    end,
   }
 end
 
@@ -107,7 +111,12 @@ describe("Voyager call hierarchy", function()
     assert.same({ "textDocument/prepareCallHierarchy" }, client_b.methods)
     assert.same({ method = "callHierarchy/incomingCalls", bufnr = 3 }, client_a.supports_calls[1])
     assert.equals(2, #env.timers.created)
-    assert.same({ 1000, 1000 }, vim.tbl_map(function(timer) return timer.timeout_ms end, env.timers.created))
+    assert.same(
+      { 1000, 1000 },
+      vim.tbl_map(function(timer)
+        return timer.timeout_ms
+      end, env.timers.created)
+    )
 
     client_a:reply_followup(nil, { { from = prepared("caller"), fromRanges = { prepared_a.selectionRange } } })
     assert.equals(1, #env.completions)
@@ -138,8 +147,18 @@ describe("Voyager call hierarchy", function()
     assert.equals(1, #env.select_calls)
     assert.equals(1, #env.timers.created)
     assert.equals(1, env.timers.created[1].close_count)
-    assert.same({ 1, 2 }, vim.tbl_map(function(item) return item.response_index end, env.select_calls[1].items))
-    assert.same({ 1, 1 }, vim.tbl_map(function(item) return item.client_id end, env.select_calls[1].items))
+    assert.same(
+      { 1, 2 },
+      vim.tbl_map(function(item)
+        return item.response_index
+      end, env.select_calls[1].items)
+    )
+    assert.same(
+      { 1, 1 },
+      vim.tbl_map(function(item)
+        return item.client_id
+      end, env.select_calls[1].items)
+    )
 
     first.name = "mutated"
     env.select_calls[1].callback(env.select_calls[1].items[2])

@@ -50,7 +50,9 @@ local function project_root(runtime, bufnr)
       end
     end
   end
-  table.sort(roots, function(left, right) return #left > #right end)
+  table.sort(roots, function(left, right)
+    return #left > #right
+  end)
   if roots[1] then
     return roots[1]
   end
@@ -111,7 +113,8 @@ function Session:_buffer_in_flow(state, name)
       if locator.kind == "absolute" and realpath(self._runtime, locator.path) == realpath(self._runtime, name) then
         return true
       end
-      if locator.kind == "project"
+      if
+        locator.kind == "project"
         and realpath(self._runtime, state.project_root .. "/" .. locator.path) == realpath(self._runtime, name)
       then
         return true
@@ -290,21 +293,29 @@ function Session:_register_autocmds(state)
     callback = guarded(function(args)
       local closed = tonumber(args.match)
       if closed then
-        state.source_windows = vim.tbl_filter(function(winid) return winid ~= closed end, state.source_windows)
+        state.source_windows = vim.tbl_filter(function(winid)
+          return winid ~= closed
+        end, state.source_windows)
       end
     end),
   })
   runtime.create_autocmd("TabEnter", {
     group = state.autocmd_group,
-    callback = guarded(function() self:_remount_for_event(state) end),
+    callback = guarded(function()
+      self:_remount_for_event(state)
+    end),
   })
   runtime.create_autocmd("VimResized", {
     group = state.autocmd_group,
-    callback = guarded(function() self:_remount_for_event(state) end),
+    callback = guarded(function()
+      self:_remount_for_event(state)
+    end),
   })
   runtime.create_autocmd("VimLeavePre", {
     group = state.autocmd_group,
-    callback = guarded(function() self:shutdown() end),
+    callback = guarded(function()
+      self:shutdown()
+    end),
   })
 end
 
@@ -338,7 +349,10 @@ function Session:open()
   end
   local nonce, nonce_error = runtime.random(16)
   if not nonce then
-    self._ui.notify("Voyager: could not create flow: " .. tostring(nonce_error or "entropy unavailable"), vim.log.levels.ERROR)
+    self._ui.notify(
+      "Voyager: could not create flow: " .. tostring(nonce_error or "entropy unavailable"),
+      vim.log.levels.ERROR
+    )
     return nil
   end
   local flow_id = Locator.flow_id(root, 8)
@@ -493,7 +507,8 @@ function Session:_commit_outcome(state, context, request_token, outcome)
     table.insert(tagged_items, tagged)
   end
 
-  if context.manual_location
+  if
+    context.manual_location
     and state.manual_claim_token == request_token
     and state.current_claim_token == request_token
   then
@@ -572,16 +587,18 @@ function Session:run_action(action_name)
         self._ui.notify("Voyager: " .. action.label .. " failed: " .. tostring(commit_result), vim.log.levels.ERROR)
       end
     else
-      outcome = type(outcome) == "table" and outcome or {
-        status = "error",
-        label = action.label,
-        failures = { { kind = "setup", message = "invalid LSP completion" } },
-      }
+      outcome = type(outcome) == "table" and outcome
+        or {
+          status = "error",
+          label = action.label,
+          failures = { { kind = "setup", message = "invalid LSP completion" } },
+        }
       self:_notify_outcome(outcome)
     end
 
     self:_render(state)
-    if tagged_items
+    if
+      tagged_items
       and #tagged_items > 0
       and self:_valid_state(state, generation)
       and state.flow.flow_id == flow_id
@@ -819,10 +836,7 @@ end
 
 function Session:_lifecycle_busy(operation)
   local phase = self._state and self._state.phase or "inactive"
-  self._ui.notify(
-    string.format("Voyager: cannot %s while session is %s", operation, phase),
-    vim.log.levels.INFO
-  )
+  self._ui.notify(string.format("Voyager: cannot %s while session is %s", operation, phase), vim.log.levels.INFO)
 end
 
 function Session:_remount_after_interaction(state)
@@ -1122,7 +1136,9 @@ function Session:close(source)
   end
   source = source or "close"
   if state.flow:is_dirty() then
-    return self:_decide_dirty("close", function() self:_teardown(source) end)
+    return self:_decide_dirty("close", function()
+      self:_teardown(source)
+    end)
   end
   return self:_teardown(source)
 end
@@ -1193,13 +1209,27 @@ function M.native(config_provider, runtime, overrides)
         sidebar = config.sidebar,
         keymaps = config.sidebar_keymaps,
         handlers = {
-          activate = function(row) return controller:activate_row(row) end,
-          note = function(row) return controller:edit_note(row) end,
-          save = function() return controller:save() end,
-          load = function() return controller:load() end,
-          toggle = function(row) return controller:toggle_row(row) end,
-          close = function() return controller:close("sidebar") end,
-          external_close = function() return controller:close("external_popup") end,
+          activate = function(row)
+            return controller:activate_row(row)
+          end,
+          note = function(row)
+            return controller:edit_note(row)
+          end,
+          save = function()
+            return controller:save()
+          end,
+          load = function()
+            return controller:load()
+          end,
+          toggle = function(row)
+            return controller:toggle_row(row)
+          end,
+          close = function()
+            return controller:close("sidebar")
+          end,
+          external_close = function()
+            return controller:close("external_popup")
+          end,
         },
         notify = runtime.notify,
       })
@@ -1208,9 +1238,15 @@ function M.native(config_provider, runtime, overrides)
     presenter_factory = function(config)
       return factories.presenter({
         navigation = config.navigation,
-        resolve_node = function(node_id) return controller:_resolve_location(node_id) end,
-        choose_window = function() return controller:choose_jump_window() end,
-        set_current = function(node_id) return controller:set_current(node_id) end,
+        resolve_node = function(node_id)
+          return controller:_resolve_location(node_id)
+        end,
+        choose_window = function()
+          return controller:choose_jump_window()
+        end,
+        set_current = function(node_id)
+          return controller:set_current(node_id)
+        end,
         notify = runtime.notify,
       })
     end,

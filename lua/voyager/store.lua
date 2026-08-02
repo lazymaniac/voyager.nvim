@@ -133,7 +133,10 @@ end
 
 function Store:_path_for_length(flow, length)
   local stem = Locator.slug(flow.name) .. "-" .. flow.root_key:sub(1, length)
-  return self:_flows_dir(assert(self._project_root, "Voyager store has no fixed project root")) .. "/" .. stem .. ".json"
+  return self:_flows_dir(assert(self._project_root, "Voyager store has no fixed project root"))
+    .. "/"
+    .. stem
+    .. ".json"
 end
 
 function Store:path_for(flow)

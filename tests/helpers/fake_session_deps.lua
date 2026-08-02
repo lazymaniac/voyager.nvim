@@ -230,7 +230,9 @@ function M.new(overrides)
   }
 
   env.runtime = {
-    now = function() return "2026-08-02T10:00:00Z" end,
+    now = function()
+      return "2026-08-02T10:00:00Z"
+    end,
     random = function(length)
       if env.random_error then
         return nil, env.random_error
@@ -238,16 +240,26 @@ function M.new(overrides)
       return string.rep("\1", length)
     end,
     sha256 = vim.fn.sha256,
-    cwd = function() return "/project" end,
+    cwd = function()
+      return "/project"
+    end,
     dirname = vim.fs.dirname,
-    fs_realpath = function(path) return vim.fs.normalize(path) end,
-    find_root = function() return "/project" end,
+    fs_realpath = function(path)
+      return vim.fs.normalize(path)
+    end,
+    find_root = function()
+      return "/project"
+    end,
     current_buf = function()
       local win = env.windows[env.current_win_id]
       return win and win.bufnr or env.origin_buf
     end,
-    current_win = function() return env.current_win_id end,
-    current_tabpage = function() return env.current_tabpage_id end,
+    current_win = function()
+      return env.current_win_id
+    end,
+    current_tabpage = function()
+      return env.current_tabpage_id
+    end,
     list_wins = function()
       local result = {}
       for winid, window in pairs(env.windows) do
@@ -261,9 +273,15 @@ function M.new(overrides)
     win_valid = function(winid)
       return env.windows[winid] ~= nil and env.windows[winid].valid ~= false
     end,
-    win_buf = function(winid) return assert(env.windows[winid]).bufnr end,
-    win_tab = function(winid) return assert(env.windows[winid]).tabpage end,
-    win_config = function(winid) return { relative = assert(env.windows[winid]).relative } end,
+    win_buf = function(winid)
+      return assert(env.windows[winid]).bufnr
+    end,
+    win_tab = function(winid)
+      return assert(env.windows[winid]).tabpage
+    end,
+    win_config = function(winid)
+      return { relative = assert(env.windows[winid]).relative }
+    end,
     set_current_win = function(winid)
       assert(env.windows[winid] and env.windows[winid].valid ~= false)
       env.current_win_id = winid
@@ -286,9 +304,15 @@ function M.new(overrides)
     buffer_loaded = function(bufnr)
       return env.buffers[bufnr] ~= nil and env.buffers[bufnr].loaded == true
     end,
-    buffer_name = function(bufnr) return assert(env.buffers[bufnr]).name end,
-    buffer_option = function(bufnr, name) return assert(env.buffers[bufnr])[name] end,
-    get_buffer_lines = function(bufnr) return vim.deepcopy(assert(env.buffers[bufnr]).lines) end,
+    buffer_name = function(bufnr)
+      return assert(env.buffers[bufnr]).name
+    end,
+    buffer_option = function(bufnr, name)
+      return assert(env.buffers[bufnr])[name]
+    end,
+    get_buffer_lines = function(bufnr)
+      return vim.deepcopy(assert(env.buffers[bufnr]).lines)
+    end,
     cursor = function(winid)
       local cursor = assert(env.windows[winid]).cursor or { 1, 0 }
       return { line = cursor[1] - 1, character = cursor[2] }
@@ -472,7 +496,9 @@ function M.new(overrides)
 
   function env:session_options()
     return {
-      config_provider = function() return vim.deepcopy(env.config) end,
+      config_provider = function()
+        return vim.deepcopy(env.config)
+      end,
       runtime = env.runtime,
       flow = env.flow_module,
       locator_factory = function(project_root, resolve_uri)

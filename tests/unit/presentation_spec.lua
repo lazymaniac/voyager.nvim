@@ -59,7 +59,9 @@ local function close_list_windows()
   pcall(vim.cmd, "silent! cclose")
   for _, winid in ipairs(vim.api.nvim_list_wins()) do
     if vim.api.nvim_win_is_valid(winid) then
-      pcall(vim.api.nvim_win_call, winid, function() vim.cmd("silent! lclose") end)
+      pcall(vim.api.nvim_win_call, winid, function()
+        vim.cmd("silent! lclose")
+      end)
     end
   end
 end
@@ -80,9 +82,15 @@ local function presenter(env, navigation, overrides)
       end
       return nodes[node_id]
     end,
-    choose_window = overrides.choose_window or function() return env.source_win end,
-    set_current = function(node_id) table.insert(current, node_id) end,
-    notify = function(message) overrides.notification = message end,
+    choose_window = overrides.choose_window or function()
+      return env.source_win
+    end,
+    set_current = function(node_id)
+      table.insert(current, node_id)
+    end,
+    notify = function(message)
+      overrides.notification = message
+    end,
   })
   return instance, current, overrides
 end
@@ -139,12 +147,21 @@ describe("Voyager LSP presentation", function()
     assert.is_true(vim.iter(jumps):any(function(jump)
       return jump.bufnr == env.source and jump.lnum == 2 and jump.col == 3
     end))
-    assert.equals(-1, vim.api.nvim_win_call(env.source_win, function() return vim.fn.foldclosed(1) end))
+    assert.equals(
+      -1,
+      vim.api.nvim_win_call(env.source_win, function()
+        return vim.fn.foldclosed(1)
+      end)
+    )
   end)
 
   it("does nothing when no eligible jump window exists", function()
     local env = fixture()
-    local instance, current = presenter(env, nil, { choose_window = function() return nil end })
+    local instance, current = presenter(env, nil, {
+      choose_window = function()
+        return nil
+      end,
+    })
     vim.fn.settagstack(env.source_win, { items = {} }, "r")
     local jumps_before = vim.deepcopy(vim.fn.getjumplist(env.source_win))
 
@@ -249,9 +266,15 @@ describe("Voyager LSP presentation", function()
           table.insert(captures, { list = list, select = select })
         end,
       },
-      resolve_node = function(node_id) return node_id == "loc-result" and env.location or nil end,
-      choose_window = function() return env.source_win end,
-      set_current = function(node_id) table.insert(calls, node_id) end,
+      resolve_node = function(node_id)
+        return node_id == "loc-result" and env.location or nil
+      end,
+      choose_window = function()
+        return env.source_win
+      end,
+      set_current = function(node_id)
+        table.insert(calls, node_id)
+      end,
       notify = function() end,
     })
 

@@ -254,15 +254,13 @@ function Flow:_commit_direct(input)
       changed = true
     else
       local touched = self._journal.metadata[result.id] or {}
-      if type(location.symbol) == "string"
-        and location.symbol ~= ""
-        and result.location.symbol ~= location.symbol
-      then
+      if type(location.symbol) == "string" and location.symbol ~= "" and result.location.symbol ~= location.symbol then
         result.location.symbol = location.symbol
         touched.symbol = true
         changed = true
       end
-      if type(location.context) == "string"
+      if
+        type(location.context) == "string"
         and location.context ~= ""
         and result.location.context ~= location.context
       then

@@ -102,12 +102,18 @@ describe("Voyager standard LSP facade", function()
 
     assert.is_true(handle:is_done())
     assert.equals(1, #completed)
-    assert.same({ "alpha", "zeta" }, vim.tbl_map(function(response)
-      return response.client.name
-    end, normalized_responses))
-    assert.same({ "utf-16", "utf-8" }, vim.tbl_map(function(response)
-      return response.client.offset_encoding
-    end, normalized_responses))
+    assert.same(
+      { "alpha", "zeta" },
+      vim.tbl_map(function(response)
+        return response.client.name
+      end, normalized_responses)
+    )
+    assert.same(
+      { "utf-16", "utf-8" },
+      vim.tbl_map(function(response)
+        return response.client.offset_encoding
+      end, normalized_responses)
+    )
     assert.equals("success", completed[1].status)
     assert.equals("textDocument/references", completed[1].method)
     assert.equals("references", completed[1].label)
@@ -169,17 +175,26 @@ describe("Voyager standard LSP facade", function()
         actions = Actions,
         normalizer = {
           locations = function()
-            return vim.deepcopy(case.normalized[1]), vim.deepcopy(case.normalized[2]), vim.deepcopy(case.normalized[3]), {
-              usable_response_count = case.normalized[4],
-              empty_response_count = case.normalized[4] > 0 and #case.normalized[1] == 0 and 1 or 0,
-              invalid_response_count = case.normalized[4] == 0 and 1 or 0,
-            }
+            return vim.deepcopy(case.normalized[1]),
+              vim.deepcopy(case.normalized[2]),
+              vim.deepcopy(case.normalized[3]),
+              {
+                usable_response_count = case.normalized[4],
+                empty_response_count = case.normalized[4] > 0 and #case.normalized[1] == 0 and 1 or 0,
+                invalid_response_count = case.normalized[4] == 0 and 1 or 0,
+              }
           end,
         },
         request_group = fake_group(case.stage, group_calls),
-        get_clients = function() return { FakeClient.new({ id = 1, name = "alpha" }) } end,
-        make_position_params = function() return {} end,
-        timer = function() error("fake group owns no timer") end,
+        get_clients = function()
+          return { FakeClient.new({ id = 1, name = "alpha" }) }
+        end,
+        make_position_params = function()
+          return {}
+        end,
+        timer = function()
+          error("fake group owns no timer")
+        end,
         select = function() end,
       })
 
@@ -203,14 +218,22 @@ describe("Voyager standard LSP facade", function()
     local completed = {}
     local service = Lsp.new({
       actions = Actions,
-      normalizer = { locations = function() error("normalizer must not run") end },
+      normalizer = {
+        locations = function()
+          error("normalizer must not run")
+        end,
+      },
       request_group = fake_group({}, group_calls),
       get_clients = function(filter)
         assert.same({ bufnr = 3, method = "textDocument/definition" }, filter)
         return {}
       end,
-      make_position_params = function() error("params must not run") end,
-      timer = function() error("timer must not run") end,
+      make_position_params = function()
+        error("params must not run")
+      end,
+      timer = function()
+        error("timer must not run")
+      end,
       select = function() end,
     })
 
@@ -248,8 +271,12 @@ describe("Voyager standard LSP facade", function()
         end,
       },
       request_group = RequestGroup,
-      get_clients = function() return { client } end,
-      make_position_params = function() return {} end,
+      get_clients = function()
+        return { client }
+      end,
+      make_position_params = function()
+        return {}
+      end,
       timer = timers.factory,
       select = function() end,
     })
@@ -298,13 +325,19 @@ describe("Voyager standard LSP facade", function()
     local service = Lsp.new({
       actions = Actions,
       normalizer = {},
-      request_group = { start = function() error("standard request group must not start") end },
+      request_group = {
+        start = function()
+          error("standard request group must not start")
+        end,
+      },
       call_hierarchy = call_hierarchy,
       get_clients = function(filter)
         assert.same({ bufnr = 3, method = "textDocument/prepareCallHierarchy" }, filter)
         return { first_client }
       end,
-      make_position_params = function() return {} end,
+      make_position_params = function()
+        return {}
+      end,
       timer = function() end,
       select = function() end,
     })

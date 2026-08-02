@@ -33,7 +33,8 @@ local function basename(locator)
 end
 
 function M.canonical_range(lines, range, encoding)
-  if type(lines) ~= "table"
+  if
+    type(lines) ~= "table"
     or type(range) ~= "table"
     or type(range.start) ~= "table"
     or type(range["end"]) ~= "table"
@@ -42,7 +43,8 @@ function M.canonical_range(lines, range, encoding)
     return nil, "range, source lines, or position encoding is invalid"
   end
   local function position(value)
-    if type(value) ~= "table"
+    if
+      type(value) ~= "table"
       or type(value.line) ~= "number"
       or value.line % 1 ~= 0
       or value.line < 0
@@ -75,9 +77,7 @@ function M.canonical_range(lines, range, encoding)
   if not end_pos then
     return nil, end_error
   end
-  if end_pos.line < start_pos.line
-    or (end_pos.line == start_pos.line and end_pos.character < start_pos.character)
-  then
+  if end_pos.line < start_pos.line or (end_pos.line == start_pos.line and end_pos.character < start_pos.character) then
     return nil, "range end precedes range start"
   end
   return { start = start_pos, ["end"] = end_pos }
@@ -171,7 +171,8 @@ function Locator:_uri_buffer(locator)
   end
   if self._resolve_uri then
     local ok, resolved = pcall(self._resolve_uri, locator.uri)
-    if ok
+    if
+      ok
       and type(resolved) == "number"
       and resolved % 1 == 0
       and runtime.buffer_valid(resolved)

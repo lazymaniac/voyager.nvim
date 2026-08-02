@@ -66,9 +66,9 @@ describe("Voyager restart journey: save phase", function()
         source_win = E2E.source_win,
         source_valid = vim.api.nvim_win_is_valid(E2E.source_win),
         source_buf = vim.api.nvim_win_is_valid(E2E.source_win) and vim.api.nvim_win_get_buf(E2E.source_win) or nil,
-        source_name = vim.api.nvim_win_is_valid(E2E.source_win)
-            and vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(E2E.source_win))
-          or nil,
+        source_name = vim.api.nvim_win_is_valid(E2E.source_win) and vim.api.nvim_buf_get_name(
+          vim.api.nvim_win_get_buf(E2E.source_win)
+        ) or nil,
         source_windows = session:state().source_windows,
         target = mysql.location,
       })

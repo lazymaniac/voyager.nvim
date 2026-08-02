@@ -201,10 +201,7 @@ function Normalize:call_sites(direction, client, prepared_item, calls)
     if direction == "incoming" then
       uri = type(owner) == "table" and owner.uri or nil
     else
-      uri = type(prepared_item) == "table"
-          and type(prepared_item.item) == "table"
-          and prepared_item.item.uri
-        or nil
+      uri = type(prepared_item) == "table" and type(prepared_item.item) == "table" and prepared_item.item.uri or nil
     end
     local preferred_symbol = type(owner) == "table" and owner.name or nil
     local valid_count = 0
@@ -214,15 +211,7 @@ function Normalize:call_sites(direction, client, prepared_item, calls)
       invalid_count = 1
     else
       for range_index, range in ipairs(ranges) do
-        local item = self:_safe_item(
-          client,
-          call,
-          uri,
-          range,
-          preferred_symbol,
-          call_index,
-          range_index
-        )
+        local item = self:_safe_item(client, call, uri, range, preferred_symbol, call_index, range_index)
         if item then
           valid_count = valid_count + 1
           table.insert(presentation, item)

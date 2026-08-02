@@ -146,22 +146,28 @@ end
 local function incoming_calls(params)
   local item = params.item
   if item.uri == uri("mysql_store.lua") then
-    return { {
-      from = hierarchy_item("auth.lua", "authorize"),
-      fromRanges = { find_range("auth.lua", "mysql_store.save") },
-    } }
+    return {
+      {
+        from = hierarchy_item("auth.lua", "authorize"),
+        fromRanges = { find_range("auth.lua", "mysql_store.save") },
+      },
+    }
   end
   if item.uri == uri("memory_store.lua") then
-    return { {
-      from = hierarchy_item("auth.lua", "authorize"),
-      fromRanges = { find_range("auth.lua", "memory_store.save") },
-    } }
+    return {
+      {
+        from = hierarchy_item("auth.lua", "authorize"),
+        fromRanges = { find_range("auth.lua", "memory_store.save") },
+      },
+    }
   end
   if item.uri == uri("auth.lua") then
-    return { {
-      from = hierarchy_item("main.lua", "main"),
-      fromRanges = { find_range("main.lua", "auth.authorize") },
-    } }
+    return {
+      {
+        from = hierarchy_item("main.lua", "main"),
+        fromRanges = { find_range("main.lua", "auth.authorize") },
+      },
+    }
   end
   return {}
 end

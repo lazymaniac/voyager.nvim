@@ -77,8 +77,18 @@ describe("Voyager LSP location normalization", function()
     }
 
     local presentation, unique, failures, summary = normalizer:locations(responses)
-    assert.same({ 2, 8, 9 }, vim.tbl_map(function(item) return item.client_id end, presentation))
-    assert.same({ 1, 1, 1 }, vim.tbl_map(function(item) return item.response_index end, presentation))
+    assert.same(
+      { 2, 8, 9 },
+      vim.tbl_map(function(item)
+        return item.client_id
+      end, presentation)
+    )
+    assert.same(
+      { 1, 1, 1 },
+      vim.tbl_map(function(item)
+        return item.response_index
+      end, presentation)
+    )
     assert.equals(3, #presentation)
     assert.equals(1, #unique)
     assert.equals("auth.lua:1", unique[1].symbol)

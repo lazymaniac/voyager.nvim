@@ -154,9 +154,12 @@ describe("Voyager storage", function()
     end
     local fs = FakeFS.new({ directories = { "/project/.voyager/flows" }, files = files })
     local entries, warnings = new_store(fs):list("/project")
-    assert.same({ "lua/a.lua", "lua/b.lua", "lua/zeta.lua" }, vim.tbl_map(function(entry)
-      return entry.display_path
-    end, entries))
+    assert.same(
+      { "lua/a.lua", "lua/b.lua", "lua/zeta.lua" },
+      vim.tbl_map(function(entry)
+        return entry.display_path
+      end, entries)
+    )
     assert.equals(1, #warnings)
     assert.matches("corrupt.json", warnings[1], nil, true)
   end)

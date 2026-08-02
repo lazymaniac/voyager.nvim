@@ -73,7 +73,8 @@ local function validate_locator(value, path)
   if value.kind == "project" then
     reject_unknown(value, path, { kind = true, path = true })
     require_string(value.path, path .. ".path")
-    if value.path:sub(1, 1) == "/"
+    if
+      value.path:sub(1, 1) == "/"
       or value.path:find("\\", 1, true)
       or value.path == "."
       or value.path:match("^%.%./")

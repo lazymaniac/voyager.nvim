@@ -4,21 +4,27 @@ local Buffer = require("tests.helpers.buffer")
 describe("Voyager locators", function()
   it("converts client positions to UTF-8 byte columns", function()
     local lines = { "a😀b" }
-    assert.same({
-      start = { line = 0, character = 1 },
-      ["end"] = { line = 0, character = 5 },
-    }, Locator.canonical_range(lines, {
-      start = { line = 0, character = 1 },
-      ["end"] = { line = 0, character = 3 },
-    }, "utf-16"))
+    assert.same(
+      {
+        start = { line = 0, character = 1 },
+        ["end"] = { line = 0, character = 5 },
+      },
+      Locator.canonical_range(lines, {
+        start = { line = 0, character = 1 },
+        ["end"] = { line = 0, character = 3 },
+      }, "utf-16")
+    )
   end)
 
   it("uses tagged canonical keys", function()
     assert.equals('["project","lua/auth.lua"]', Locator.locator_key({ kind = "project", path = "lua/auth.lua" }))
-    assert.equals('["uri","jdt://contents/Foo.class"]', Locator.locator_key({
-      kind = "uri",
-      uri = "jdt://contents/Foo.class",
-    }))
+    assert.equals(
+      '["uri","jdt://contents/Foo.class"]',
+      Locator.locator_key({
+        kind = "uri",
+        uri = "jdt://contents/Foo.class",
+      })
+    )
   end)
 
   it("reproduces the approved root hash and name", function()

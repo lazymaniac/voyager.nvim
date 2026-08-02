@@ -16,15 +16,18 @@ describe("Voyager sidebar projection", function()
   it("projects the flow in stable depth-first order", function()
     local flow = Fixtures.branched_flow()
     local rows, header = Sidebar.project(flow, 42, { dirty = true, request_count = 2 })
-    assert.same({
-      { kind = "location", owner_id = flow.root.id },
-      { kind = "action", owner_id = flow.root.actions[1].id },
-      { kind = "location", owner_id = flow.root.actions[1].results[1].id },
-      { kind = "note", owner_id = flow.root.actions[1].results[1].id },
-      { kind = "location", owner_id = flow.root.actions[1].results[2].id },
-    }, vim.tbl_map(function(row)
-      return { kind = row.kind, owner_id = row.owner_id }
-    end, rows))
+    assert.same(
+      {
+        { kind = "location", owner_id = flow.root.id },
+        { kind = "action", owner_id = flow.root.actions[1].id },
+        { kind = "location", owner_id = flow.root.actions[1].results[1].id },
+        { kind = "note", owner_id = flow.root.actions[1].results[1].id },
+        { kind = "location", owner_id = flow.root.actions[1].results[2].id },
+      },
+      vim.tbl_map(function(row)
+        return { kind = row.kind, owner_id = row.owner_id }
+      end, rows)
+    )
     assert.matches("%*", header)
     assert.matches("2 requests", header)
   end)
@@ -92,7 +95,12 @@ describe("Voyager sidebar projection", function()
     })
     local rows = Sidebar.project(flow, 80, { dirty = true, request_count = 0 })
 
-    assert.matches("lua/auth.lua:3", row_for(rows, "location", commit.node_id_by_identity[project.identity]).text, nil, true)
+    assert.matches(
+      "lua/auth.lua:3",
+      row_for(rows, "location", commit.node_id_by_identity[project.identity]).text,
+      nil,
+      true
+    )
     assert.matches(
       "/opt/vendor/auth.lua:4",
       row_for(rows, "location", commit.node_id_by_identity[absolute.identity]).text,
@@ -146,20 +154,25 @@ describe("Voyager sidebar popup", function()
   end
 
   it("computes outer geometry for both sides and editor chrome", function()
-    assert.same({ row = 1, col = 78, width = 42, height = 37 }, Sidebar.compute_geometry(
-      { side = "right", width = 42, border = "rounded" },
-      ui_state()
-    ))
-    assert.same({ row = 2, col = 0, width = 28, height = 24 }, Sidebar.compute_geometry(
-      { side = "left", width = 42, border = "rounded" },
-      ui_state({ columns = 30, lines = 30, tabline_rows = 2, statusline_rows = 2, cmdheight = 2 })
-    ))
+    assert.same(
+      { row = 1, col = 78, width = 42, height = 37 },
+      Sidebar.compute_geometry({ side = "right", width = 42, border = "rounded" }, ui_state())
+    )
+    assert.same(
+      { row = 2, col = 0, width = 28, height = 24 },
+      Sidebar.compute_geometry(
+        { side = "left", width = 42, border = "rounded" },
+        ui_state({ columns = 30, lines = 30, tabline_rows = 2, statusline_rows = 2, cmdheight = 2 })
+      )
+    )
 
     for width = 20, 23 do
-      local geometry = assert(Sidebar.compute_geometry(
-        { side = "right", width = width, border = "rounded" },
-        ui_state({ columns = 30, lines = 12, tabline_rows = 0, statusline_rows = 1, cmdheight = 1 })
-      ))
+      local geometry = assert(
+        Sidebar.compute_geometry(
+          { side = "right", width = width, border = "rounded" },
+          ui_state({ columns = 30, lines = 12, tabline_rows = 0, statusline_rows = 1, cmdheight = 1 })
+        )
+      )
       assert.equals(width, geometry.width)
       assert.equals(30 - width, geometry.col)
     end
@@ -180,10 +193,13 @@ describe("Voyager sidebar popup", function()
     assert.is_nil(geometry)
     assert.equals("editor must have at least 4 usable rows", reason)
 
-    assert.same({ row = 1, col = 4, width = 20, height = 4 }, Sidebar.compute_geometry(
-      { side = "right", width = 20, border = "rounded" },
-      ui_state({ columns = 24, lines = 7, tabline_rows = 1, statusline_rows = 1, cmdheight = 1 })
-    ))
+    assert.same(
+      { row = 1, col = 4, width = 20, height = 4 },
+      Sidebar.compute_geometry(
+        { side = "right", width = 20, border = "rounded" },
+        ui_state({ columns = 24, lines = 7, tabline_rows = 1, statusline_rows = 1, cmdheight = 1 })
+      )
+    )
   end)
 
   it("owns one scratch popup and delegates buffer-local typed actions", function()
@@ -194,12 +210,24 @@ describe("Voyager sidebar popup", function()
       sidebar = config.sidebar,
       keymaps = config.sidebar_keymaps,
       handlers = noop_handlers({
-        activate = function(row) calls.activate = row end,
-        note = function(row) calls.note = row end,
-        save = function() calls.save = true end,
-        load = function() calls.load = true end,
-        toggle = function(row) calls.toggle = row end,
-        close = function() calls.close = true end,
+        activate = function(row)
+          calls.activate = row
+        end,
+        note = function(row)
+          calls.note = row
+        end,
+        save = function()
+          calls.save = true
+        end,
+        load = function()
+          calls.load = true
+        end,
+        toggle = function(row)
+          calls.toggle = row
+        end,
+        close = function()
+          calls.close = true
+        end,
       }),
       popup_factory = fake.factory,
       ui_state = ui_state,
@@ -244,12 +272,24 @@ describe("Voyager sidebar popup", function()
       sidebar = config.sidebar,
       keymaps = config.sidebar_keymaps,
       handlers = noop_handlers({
-        activate = function(row) table.insert(calls.activate, row) end,
-        note = function(row) table.insert(calls.note, row) end,
-        toggle = function(row) table.insert(calls.toggle, row) end,
-        save = function() calls.save = calls.save + 1 end,
-        load = function() calls.load = calls.load + 1 end,
-        close = function() calls.close = calls.close + 1 end,
+        activate = function(row)
+          table.insert(calls.activate, row)
+        end,
+        note = function(row)
+          table.insert(calls.note, row)
+        end,
+        toggle = function(row)
+          table.insert(calls.toggle, row)
+        end,
+        save = function()
+          calls.save = calls.save + 1
+        end,
+        load = function()
+          calls.load = calls.load + 1
+        end,
+        close = function()
+          calls.close = calls.close + 1
+        end,
       }),
       popup_factory = fake.factory,
       ui_state = ui_state,
@@ -277,7 +317,12 @@ describe("Voyager sidebar popup", function()
     end
 
     for _, name in ipairs({ "activate", "note", "toggle" }) do
-      assert.same({ "location", "action", "note" }, vim.tbl_map(function(row) return row.kind end, calls[name]))
+      assert.same(
+        { "location", "action", "note" },
+        vim.tbl_map(function(row)
+          return row.kind
+        end, calls[name])
+      )
     end
     assert.equals(3, calls.save)
     assert.equals(3, calls.load)
@@ -328,10 +373,14 @@ describe("Voyager sidebar popup", function()
       sidebar = { side = "right", width = 20, border = "rounded" },
       keymaps = {},
       handlers = noop_handlers({
-        external_close = function() external_closes = external_closes + 1 end,
+        external_close = function()
+          external_closes = external_closes + 1
+        end,
       }),
       popup_factory = fake.factory,
-      ui_state = function() return vim.deepcopy(state) end,
+      ui_state = function()
+        return vim.deepcopy(state)
+      end,
       notify = function() end,
     })
     assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))

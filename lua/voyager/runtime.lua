@@ -39,7 +39,8 @@ function M.native()
     list_buffers = vim.api.nvim_list_bufs,
     find_buffer = function(exact_name)
       for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-        if vim.api.nvim_buf_is_valid(bufnr)
+        if
+          vim.api.nvim_buf_is_valid(bufnr)
           and vim.api.nvim_buf_is_loaded(bufnr)
           and vim.api.nvim_buf_get_name(bufnr) == exact_name
         then
@@ -151,11 +152,15 @@ function M.native()
     timer = function(timeout_ms, on_timeout)
       local handle = assert(vim.uv.new_timer())
       local closed = false
-      handle:start(timeout_ms, 0, vim.schedule_wrap(function()
-        if not closed then
-          on_timeout()
-        end
-      end))
+      handle:start(
+        timeout_ms,
+        0,
+        vim.schedule_wrap(function()
+          if not closed then
+            on_timeout()
+          end
+        end)
+      )
       return {
         cancel = function()
           if not closed then

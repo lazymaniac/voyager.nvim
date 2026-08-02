@@ -100,13 +100,7 @@ function M.project(flow, width, status)
       current_glyph = "● "
     end
     local disclosure = node.collapsed and "▸ " or "▾ "
-    local text = string.rep("  ", depth)
-      .. current_glyph
-      .. disclosure
-      .. node.label
-      .. " ("
-      .. #node.results
-      .. ")"
+    local text = string.rep("  ", depth) .. current_glyph .. disclosure .. node.label .. " (" .. #node.results .. ")"
     table.insert(rows, row("action", node.id, text, depth, marker, width))
     if not node.collapsed then
       for _, result in ipairs(node.results) do
@@ -452,12 +446,8 @@ function Sidebar:render(flow, status)
   local width = content_size(self._config, assert(self._geometry)).width
   local rows, header = M.project(flow, width, status)
   local hidden_action_id = previous and hidden_by_action(flow, previous.owner_id) or nil
-  local selected_index = M.selection_index(
-    rows,
-    previous and previous.kind or nil,
-    previous and previous.owner_id or nil,
-    hidden_action_id
-  )
+  local selected_index =
+    M.selection_index(rows, previous and previous.kind or nil, previous and previous.owner_id or nil, hidden_action_id)
 
   local lines = { header }
   local line_to_row = { false }

@@ -35,7 +35,7 @@ describe("Voyager schema", function()
     assert.equals(encoded, Schema.encode(Schema.decode(encoded)))
     assert.matches('^%{%s+"schema_version": 1,', encoded)
     assert.matches('\n  "position_encoding": "utf%-8",', encoded)
-    assert.matches('%}\n$', encoded)
+    assert.matches("%}\n$", encoded)
   end)
 
   it("omits absent optional fields and rejects null", function()
@@ -59,56 +59,116 @@ describe("Voyager schema", function()
 
   it("rejects every schema-v1 structural and semantic violation", function()
     local cases = {
-      { "newer version", function(d)
-        d.schema_version = 2
-      end, "schema_version" },
-      { "non-UTF-8 positions", function(d)
-        d.position_encoding = "utf-16"
-      end, "position_encoding" },
-      { "zero revision", function(d)
-        d.revision = 0
-      end, "revision" },
-      { "invalid timestamp", function(d)
-        d.updated_at = "2026-08-01"
-      end, "updated_at" },
-      { "invalid node kind", function(d)
-        d.root.kind = "result"
-      end, "kind" },
-      { "duplicate ID", function(d)
-        d.root.actions = {
-          action_node(2, "textDocument/definition", "definition", {
-            vim.tbl_extend("force", location_node(2, "lua/auth.lua", 8, "auth"), { id = d.root.id }),
-          }),
-        }
-      end, "duplicate" },
-      { "non-alternating child", function(d)
-        d.root.actions = { location_node(2, "lua/auth.lua", 8, "auth") }
-      end, "action" },
-      { "missing current location", function(d)
-        d.current_node_id = node_id("loc", 99)
-      end, "current_node_id" },
-      { "null optional", function(d)
-        d.root.note = vim.NIL
-      end, "note" },
-      { "invalid locator", function(d)
-        d.root.location.locator.path = "../escape.lua"
-      end, "locator" },
-      { "inverted range", function(d)
-        d.root.location.range.start.character = 5
-        d.root.location.range["end"].character = 1
-      end, "range" },
-      { "wrong root key", function(d)
-        d.root_key = string.rep("b", 64)
-      end, "root_key" },
-      { "wrong name", function(d)
-        d.name = "not-main"
-      end, "name" },
-      { "wrong flow ID", function(d)
-        d.flow_id = "not-main-bbbbbbbb"
-      end, "flow_id" },
-      { "unknown action method", function(d)
-        d.root.actions = { action_node(2, "textDocument/unknown", "unknown", {}) }
-      end, "method" },
+      {
+        "newer version",
+        function(d)
+          d.schema_version = 2
+        end,
+        "schema_version",
+      },
+      {
+        "non-UTF-8 positions",
+        function(d)
+          d.position_encoding = "utf-16"
+        end,
+        "position_encoding",
+      },
+      {
+        "zero revision",
+        function(d)
+          d.revision = 0
+        end,
+        "revision",
+      },
+      {
+        "invalid timestamp",
+        function(d)
+          d.updated_at = "2026-08-01"
+        end,
+        "updated_at",
+      },
+      {
+        "invalid node kind",
+        function(d)
+          d.root.kind = "result"
+        end,
+        "kind",
+      },
+      {
+        "duplicate ID",
+        function(d)
+          d.root.actions = {
+            action_node(2, "textDocument/definition", "definition", {
+              vim.tbl_extend("force", location_node(2, "lua/auth.lua", 8, "auth"), { id = d.root.id }),
+            }),
+          }
+        end,
+        "duplicate",
+      },
+      {
+        "non-alternating child",
+        function(d)
+          d.root.actions = { location_node(2, "lua/auth.lua", 8, "auth") }
+        end,
+        "action",
+      },
+      {
+        "missing current location",
+        function(d)
+          d.current_node_id = node_id("loc", 99)
+        end,
+        "current_node_id",
+      },
+      {
+        "null optional",
+        function(d)
+          d.root.note = vim.NIL
+        end,
+        "note",
+      },
+      {
+        "invalid locator",
+        function(d)
+          d.root.location.locator.path = "../escape.lua"
+        end,
+        "locator",
+      },
+      {
+        "inverted range",
+        function(d)
+          d.root.location.range.start.character = 5
+          d.root.location.range["end"].character = 1
+        end,
+        "range",
+      },
+      {
+        "wrong root key",
+        function(d)
+          d.root_key = string.rep("b", 64)
+        end,
+        "root_key",
+      },
+      {
+        "wrong name",
+        function(d)
+          d.name = "not-main"
+        end,
+        "name",
+      },
+      {
+        "wrong flow ID",
+        function(d)
+          d.flow_id = "not-main-bbbbbbbb"
+        end,
+        "flow_id",
+      },
+      {
+        "unknown action method",
+        function(d)
+          d.root.actions = { action_node(2, "textDocument/unknown", "unknown", {}) }
+        end,
+        "method",
+      },
     }
 
     for _, case in ipairs(cases) do

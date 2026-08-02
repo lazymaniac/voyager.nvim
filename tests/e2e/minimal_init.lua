@@ -92,11 +92,14 @@ E2E.source_win = vim.api.nvim_get_current_win()
 E2E.place_cursor(E2E.source_buf, "main")
 
 for _, encoding in ipairs({ "utf-8", "utf-16" }) do
-  local client_id = assert(vim.lsp.start({
-    name = "voyager-fixture-" .. encoding:gsub("-", ""),
-    cmd = { vim.v.progpath, "--clean", "--headless", "-l", server_path, encoding, fixture_root },
-    root_dir = fixture_root,
-  }, { bufnr = E2E.source_buf }), "failed to start " .. encoding .. " fixture client")
+  local client_id = assert(
+    vim.lsp.start({
+      name = "voyager-fixture-" .. encoding:gsub("-", ""),
+      cmd = { vim.v.progpath, "--clean", "--headless", "-l", server_path, encoding, fixture_root },
+      root_dir = fixture_root,
+    }, { bufnr = E2E.source_buf }),
+    "failed to start " .. encoding .. " fixture client"
+  )
   table.insert(E2E.client_ids, client_id)
 end
 

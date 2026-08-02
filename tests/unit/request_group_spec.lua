@@ -7,7 +7,9 @@ local function snapshot(spec)
 end
 
 local function failure_kinds(outcome)
-  return vim.tbl_map(function(item) return item.kind end, outcome.failures)
+  return vim.tbl_map(function(item)
+    return item.kind
+  end, outcome.failures)
 end
 
 local function start(clients, overrides)
@@ -19,9 +21,13 @@ local function start(clients, overrides)
     method = "textDocument/definition",
     bufnr = 3,
     timeout_ms = 1000,
-    make_params = overrides.make_params or function(client) return { client = client.id } end,
+    make_params = overrides.make_params or function(client)
+      return { client = client.id }
+    end,
     timer = timers.factory,
-    on_complete = function(outcome) table.insert(completions, outcome) end,
+    on_complete = function(outcome)
+      table.insert(completions, outcome)
+    end,
   })
   return handle, timers, completions
 end
@@ -48,9 +54,12 @@ describe("Voyager LSP request groups", function()
     assert.is_true(handle:is_done())
     sync.client:reply_late(nil, {})
     assert.equals(1, #completions)
-    assert.same({ "alpha", "zeta" }, vim.tbl_map(function(response)
-      return response.client.name
-    end, completions[1].responses))
+    assert.same(
+      { "alpha", "zeta" },
+      vim.tbl_map(function(response)
+        return response.client.name
+      end, completions[1].responses)
+    )
     assert.same({}, completions[1].failures)
     assert.equals("success", completions[1].status)
     assert.same({}, sync.client.cancelled)
@@ -69,7 +78,12 @@ describe("Voyager LSP request groups", function()
     alpha_low.client:reply(nil, { 2 })
 
     assert.equals("success", completions[1].status)
-    assert.same({ 2, 8, 9 }, vim.tbl_map(function(response) return response.client.id end, completions[1].responses))
+    assert.same(
+      { 2, 8, 9 },
+      vim.tbl_map(function(response)
+        return response.client.id
+      end, completions[1].responses)
+    )
     assert_timer_closed_once(timers)
   end)
 
@@ -101,7 +115,12 @@ describe("Voyager LSP request groups", function()
 
     assert.equals("error", completions[1].status)
     assert.same({ "protocol", "protocol" }, failure_kinds(completions[1]))
-    assert.same({ "alpha failed", "zeta failed" }, vim.tbl_map(function(item) return item.message end, completions[1].failures))
+    assert.same(
+      { "alpha failed", "zeta failed" },
+      vim.tbl_map(function(item)
+        return item.message
+      end, completions[1].failures)
+    )
     assert_timer_closed_once(timers)
 
     first = snapshot({ id = 1, name = "alpha" })
@@ -162,7 +181,12 @@ describe("Voyager LSP request groups", function()
     assert.is_true(handle:is_done())
     assert.equals("cancelled", completions[1].status)
     assert.same({ "cancelled", "cancelled" }, failure_kinds(completions[1]))
-    assert.same({ "close", "close" }, vim.tbl_map(function(item) return item.message end, completions[1].failures))
+    assert.same(
+      { "close", "close" },
+      vim.tbl_map(function(item)
+        return item.message
+      end, completions[1].failures)
+    )
     assert.same({ alpha.client.request_id }, alpha.client.cancelled)
     assert.same({ zeta.client.request_id }, zeta.client.cancelled)
     alpha.client:reply_late(nil, {})
@@ -174,7 +198,9 @@ describe("Voyager LSP request groups", function()
   it("captures thrown setup work and never retains a synchronously settled request ID", function()
     local params_client = snapshot({ id = 1, name = "params" })
     local _, params_timer, params_done = start({ params_client }, {
-      make_params = function() error("params exploded") end,
+      make_params = function()
+        error("params exploded")
+      end,
     })
     assert.equals("error", params_done[1].status)
     assert.same({ "setup" }, failure_kinds(params_done[1]))

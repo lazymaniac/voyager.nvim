@@ -123,12 +123,8 @@ function M.start(opts)
     if state.done then
       return
     end
-    local supported_ok, supported = pcall(
-      selected.client.client.supports_method,
-      selected.client.client,
-      action.method,
-      context.bufnr
-    )
+    local supported_ok, supported =
+      pcall(selected.client.client.supports_method, selected.client.client, action.method, context.bufnr)
     if not supported_ok or not supported then
       finish(outcome("unsupported", {}, {}, combine_failures(state.prepare_failures)))
       return
@@ -152,12 +148,8 @@ function M.start(opts)
         invalid_response_count = 0,
       }
       for _, response in ipairs(stage.responses) do
-        local response_items, response_locations, response_failures, response_summary = opts.normalizer:call_sites(
-          action.direction,
-          selected.client,
-          selected,
-          response.result
-        )
+        local response_items, response_locations, response_failures, response_summary =
+          opts.normalizer:call_sites(action.direction, selected.client, selected, response.result)
         vim.list_extend(items, response_items)
         vim.list_extend(locations, response_locations)
         vim.list_extend(normalization_failures, response_failures)

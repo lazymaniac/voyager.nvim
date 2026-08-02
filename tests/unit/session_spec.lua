@@ -302,7 +302,8 @@ describe("Voyager session lifecycle", function()
   it("atomically activates a selected flow when no session exists", function()
     local session, deps = new_session()
     local loaded = Fixtures.new_flow()
-    local entry = { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
     deps.store.entries = { entry }
     deps.store.load_result = loaded
 
@@ -322,7 +323,8 @@ describe("Voyager session lifecycle", function()
 
   it("leaves an inactive controller untouched when a selected flow cannot load", function()
     local session, deps = new_session()
-    local entry = { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
     deps.store.entries = { entry }
     deps.store.load_error = "flow changed after listing"
 
@@ -345,7 +347,8 @@ describe("Voyager session lifecycle", function()
     local old_presenter = deps.presenter
     local old_handle = deps.lsp.handles[1]
     local loaded = Fixtures.new_flow()
-    local entry = { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
     deps.store.entries = { entry }
     deps.store.load_result = loaded
     local loaded_sidebar = deps:new_sidebar()
@@ -382,7 +385,8 @@ describe("Voyager session lifecycle", function()
     local original = session:state().flow
     local generation = session:state().generation
     assert.is_true(original:set_note(deps.root_id, "dirty"))
-    local entry = { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
     deps.store.entries = { entry }
     deps.store.load_result = Fixtures.new_flow()
     local loaded_sidebar = deps:new_sidebar()
@@ -419,7 +423,8 @@ describe("Voyager session lifecycle", function()
     assert.is_true(loaded:set_current(commit.node_id_by_identity[result.identity]))
     deps.store:save(loaded)
     deps.store.save_calls = {}
-    local entry = { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
     deps.store.entries = { entry }
     deps.store.load_result = loaded
     deps.locator.stale = true
@@ -442,7 +447,8 @@ describe("Voyager session lifecycle", function()
 
   it("ignores cancelled and stale saved-flow picker callbacks", function()
     local session, deps = new_session()
-    local entry = { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
     deps.store.entries = { entry }
     deps.store.load_result = Fixtures.new_flow()
 
@@ -473,7 +479,8 @@ describe("Voyager session lifecycle", function()
     assert.is_true(loaded:set_current(saved_id))
     deps.store:save(loaded)
     deps.store.save_calls = {}
-    local entry = { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
     deps.store.entries = { entry }
     deps.store.load_result = loaded
     local windows = vim.tbl_count(deps.windows)
@@ -500,7 +507,8 @@ describe("Voyager session lifecycle", function()
     assert.is_true(loaded:set_current(saved_id))
     deps.store:save(loaded)
     deps.store.save_calls = {}
-    local entry = { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
     deps.store.entries = { entry }
     deps.store.load_result = loaded
     deps.windows[deps.origin_win].valid = false
@@ -517,7 +525,8 @@ describe("Voyager session lifecycle", function()
     assert.is_true(session:open())
     assert.is_true(session:edit_note({ kind = "location", owner_id = deps.root_id }))
     local late_note = deps.input_callback
-    local entry = { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
     deps.store.entries = { entry }
     deps.store.load_result = Fixtures.new_flow()
     deps.next_sidebar = deps:new_sidebar()
@@ -543,7 +552,9 @@ describe("Voyager session lifecycle", function()
     assert.is_true(session:open())
     local generation = session:state().generation
     local request = { cancel_calls = {} }
-    function request:cancel(reason) table.insert(self.cancel_calls, reason) end
+    function request:cancel(reason)
+      table.insert(self.cancel_calls, reason)
+    end
     session:state().request_handles[1] = request
 
     session:close("command")
@@ -591,7 +602,9 @@ describe("Voyager session lifecycle", function()
         assert.equals(deps.locator, locator)
         return deps.store
       end,
-      keymaps = function() return deps.keymaps end,
+      keymaps = function()
+        return deps.keymaps
+      end,
       sidebar = function(opts)
         captured.sidebar = opts
         return deps.sidebar
@@ -605,7 +618,9 @@ describe("Voyager session lifecycle", function()
         return deps.presenter
       end,
     }
-    local session = Session.native(function() return vim.deepcopy(deps.config) end, deps.runtime, factories)
+    local session = Session.native(function()
+      return vim.deepcopy(deps.config)
+    end, deps.runtime, factories)
     assert.is_true(session:open())
     assert.same({
       project_root = deps.project_root,
@@ -617,14 +632,30 @@ describe("Voyager session lifecycle", function()
 
     local row = { kind = "location", owner_id = deps.root_id }
     local calls = {}
-    session.activate_row = function(_, value) calls.activate = value end
-    session.edit_note = function(_, value) calls.note = value end
-    session.toggle_row = function(_, value) calls.toggle = value end
-    session.save = function() calls.save = true end
-    session.load = function() calls.load = true end
-    session.close = function(_, source) calls.close = source end
-    session.set_current = function(_, node_id) calls.current = node_id end
-    session.choose_jump_window = function() return deps.origin_win end
+    session.activate_row = function(_, value)
+      calls.activate = value
+    end
+    session.edit_note = function(_, value)
+      calls.note = value
+    end
+    session.toggle_row = function(_, value)
+      calls.toggle = value
+    end
+    session.save = function()
+      calls.save = true
+    end
+    session.load = function()
+      calls.load = true
+    end
+    session.close = function(_, source)
+      calls.close = source
+    end
+    session.set_current = function(_, node_id)
+      calls.current = node_id
+    end
+    session.choose_jump_window = function()
+      return deps.origin_win
+    end
 
     captured.sidebar.handlers.activate(row)
     captured.sidebar.handlers.note(row)

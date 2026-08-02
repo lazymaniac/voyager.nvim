@@ -92,9 +92,14 @@ describe("Voyager asynchronous navigation orchestration", function()
   it("settles every logical status exactly once", function()
     local cases = {
       { status = "success", commit = true, locations = { Fixtures.location("lua/success.lua", 0) } },
-      { status = "partial", commit = true, locations = { Fixtures.location("lua/partial.lua", 0) }, failures = {
-        { kind = "protocol", client_name = "fake", client_id = 1, message = "partial failure" },
-      } },
+      {
+        status = "partial",
+        commit = true,
+        locations = { Fixtures.location("lua/partial.lua", 0) },
+        failures = {
+          { kind = "protocol", client_name = "fake", client_id = 1, message = "partial failure" },
+        },
+      },
       { status = "empty", commit = true, locations = {} },
       { status = "error", commit = false, locations = { Fixtures.location("lua/error.lua", 0) } },
       { status = "timeout", commit = false, locations = {} },
@@ -194,9 +199,12 @@ describe("Voyager asynchronous navigation orchestration", function()
     session:run_action("implementation")
 
     local older = deps.lsp.starts[1].context
-    deps.lsp:complete(1, outcome("definition", older.origin_node_id, {
-      Fixtures.location("lua/older.lua", 0),
-    }))
+    deps.lsp:complete(
+      1,
+      outcome("definition", older.origin_node_id, {
+        Fixtures.location("lua/older.lua", 0),
+      })
+    )
     assert.equals(deps.root_id, session:state().flow.current_node_id)
     assert.equals(0, #deps.presenter.present_calls)
     assert.equals("voyager/manual", session:state().flow.root.actions[1].method)
@@ -227,9 +235,12 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals(renders + 1, deps.sidebar.render_count)
     assert.is_false(session:set_current(session:state().flow.root.actions[1].id))
 
-    deps.lsp:complete(1, outcome("definition", context.origin_node_id, {
-      Fixtures.location("lua/late-manual.lua", 0),
-    }))
+    deps.lsp:complete(
+      1,
+      outcome("definition", context.origin_node_id, {
+        Fixtures.location("lua/late-manual.lua", 0),
+      })
+    )
     assert.equals(existing_id, session:state().flow.current_node_id)
     assert.equals(1, #deps.presenter.present_calls)
   end)
@@ -283,9 +294,12 @@ describe("Voyager asynchronous navigation orchestration", function()
     session:run_action("incoming_calls")
     local older_context = deps.lsp.starts[1].context
     deps.lsp.handles[1].on_supersede = function()
-      deps.lsp:complete(1, outcome("incoming_calls", older_context.origin_node_id, {}, {
-        status = "superseded",
-      }))
+      deps.lsp:complete(
+        1,
+        outcome("incoming_calls", older_context.origin_node_id, {}, {
+          status = "superseded",
+        })
+      )
     end
 
     session:run_action("definition")

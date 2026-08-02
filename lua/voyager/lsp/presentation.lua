@@ -78,7 +78,8 @@ function Presentation:_reuse_window(base_winid, bufnr)
   end
   local tabpage = vim.api.nvim_win_get_tabpage(base_winid)
   for _, winid in ipairs(vim.api.nvim_list_wins()) do
-    if eligible_window(winid)
+    if
+      eligible_window(winid)
       and vim.api.nvim_win_get_tabpage(winid) == tabpage
       and vim.api.nvim_win_get_buf(winid) == bufnr
     then
@@ -119,14 +120,16 @@ function Presentation:_jump(context, item, node_id)
 end
 
 function Presentation:_custom_select(context, presentation_token, item)
-  if presentation_token ~= self._presentation_token
+  if
+    presentation_token ~= self._presentation_token
     or context.generation ~= self._generation
     or context.request_token ~= self._request_token
   then
     return false
   end
   local tag = voyager_tag(item)
-  if not tag
+  if
+    not tag
     or tag.generation ~= context.generation
     or tag.request_token ~= context.request_token
     or type(tag.node_id) ~= "string"
@@ -208,7 +211,8 @@ function Presentation:_active_list()
   if not observer then
     return nil
   end
-  if observer.presentation_token ~= self._presentation_token
+  if
+    observer.presentation_token ~= self._presentation_token
     or observer.generation ~= self._generation
     or observer.request_token ~= self._request_token
   then
@@ -229,7 +233,8 @@ function Presentation:on_cursor_moved(winid)
   end
   local observer = self._observer
   local list = self:_active_list()
-  if not observer
+  if
+    not observer
     or not list
     or list.id ~= observer.list_id
     or list.idx ~= observer.index
@@ -239,7 +244,8 @@ function Presentation:on_cursor_moved(winid)
   end
   local item = list.items[list.idx]
   local tag = voyager_tag(item)
-  if not tag
+  if
+    not tag
     or tag.generation ~= observer.generation
     or tag.request_token ~= observer.request_token
     or type(tag.node_id) ~= "string"
@@ -256,7 +262,8 @@ function Presentation:on_cursor_moved(winid)
   if (type(bufnr) ~= "number" or bufnr <= 0) and type(item.filename) == "string" then
     bufnr = vim.fn.bufnr(item.filename)
   end
-  if vim.api.nvim_win_get_buf(winid) ~= bufnr
+  if
+    vim.api.nvim_win_get_buf(winid) ~= bufnr
     or cursor[1] ~= location.range.start.line + 1
     or cursor[2] ~= location.range.start.character
     or item.lnum ~= location.range.start.line + 1
