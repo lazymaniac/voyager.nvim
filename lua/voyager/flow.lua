@@ -185,6 +185,33 @@ function Flow:journal()
   return vim.deepcopy(self._journal)
 end
 
+function Flow:mark_saved(document)
+  local copy = vim.deepcopy(document)
+  canonicalize_labels(copy.root)
+  for _, key in ipairs({
+    "schema_version",
+    "position_encoding",
+    "revision",
+    "flow_id",
+    "name",
+    "root_key",
+    "created_at",
+    "updated_at",
+    "current_node_id",
+    "root",
+  }) do
+    self[key] = copy[key]
+  end
+  self._dirty = false
+  self._journal = {
+    notes = {},
+    metadata = {},
+    collapsed = {},
+    current_node_id = false,
+  }
+  self:_reindex()
+end
+
 function Flow:_commit_direct(input)
   local origin = self:location(input.origin_node_id)
   assert(origin, "Voyager navigation origin must be a location: " .. tostring(input.origin_node_id))
