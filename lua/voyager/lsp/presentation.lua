@@ -247,7 +247,8 @@ function Presentation:on_cursor_moved(winid)
     return
   end
   local node = self._resolve_node(tag.node_id)
-  if type(node) ~= "table" or type(node.range) ~= "table" then
+  local location = type(node) == "table" and (node.location or node) or nil
+  if type(location) ~= "table" or type(location.range) ~= "table" then
     return
   end
   local cursor = vim.api.nvim_win_get_cursor(winid)
@@ -256,10 +257,10 @@ function Presentation:on_cursor_moved(winid)
     bufnr = vim.fn.bufnr(item.filename)
   end
   if vim.api.nvim_win_get_buf(winid) ~= bufnr
-    or cursor[1] ~= node.range.start.line + 1
-    or cursor[2] ~= node.range.start.character
-    or item.lnum ~= node.range.start.line + 1
-    or item.col - 1 ~= node.range.start.character
+    or cursor[1] ~= location.range.start.line + 1
+    or cursor[2] ~= location.range.start.character
+    or item.lnum ~= location.range.start.line + 1
+    or item.col - 1 ~= location.range.start.character
   then
     return
   end
