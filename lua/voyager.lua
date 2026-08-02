@@ -1,40 +1,50 @@
--- main module file
-local ui = require("voyager.ui")
+local Config = require("voyager.config")
+local Runtime = require("voyager.runtime")
+local Session = require("voyager.session")
 
----@class Config
----@field keymaps table Keymaps cofniguraiton
----TODO: Decide what will be configurable: 
----1. popup or split? split will require altering existing keymaps
-local config = {
-  keymaps = {
-    definition = { lhs = "gd", desc = "Goto Definition <gd>" },
-    references = { lhs = "gr", desc = "Goto References <gr>" },
-    implementation = { lhs = "gI", desc = "Goto Implementation <gI>" },
-    type_definition = { lhs = "gD", desc = "Goto Type Definition <gD>" },
-    incoming_calls = { lhs = "gC", desc = "Incoming Calls <gC>" },
-    outgoing_calls = { lhs = "gG", desc = "Outgoing Calls <gG>" },
-  },
-}
-
----@class VoyagerModule
+local configured = Config.resolve({})
+local active_session
 local M = {}
 
----@type Config
-M.config = config
-
----@param args Config?
--- you can define your setup function here. Usually configurations can be merged, accepting outside params and
--- you can also put some validation here for those.
-M.setup = function(args)
-  M.config = vim.tbl_deep_extend("force", M.config, args or {})
+function M.setup(opts)
+  configured = Config.resolve(opts)
 end
 
-M.open_voyager = function()
-  ui.open_voyager(M.config)
+local function session()
+  if not active_session then
+    active_session = Session.native(function()
+      return vim.deepcopy(configured)
+    end, Runtime.native())
+  end
+  return active_session
 end
 
-M.close_voyager = function()
-  ui.close_voyager()
+function M.open()
+  return session():open()
+end
+
+function M.focus()
+  return session():focus()
+end
+
+function M.save()
+  return session():save()
+end
+
+function M.load()
+  return session():load()
+end
+
+function M.close()
+  return session():close("command")
+end
+
+function M._reset_for_tests()
+  if active_session then
+    active_session:shutdown()
+  end
+  active_session = nil
+  configured = Config.resolve({})
 end
 
 return M
