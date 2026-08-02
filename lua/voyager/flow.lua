@@ -1,4 +1,5 @@
 local Locator = require("voyager.locator")
+local Actions = require("voyager.lsp.actions")
 
 local M = {}
 local Flow = {}
@@ -71,6 +72,42 @@ function M.new(opts)
       current_node_id = true,
     },
   }, Flow)
+  self:_reindex()
+  return self
+end
+
+local function canonicalize_labels(node)
+  if node.kind == "action" then
+    local _, action = Actions.by_method(node.method)
+    assert(action, "unknown Voyager action method: " .. tostring(node.method))
+    node.label = action.label
+    for _, result in ipairs(node.results) do
+      canonicalize_labels(result)
+    end
+    return
+  end
+  for _, action in ipairs(node.actions) do
+    canonicalize_labels(action)
+  end
+end
+
+function M.from_document(document, opts)
+  assert(type(document) == "table", "Voyager document is required")
+  assert(type(opts) == "table", "Voyager flow load options are required")
+  assert(type(opts.now) == "function", "Voyager flow clock is required")
+  assert(type(opts.next_id) == "function", "Voyager flow ID factory is required")
+  local self = vim.deepcopy(document)
+  canonicalize_labels(self.root)
+  self._now = opts.now
+  self._next_id = opts.next_id
+  self._dirty = false
+  self._journal = {
+    notes = {},
+    metadata = {},
+    collapsed = {},
+    current_node_id = false,
+  }
+  setmetatable(self, Flow)
   self:_reindex()
   return self
 end
@@ -183,11 +220,32 @@ function Flow:_commit_direct(input)
       table.insert(action.results, result)
       self._index[result.id] = result
       results_by_identity[identity] = result
-      self._journal.metadata[result.id] = {
-        symbol = true,
-        context = location.context ~= nil and location.context ~= "",
-      }
+      self._journal.metadata[result.id] = { symbol = true }
+      if location.context ~= nil and location.context ~= "" then
+        self._journal.metadata[result.id].context = true
+      end
       changed = true
+    else
+      local touched = self._journal.metadata[result.id] or {}
+      if type(location.symbol) == "string"
+        and location.symbol ~= ""
+        and result.location.symbol ~= location.symbol
+      then
+        result.location.symbol = location.symbol
+        touched.symbol = true
+        changed = true
+      end
+      if type(location.context) == "string"
+        and location.context ~= ""
+        and result.location.context ~= location.context
+      then
+        result.location.context = location.context
+        touched.context = true
+        changed = true
+      end
+      if next(touched) then
+        self._journal.metadata[result.id] = touched
+      end
     end
     node_id_by_identity[identity] = result.id
   end
@@ -233,6 +291,157 @@ function Flow:commit_navigation(input)
   result.effective_origin_id = effective_origin_id
   result.changed = manual.changed or result.changed
   return result
+end
+
+local function collect_ids(node, ids)
+  ids[node.id] = true
+  local children = node.kind == "location" and node.actions or node.results
+  for _, child in ipairs(children) do
+    collect_ids(child, ids)
+  end
+end
+
+local function root_identity_matches(latest, active)
+  return Locator.location_key(latest.location) == Locator.location_key(active.location)
+    and latest.location.symbol == active.location.symbol
+end
+
+function M.merge(latest_document, active_flow, active_journal, next_id)
+  assert(type(latest_document) == "table", "Voyager latest document is required")
+  assert(type(active_flow) == "table", "Voyager active flow is required")
+  assert(type(active_journal) == "table", "Voyager active journal is required")
+  assert(type(next_id) == "function", "Voyager merge ID factory is required")
+  if not root_identity_matches(latest_document.root, active_flow.root) then
+    error("Voyager merge requires identical root identity", 0)
+  end
+
+  local used_ids = {}
+  collect_ids(active_flow.root, used_ids)
+  local latest_to_merged = {}
+
+  local function import_node(node)
+    local copy = vim.deepcopy(node)
+    local old_id = copy.id
+    if used_ids[copy.id] then
+      copy.id = next_id(copy.kind)
+    end
+    while used_ids[copy.id] do
+      copy.id = next_id(copy.kind)
+    end
+    used_ids[copy.id] = true
+    latest_to_merged[old_id] = copy.id
+    local children = copy.kind == "location" and copy.actions or copy.results
+    for index, child in ipairs(children) do
+      children[index] = import_node(child)
+    end
+    return copy
+  end
+
+  local merge_location
+  local merge_action
+
+  local function merge_action_children(latest_actions, active_actions)
+    local result = {}
+    local active_by_method = {}
+    local matched = {}
+    for _, action in ipairs(active_actions) do
+      active_by_method[action.method] = action
+    end
+    for _, latest_action in ipairs(latest_actions) do
+      local active_action = active_by_method[latest_action.method]
+      if active_action then
+        matched[active_action] = true
+        table.insert(result, merge_action(latest_action, active_action))
+      else
+        table.insert(result, import_node(latest_action))
+      end
+    end
+    for _, active_action in ipairs(active_actions) do
+      if not matched[active_action] then
+        table.insert(result, vim.deepcopy(active_action))
+      end
+    end
+    return result
+  end
+
+  local function merge_result_children(latest_results, active_results)
+    local result = {}
+    local active_by_identity = {}
+    local matched = {}
+    for _, location in ipairs(active_results) do
+      active_by_identity[Locator.location_key(location.location)] = location
+    end
+    for _, latest_location in ipairs(latest_results) do
+      local active_location = active_by_identity[Locator.location_key(latest_location.location)]
+      if active_location then
+        matched[active_location] = true
+        table.insert(result, merge_location(latest_location, active_location))
+      else
+        table.insert(result, import_node(latest_location))
+      end
+    end
+    for _, active_location in ipairs(active_results) do
+      if not matched[active_location] then
+        table.insert(result, vim.deepcopy(active_location))
+      end
+    end
+    return result
+  end
+
+  merge_location = function(latest, active)
+    latest_to_merged[latest.id] = active.id
+    local merged = vim.deepcopy(active)
+    local note_touch = active_journal.notes[active.id]
+    if note_touch then
+      if note_touch.note == vim.NIL then
+        merged.note = nil
+      else
+        merged.note = note_touch.note
+      end
+    else
+      merged.note = latest.note
+    end
+    local metadata_touch = active_journal.metadata[active.id] or {}
+    if metadata_touch.symbol ~= true then
+      merged.location.symbol = latest.location.symbol
+    end
+    if metadata_touch.context ~= true then
+      merged.location.context = latest.location.context
+    end
+    merged.actions = merge_action_children(latest.actions, active.actions)
+    return merged
+  end
+
+  merge_action = function(latest, active)
+    latest_to_merged[latest.id] = active.id
+    local merged = vim.deepcopy(active)
+    if active_journal.collapsed[active.id] == nil then
+      merged.collapsed = latest.collapsed
+    end
+    merged.results = merge_result_children(latest.results, active.results)
+    return merged
+  end
+
+  local root = merge_location(latest_document.root, active_flow.root)
+  canonicalize_labels(root)
+
+  local merged = vim.deepcopy(latest_document)
+  merged.root = root
+  merged.schema_version = 1
+  merged.position_encoding = "utf-8"
+  merged.revision = latest_document.revision + 1
+  merged.created_at = latest_document.created_at
+  merged.root_key = active_flow.root_key
+  merged.name = Locator.flow_name(root.location)
+  local hash_suffix = assert(active_flow.flow_id:match("%-([0-9a-f]+)$"))
+  merged.flow_id = Locator.flow_id(root.location, #hash_suffix)
+
+  if active_journal.current_node_id then
+    merged.current_node_id = active_flow.current_node_id
+  else
+    merged.current_node_id = latest_to_merged[latest_document.current_node_id] or active_flow.current_node_id
+  end
+  return merged
 end
 
 return M

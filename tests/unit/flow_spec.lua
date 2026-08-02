@@ -1,6 +1,48 @@
 local Flow = require("voyager.flow")
 local Fixtures = require("tests.helpers.flow")
 
+local function node_id(kind, value)
+  local prefix = kind == "location" and "loc" or kind
+  return string.format("%s-%032x", prefix, value)
+end
+
+local function location_node(value, path, line, symbol, context)
+  local location = Fixtures.location(path, line, symbol, context)
+  location.identity = nil
+  return {
+    id = node_id("loc", value),
+    kind = "location",
+    location = location,
+    note = nil,
+    actions = {},
+  }
+end
+
+local function action_node(value, method, label, results, collapsed)
+  return {
+    id = node_id("action", value),
+    kind = "action",
+    method = method,
+    label = label,
+    collapsed = collapsed or false,
+    results = results or {},
+  }
+end
+
+local function document(root, current_node_id)
+  local value = Fixtures.document()
+  value.root = root
+  value.current_node_id = current_node_id or root.id
+  return value
+end
+
+local function load(document_value, next_id)
+  local now = function()
+    return "2026-08-01T19:00:00Z"
+  end
+  return Flow.from_document(document_value, { now = now, next_id = next_id or select(2, Fixtures.factories()) })
+end
+
 describe("Voyager flow", function()
   it("keeps sibling branches while extending a selected result", function()
     local flow = Fixtures.new_flow()
@@ -187,5 +229,139 @@ describe("Voyager flow", function()
     local result_id = commit.node_id_by_identity[location.identity]
 
     assert.same({ symbol = true, context = true }, flow:journal().metadata[result_id])
+  end)
+
+  it("keeps disk order, retains active IDs on matches, and appends active-only children", function()
+    local latest_root = location_node(1, "lua/main.lua", 0, "main")
+    local latest_mysql = location_node(12, "lua/mysql.lua", 2, "MysqlStore.save")
+    latest_root.actions = {
+      action_node(10, "textDocument/references", "stale references", {}),
+      action_node(11, "textDocument/implementation", "stale implementations", { latest_mysql }),
+    }
+    local latest = document(latest_root)
+
+    local active_root = location_node(2, "lua/main.lua", 0, "main")
+    local active_mysql = location_node(22, "lua/mysql.lua", 2, "MysqlStore.save")
+    active_root.actions = {
+      action_node(21, "textDocument/implementation", "wrong label", { active_mysql }),
+      action_node(23, "textDocument/definition", "definition", {}),
+    }
+    local active = load(document(active_root))
+    local merged = Flow.merge(latest, active, active:journal(), active._next_id)
+
+    assert.equals(latest.created_at, merged.created_at)
+    assert.equals(latest.revision + 1, merged.revision)
+    assert.same({
+      "textDocument/references",
+      "textDocument/implementation",
+      "textDocument/definition",
+    }, vim.tbl_map(function(action)
+      return action.method
+    end, merged.root.actions))
+    assert.equals(node_id("action", 10), merged.root.actions[1].id)
+    assert.equals(node_id("action", 21), merged.root.actions[2].id)
+    assert.equals(node_id("loc", 22), merged.root.actions[2].results[1].id)
+    assert.equals(node_id("action", 23), merged.root.actions[3].id)
+    assert.same({ "references", "implementations", "definition" }, vim.tbl_map(function(action)
+      return action.label
+    end, merged.root.actions))
+    assert.equals(active.root.id, merged.root.id)
+  end)
+
+  it("applies journal precedence to notes, collapse, current, and display metadata", function()
+    local latest_root = location_node(1, "lua/main.lua", 0, "main")
+    local latest_result = location_node(3, "lua/auth.lua", 8, "disk symbol", "disk context")
+    latest_root.note = "disk note"
+    latest_root.actions = {
+      action_node(2, "textDocument/definition", "definition", { latest_result }, true),
+    }
+    local latest = document(latest_root, latest_result.id)
+
+    local active_root = location_node(11, "lua/main.lua", 0, "main")
+    local active_result = location_node(13, "lua/auth.lua", 8, "old active symbol", "old active context")
+    active_root.note = "old active note"
+    active_root.actions = {
+      action_node(12, "textDocument/definition", "definition", { active_result }, true),
+    }
+    local active = load(document(active_root))
+
+    local untouched = Flow.merge(latest, active, active:journal(), active._next_id)
+    assert.equals("disk note", untouched.root.note)
+    assert.is_true(untouched.root.actions[1].collapsed)
+    assert.equals("disk symbol", untouched.root.actions[1].results[1].location.symbol)
+    assert.equals(active_result.id, untouched.current_node_id)
+
+    assert.is_true(active:set_note(active.root.id, "active note"))
+    assert.is_true(active:toggle(active_root.actions[1].id))
+    assert.is_true(active:set_current(active_result.id))
+    active:commit_navigation({
+      origin_node_id = active.root.id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { Fixtures.location("lua/auth.lua", 8, "active symbol", "active context") },
+    })
+    local touched = Flow.merge(latest, active, active:journal(), active._next_id)
+    assert.equals("active note", touched.root.note)
+    assert.is_false(touched.root.actions[1].collapsed)
+    assert.equals("active symbol", touched.root.actions[1].results[1].location.symbol)
+    assert.equals("active context", touched.root.actions[1].results[1].location.context)
+    assert.equals(active_result.id, touched.current_node_id)
+
+    assert.is_true(active:set_note(active.root.id, nil))
+    local cleared = Flow.merge(latest, active, active:journal(), active._next_id)
+    assert.is_nil(cleared.root.note)
+  end)
+
+  it("remaps colliding saved-only IDs and their current-node reference", function()
+    local latest_root = location_node(1, "lua/main.lua", 0, "main")
+    local saved_result = location_node(6, "lua/auth.lua", 8, "AuthService.login")
+    latest_root.actions = {
+      action_node(5, "textDocument/references", "references", { saved_result }),
+    }
+    local latest = document(latest_root, saved_result.id)
+
+    local active_root = location_node(2, "lua/main.lua", 0, "main")
+    active_root.actions = {
+      action_node(5, "textDocument/definition", "definition", {
+        location_node(6, "lua/mysql.lua", 2, "MysqlStore.save"),
+      }),
+    }
+    local next_value = 90
+    local active = load(document(active_root), function(kind)
+      next_value = next_value + 1
+      return node_id(kind, next_value)
+    end)
+    local merged = Flow.merge(latest, active, active:journal(), active._next_id)
+    local imported = merged.root.actions[1]
+
+    assert.equals("textDocument/references", imported.method)
+    assert.not_equals(node_id("action", 5), imported.id)
+    assert.not_equals(node_id("loc", 6), imported.results[1].id)
+    assert.equals(imported.results[1].id, merged.current_node_id)
+    assert.equals(node_id("action", 5), merged.root.actions[2].id)
+  end)
+
+  it("rejects changes to immutable root identity", function()
+    local latest = Fixtures.document()
+    local active_document = Fixtures.document()
+    active_document.root.id = node_id("loc", 20)
+    active_document.current_node_id = active_document.root.id
+    active_document.root.location.symbol = "different-root-symbol"
+    local active = load(active_document)
+
+    assert.has_error(function()
+      Flow.merge(latest, active, active:journal(), active._next_id)
+    end, "Voyager merge requires identical root identity")
+  end)
+
+  it("replaces persisted action labels with registry labels on load", function()
+    local document_value = Fixtures.document()
+    document_value.root.actions = {
+      action_node(2, "textDocument/implementation", "obsolete label", {}),
+    }
+    local flow = load(document_value)
+
+    assert.equals("implementations", flow.root.actions[1].label)
+    assert.is_false(flow:is_dirty())
   end)
 end)
