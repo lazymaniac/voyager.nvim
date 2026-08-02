@@ -1,60 +1,110 @@
----Mode for all mappings
-local mode = "n"
+local M = {}
+local Registry = {}
+Registry.__index = Registry
 
----Table of keys used by plugin to operate on codebase
-local local_keymaps = {
-  definition = { lhs = "gd", desc = "Goto Definition <gd>" },
-  references = { lhs = "gr", desc = "Goto References <gr>" },
-  implementation = { lhs = "gI", desc = "Goto Implementation <gI>" },
-  type_definition = { lhs = "gD", desc = "Goto Type Definition <gD>" },
-  incoming_calls = { lhs = "gC", desc = "Incoming Calls <gC>" },
-  outgoing_calls = { lhs = "gG", desc = "Outgoing Calls <gG>" },
-}
+local function normalized(lhs)
+  return vim.keycode(lhs)
+end
 
----Table of global mappings which are in conflict with plugin mappings. Used to restore them after voyager session is closed or buffer is switched.
-local global_keymaps = {}
-
----@class Keymaps
----Utility class to manipulate global and voyager mappings
-local Keymaps = {}
-
----Set mappings provided by user
-Keymaps.set_keymaps_from_config = function(config_keymaps)
-  if config_keymaps then
-    local_keymaps = config_keymaps
+local function local_map(bufnr, normalized_lhs)
+  for _, map in ipairs(vim.api.nvim_buf_get_keymap(bufnr, "n")) do
+    local lhs_ok, lhs = pcall(normalized, map.lhs)
+    if (lhs_ok and lhs == normalized_lhs) or map.lhsraw == normalized_lhs or map.lhsrawalt == normalized_lhs then
+      return map
+    end
   end
 end
 
----Function to find global mapping which may be in conflict with Voyager mappings. If global mapping exists it will be stored in table for restoring after session is finished.
-Keymaps.find_conflicting_global_keymaps = function()
-  local normal_mode_keymaps = vim.api.nvim_buf_get_keymap(0, mode)
+local function restore_map(bufnr, map)
+  local rhs = map.callback or map.rhs
+  vim.keymap.set("n", map.lhs, rhs, {
+    buffer = bufnr,
+    desc = map.desc ~= "" and map.desc or nil,
+    expr = map.expr == 1,
+    remap = map.noremap == 0,
+    silent = map.silent == 1,
+    nowait = map.nowait == 1,
+    script = map.script == 1,
+    replace_keycodes = map.replace_keycodes == 1,
+  })
+end
 
-  for _, keymap in ipairs(normal_mode_keymaps) do
-    for _, local_keymap in pairs(local_keymaps) do
-      if keymap.lhs == local_keymap.lhs then
-        table.insert(global_keymaps, keymap)
+local function record_key(generation, bufnr, normalized_lhs)
+  return table.concat({ tostring(generation), tostring(bufnr), "n", normalized_lhs }, "\0")
+end
+
+function M.new(opts)
+  opts = opts or {}
+  assert(type(opts.notify) == "function", "Voyager keymap notification adapter is required")
+  return setmetatable({
+    _notify = opts.notify,
+    _records = {},
+  }, Registry)
+end
+
+function Registry:apply_buffer(bufnr, generation, mappings, wrapper_factory)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  for action_name, lhs in pairs(mappings) do
+    if lhs ~= false then
+      local normalized_lhs = normalized(lhs)
+      local key = record_key(generation, bufnr, normalized_lhs)
+      if not self._records[key] then
+        local original = local_map(bufnr, normalized_lhs)
+        local wrapper = wrapper_factory(action_name)
+        vim.keymap.set("n", lhs, wrapper, {
+          buffer = bufnr,
+          desc = "Voyager: " .. action_name,
+          silent = true,
+        })
+        self._records[key] = {
+          generation = generation,
+          bufnr = bufnr,
+          normalized_lhs = normalized_lhs,
+          installed_lhs = lhs,
+          wrapper = wrapper,
+          original = original,
+          restored = false,
+        }
       end
     end
   end
 end
 
-Keymaps.restore_global_keymaps = function()
-  for _, keymap in ipairs(global_keymaps) do
-    local rhs = keymap.callback or keymap.rhs -- Check if rhs is null then use callback
-    vim.keymap.set(mode, keymap.lhs, rhs, {
-      buffer = keymap.buffer,
-      desc = keymap.desc,
-      noremap = (keymap.noremap == 1),
-      silent = (keymap.silent == 1),
-      expr = (keymap.expr == 1),
-      script = (keymap.script == 1),
-      nowait = (keymap.nowait == 1),
-    })
+function Registry:is_installed(bufnr, lhs)
+  local normalized_lhs = normalized(lhs)
+  for _, record in pairs(self._records) do
+    if record.bufnr == bufnr and record.normalized_lhs == normalized_lhs and not record.restored then
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        return false
+      end
+      local current = local_map(bufnr, normalized_lhs)
+      return current ~= nil and current.callback == record.wrapper
+    end
+  end
+  return false
+end
+
+function Registry:restore_all(generation)
+  for _, record in pairs(self._records) do
+    if record.generation == generation and not record.restored then
+      record.restored = true
+      if vim.api.nvim_buf_is_valid(record.bufnr) then
+        local current = local_map(record.bufnr, record.normalized_lhs)
+        if current and current.callback == record.wrapper then
+          vim.keymap.del("n", record.installed_lhs, { buffer = record.bufnr })
+          if record.original then
+            restore_map(record.bufnr, record.original)
+          end
+        else
+          self._notify(
+            "Voyager: mapping " .. record.installed_lhs .. " changed ownership; leaving the newer mapping intact"
+          )
+        end
+      end
+    end
   end
 end
 
-Keymaps.get_local_keymap = function(action)
-  return local_keymaps[action]
-end
-
-return Keymaps
+return M
