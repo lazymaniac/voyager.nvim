@@ -245,7 +245,7 @@ function M.new(overrides)
     end,
     dirname = vim.fs.dirname,
     fs_realpath = function(path)
-      return vim.fs.normalize(path)
+      return vim.fs.normalize(path, { expand_env = false })
     end,
     find_root = function()
       return "/project"
@@ -349,6 +349,9 @@ function M.new(overrides)
       env.input_callback = callback
     end,
     select = function(items, opts, callback)
+      if env.select_error then
+        error(env.select_error)
+      end
       env.select_items = vim.deepcopy(items)
       env.select_opts = opts
       env.select_callback = callback
@@ -467,6 +470,9 @@ function M.new(overrides)
     table.insert(self.load_calls, { vim.deepcopy(entry), project_root })
     if self.load_error then
       return nil, self.load_error
+    end
+    if self.load_hook then
+      return self.load_hook(entry, project_root)
     end
     return self.load_result
   end

@@ -2,6 +2,41 @@ local M = {}
 local Presentation = {}
 Presentation.__index = Presentation
 
+local list_jump_commands = {
+  quickfix = {
+    cc = true,
+    cnext = true,
+    cNext = true,
+    cprevious = true,
+    cabove = true,
+    cbelow = true,
+    cbefore = true,
+    cafter = true,
+    cnfile = true,
+    cNfile = true,
+    cpfile = true,
+    crewind = true,
+    cfirst = true,
+    clast = true,
+  },
+  loclist = {
+    ll = true,
+    lnext = true,
+    lNext = true,
+    lprevious = true,
+    labove = true,
+    lbelow = true,
+    lbefore = true,
+    lafter = true,
+    lnfile = true,
+    lNfile = true,
+    lpfile = true,
+    lrewind = true,
+    lfirst = true,
+    llast = true,
+  },
+}
+
 local function eligible_window(winid)
   if type(winid) ~= "number" or not vim.api.nvim_win_is_valid(winid) then
     return false
@@ -45,12 +80,182 @@ function M.new(opts)
   }, Presentation)
 end
 
+function Presentation:_clear_key_listener()
+  if self._key_namespace then
+    pcall(vim.on_key, nil, self._key_namespace)
+    self._key_namespace = nil
+  end
+  if self._cmdline_autocmd then
+    pcall(vim.api.nvim_del_autocmd, self._cmdline_autocmd)
+    self._cmdline_autocmd = nil
+  end
+  if self._owner_autocmd then
+    pcall(vim.api.nvim_del_autocmd, self._owner_autocmd)
+    self._owner_autocmd = nil
+  end
+end
+
+function Presentation:_retire_list_observer()
+  self:_clear_key_listener()
+  self._observer = nil
+end
+
 function Presentation:_begin(context)
+  self:_retire_list_observer()
   self._presentation_token = self._presentation_token + 1
   self._generation = context.generation
   self._request_token = context.request_token
-  self._observer = nil
   return self._presentation_token
+end
+
+function Presentation:_arm_list_activation(index, list)
+  local observer = self._observer
+  list = list or self:_active_list(false)
+  if
+    not observer
+    or not list
+    or list.id ~= observer.list_id
+    or (
+      index ~= false
+      and (type(index) ~= "number" or index % 1 ~= 0 or index < 1 or type(list.size) ~= "number" or index > list.size)
+    )
+  then
+    return nil
+  end
+  local activation = {
+    index = index,
+    list_id = observer.list_id,
+    presentation_token = observer.presentation_token,
+  }
+  observer.activation = activation
+  return activation
+end
+
+function Presentation:_schedule_list_activation(activation)
+  vim.schedule(function()
+    local active = self._observer
+    if active and active.activation == activation then
+      self:on_cursor_moved(vim.api.nvim_get_current_win())
+      active = self._observer
+      if active and active.activation == activation then
+        active.activation = nil
+      end
+    end
+  end)
+end
+
+function Presentation:_record_list_key(key)
+  if vim.api.nvim_get_mode().mode:sub(1, 1) ~= "n" then
+    return
+  end
+
+  local winid
+  local index
+  if key == "\r" or key == "\n" then
+    winid = vim.api.nvim_get_current_win()
+    index = vim.api.nvim_win_get_cursor(winid)[1]
+  elseif key == vim.keycode("<2-LeftMouse>") then
+    local mouse = vim.fn.getmousepos()
+    winid = mouse.winid
+    index = mouse.line
+  else
+    return
+  end
+  local observer = self._observer
+  local list = self:_active_list(false)
+  if not observer or not list or list.id ~= observer.list_id or type(list.winid) ~= "number" then
+    return
+  end
+  if list.winid ~= winid then
+    return
+  end
+  local activation = self:_arm_list_activation(index, list)
+  if activation then
+    self:_schedule_list_activation(activation)
+  end
+end
+
+function Presentation:_record_cmdline_activation()
+  if vim.v.event.abort == true or vim.v.event.abort == 1 then
+    return
+  end
+  local parsed_ok, parsed = pcall(vim.api.nvim_parse_cmd, vim.fn.getcmdline(), {})
+  local observer = self._observer
+  local commands = observer and list_jump_commands[observer.kind]
+  if
+    not parsed_ok
+    or type(parsed) ~= "table"
+    or (type(parsed.nextcmd) == "string" and parsed.nextcmd ~= "")
+    or not observer
+    or not commands
+    or not commands[parsed.cmd]
+  then
+    return
+  end
+  local list = self:_active_list(false)
+  if not list then
+    return
+  end
+  if observer.kind == "loclist" then
+    local current_winid = vim.api.nvim_get_current_win()
+    if current_winid ~= observer.owner_winid and current_winid ~= list.winid then
+      return
+    end
+  end
+  local activation = self:_arm_list_activation(false, list)
+  if activation then
+    self:_schedule_list_activation(activation)
+  end
+end
+
+function Presentation:_listen_for_list_activation()
+  self:_clear_key_listener()
+  local function guarded(callback)
+    local called, listen_error = pcall(callback)
+    if not called then
+      self:_retire_list_observer()
+      self._notify("Voyager: list selection tracking failed: " .. tostring(listen_error), vim.log.levels.ERROR)
+    end
+  end
+  self._cmdline_autocmd = vim.api.nvim_create_autocmd("CmdlineLeave", {
+    pattern = ":",
+    callback = function()
+      guarded(function()
+        self:_record_cmdline_activation()
+      end)
+    end,
+  })
+  self._key_namespace = vim.on_key(function(key)
+    guarded(function()
+      self:_record_list_key(key)
+    end)
+  end)
+  local watch_owner
+  watch_owner = function()
+    if self._owner_autocmd then
+      pcall(vim.api.nvim_del_autocmd, self._owner_autocmd)
+      self._owner_autocmd = nil
+    end
+    local observer = self._observer
+    if not observer or observer.kind ~= "loclist" or not vim.api.nvim_win_is_valid(observer.owner_winid) then
+      return
+    end
+    self._owner_autocmd = vim.api.nvim_create_autocmd("WinClosed", {
+      pattern = tostring(observer.owner_winid),
+      once = true,
+      callback = function()
+        self._owner_autocmd = nil
+        vim.schedule(function()
+          guarded(function()
+            if self._observer == observer and self:_active_list(false) then
+              watch_owner()
+            end
+          end)
+        end)
+      end,
+    })
+  end
+  watch_owner()
 end
 
 function Presentation:_list_items(context, items)
@@ -161,7 +366,7 @@ function Presentation:_open_list(context, action, list_items, presentation_token
     vim.api.nvim_win_call(owner_winid, function()
       vim.cmd("lopen")
     end)
-    info = vim.fn.getloclist(owner_winid, { id = 0 })
+    info = vim.fn.getloclist(owner_winid, { id = 0, winid = 0 })
     kind = "loclist"
   else
     vim.fn.setqflist({}, " ", list_opts)
@@ -172,11 +377,13 @@ function Presentation:_open_list(context, action, list_items, presentation_token
   self._observer = {
     kind = kind,
     owner_winid = owner_winid,
+    list_winid = info.winid,
     list_id = info.id,
     generation = context.generation,
     request_token = context.request_token,
     presentation_token = presentation_token,
   }
+  self:_listen_for_list_activation()
   return true
 end
 
@@ -205,7 +412,7 @@ function Presentation:present(context, items, action)
   self:_jump(context, list_items[1], voyager_tag(list_items[1]).node_id)
 end
 
-function Presentation:_active_list()
+function Presentation:_active_list(include_items)
   local observer = self._observer
   if not observer then
     return nil
@@ -215,24 +422,66 @@ function Presentation:_active_list()
     or observer.generation ~= self._generation
     or observer.request_token ~= self._request_token
   then
+    self:_retire_list_observer()
+    return nil
+  end
+  local what = { id = 0, idx = 0, size = 0, winid = 0 }
+  if include_items then
+    what.items = 0
+  end
+  local list
+  if observer.kind == "loclist" then
+    what.filewinid = 0
+    if vim.api.nvim_win_is_valid(observer.owner_winid) then
+      list = vim.fn.getloclist(observer.owner_winid, what)
+    elseif vim.api.nvim_win_is_valid(observer.list_winid) then
+      list = vim.fn.getloclist(observer.list_winid, what)
+    else
+      self:_retire_list_observer()
+      return nil
+    end
+  else
+    list = vim.fn.getqflist(what)
+  end
+  if type(list) ~= "table" or list.id ~= observer.list_id then
+    self:_retire_list_observer()
     return nil
   end
   if observer.kind == "loclist" then
-    if not vim.api.nvim_win_is_valid(observer.owner_winid) then
-      return nil
+    if type(list.winid) == "number" and list.winid > 0 then
+      observer.list_winid = list.winid
     end
-    return vim.fn.getloclist(observer.owner_winid, { id = 0, idx = 0, items = 0 })
+    if type(list.filewinid) == "number" and list.filewinid > 0 then
+      observer.owner_winid = list.filewinid
+    end
   end
-  return vim.fn.getqflist({ id = 0, idx = 0, items = 0 })
+  return list
 end
 
 function Presentation:on_cursor_moved(winid)
+  local observer = self._observer
+  if not observer then
+    return
+  end
+  local activation = observer.activation
+  if not activation then
+    self:_active_list(false)
+    return
+  end
   if not eligible_window(winid) then
     return
   end
-  local observer = self._observer
-  local list = self:_active_list()
-  if not observer or not list or list.id ~= observer.list_id or type(list.items) ~= "table" then
+  local list = self:_active_list(true)
+  if
+    not observer
+    or not activation
+    or not list
+    or list.id ~= observer.list_id
+    or activation.list_id ~= observer.list_id
+    or activation.presentation_token ~= observer.presentation_token
+    or (activation.index ~= false and list.idx ~= activation.index)
+    or type(list.items) ~= "table"
+  then
     return
   end
   local item = list.items[list.idx]
@@ -264,15 +513,15 @@ function Presentation:on_cursor_moved(winid)
   then
     return
   end
-  self._observer = nil
+  self:_retire_list_observer()
   self._set_current(tag.node_id)
 end
 
 function Presentation:invalidate()
+  self:_retire_list_observer()
   self._presentation_token = self._presentation_token + 1
   self._generation = nil
   self._request_token = nil
-  self._observer = nil
 end
 
 return M

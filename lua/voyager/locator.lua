@@ -6,7 +6,7 @@ end
 
 local function normalize_path(path)
   local normalized = path:gsub("\\", "/")
-  return vim.fs.normalize(normalized)
+  return vim.fs.normalize(normalized, { expand_env = false })
 end
 
 local function real_path(runtime, path)

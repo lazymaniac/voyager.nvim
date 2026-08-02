@@ -19,7 +19,7 @@ local persisted_keys = {
 
 local function normalize(path)
   local value = path:gsub("\\", "/")
-  return vim.fs.normalize(value)
+  return vim.fs.normalize(value, { expand_env = false })
 end
 
 local function trim_root(path)
@@ -148,9 +148,15 @@ function Store:path_for(flow)
       if not self._runtime.fs_stat(path) then
         return path
       end
-      local text = self:_read_text(path)
+      local text, read_error = self:_read_text(path)
+      if not text then
+        return nil, "Voyager cannot read existing flow " .. path .. ": " .. tostring(read_error)
+      end
       local ok, document = pcall(self._schema.decode, text)
-      if ok and document.root_key == flow.root_key then
+      if not ok then
+        return nil, "Voyager cannot decode existing flow " .. path .. ": " .. tostring(document)
+      end
+      if document.root_key == flow.root_key then
         return path
       end
       if length == 64 then
@@ -215,7 +221,10 @@ end
 function Store:save(flow)
   local project_root = assert(self._project_root, "Voyager store has no fixed project root")
   self._runtime.mkdir(self:_flows_dir(project_root))
-  local path = self:path_for(flow)
+  local path, path_error = self:path_for(flow)
+  if not path then
+    return nil, path_error
+  end
   local latest
   if self._runtime.fs_stat(path) then
     local text, read_error = self:_read_text(path)

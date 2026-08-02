@@ -4,7 +4,7 @@ FakeFS.__index = FakeFS
 
 local function normalize(path)
   local value = path:gsub("\\", "/")
-  return vim.fs.normalize(value)
+  return vim.fs.normalize(value, { expand_env = false })
 end
 
 local function parent(path)

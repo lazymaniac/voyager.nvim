@@ -82,13 +82,18 @@ local function validate_locator(value, path)
       or value.path:match("/%.%.$")
       or value.path:match("^%./")
       or value.path:match("/%./")
+      or vim.fs.normalize("./" .. value.path, { expand_env = false }) ~= value.path
     then
       fail(path .. " project locator path is not canonical")
     end
   elseif value.kind == "absolute" then
     reject_unknown(value, path, { kind = true, path = true })
     require_string(value.path, path .. ".path")
-    if value.path:sub(1, 1) ~= "/" or value.path:find("\\", 1, true) or vim.fs.normalize(value.path) ~= value.path then
+    if
+      value.path:sub(1, 1) ~= "/"
+      or value.path:find("\\", 1, true)
+      or vim.fs.normalize(value.path, { expand_env = false }) ~= value.path
+    then
       fail(path .. " absolute locator path is not canonical")
     end
   elseif value.kind == "uri" then
@@ -115,7 +120,16 @@ end
 
 local function validate_timestamp(value, path)
   require_string(value, path)
-  if not value:match("^%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%dZ$") then
+  local year, month, day, hour, minute, second = value:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)Z$")
+  if not year then
+    fail(path .. " must be a UTC RFC 3339 timestamp at second precision")
+  end
+
+  year, month, day = tonumber(year), tonumber(month), tonumber(day)
+  hour, minute, second = tonumber(hour), tonumber(minute), tonumber(second)
+  local leap_year = year % 4 == 0 and (year % 100 ~= 0 or year % 400 == 0)
+  local month_days = { 31, leap_year and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+  if month < 1 or month > 12 or day < 1 or day > month_days[month] or hour > 23 or minute > 59 or second > 60 then
     fail(path .. " must be a UTC RFC 3339 timestamp at second precision")
   end
 end
@@ -170,8 +184,14 @@ function M.validate(document)
         require_string(node.note, path .. ".note")
       end
       require_array(node.actions, path .. ".actions")
+      local methods = {}
       for index, action in ipairs(node.actions) do
-        validate_node(action, "action", string.format("%s.actions[%d]", path, index))
+        local child_path = string.format("%s.actions[%d]", path, index)
+        validate_node(action, "action", child_path)
+        if methods[action.method] then
+          fail(child_path .. ".method duplicates a sibling action method")
+        end
+        methods[action.method] = true
       end
     else
       reject_unknown(node, path, {
@@ -191,8 +211,15 @@ function M.validate(document)
         fail(path .. ".collapsed must be a boolean")
       end
       require_array(node.results, path .. ".results")
+      local identities = {}
       for index, location in ipairs(node.results) do
-        validate_node(location, "location", string.format("%s.results[%d]", path, index))
+        local child_path = string.format("%s.results[%d]", path, index)
+        validate_node(location, "location", child_path)
+        local identity = Locator.location_key(location.location)
+        if identities[identity] then
+          fail(child_path .. ".location duplicates a sibling location identity")
+        end
+        identities[identity] = true
       end
     end
   end

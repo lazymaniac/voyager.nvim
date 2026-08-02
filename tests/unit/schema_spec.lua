@@ -1,5 +1,6 @@
 local Schema = require("voyager.schema")
 local Fixtures = require("tests.helpers.flow")
+local Locator = require("voyager.locator")
 
 local function node_id(kind, value)
   local prefix = kind == "location" and "loc" or kind
@@ -55,6 +56,87 @@ describe("Voyager schema", function()
     assert.has_error(function()
       Schema.decode(encoded:gsub('"revision": 3', '"revision": 3, "mystery": true', 1))
     end, "schema v1: unknown key $.mystery")
+  end)
+
+  it("rejects non-canonical aliases for project locator paths", function()
+    for _, path in ipairs({ "lua//main.lua", "lua/main.lua/" }) do
+      local document = Fixtures.document()
+      document.root.location.locator.path = path
+      document.root_key = Locator.root_key(document.root.location)
+      document.name = Locator.flow_name(document.root.location)
+      document.flow_id = Locator.flow_id(document.root.location, 8)
+
+      assert.has_error(function()
+        Schema.validate(document)
+      end, "schema v1: $.root.location.locator project locator path is not canonical")
+    end
+
+    for _, path in ipairs({ "~/notes.lua", "lua/$HOME.lua" }) do
+      local document = Fixtures.document()
+      document.root.location.locator.path = path
+      document.root_key = Locator.root_key(document.root.location)
+      document.name = Locator.flow_name(document.root.location)
+      document.flow_id = Locator.flow_id(document.root.location, 8)
+
+      assert.has_no.errors(function()
+        Schema.validate(document)
+      end)
+    end
+
+    local absolute = Fixtures.document()
+    absolute.root.location.locator = { kind = "absolute", path = "/external/$HOME.lua" }
+    absolute.root_key = Locator.root_key(absolute.root.location)
+    absolute.name = Locator.flow_name(absolute.root.location)
+    absolute.flow_id = Locator.flow_id(absolute.root.location, 8)
+    assert.has_no.errors(function()
+      Schema.validate(absolute)
+    end)
+  end)
+
+  it("rejects duplicate sibling action methods and location identities", function()
+    local duplicate_actions = Fixtures.document()
+    duplicate_actions.root.actions = {
+      action_node(2, "textDocument/definition", "definition"),
+      action_node(3, "textDocument/definition", "definition"),
+    }
+    assert.has_error(function()
+      Schema.validate(duplicate_actions)
+    end, "schema v1: $.root.actions[2].method duplicates a sibling action method")
+
+    local duplicate_locations = Fixtures.document()
+    duplicate_locations.root.actions = {
+      action_node(2, "textDocument/implementation", "implementations", {
+        location_node(3, "lua/store.lua", 4, "save"),
+        location_node(4, "lua/store.lua", 4, "save"),
+      }),
+    }
+    assert.has_error(function()
+      Schema.validate(duplicate_locations)
+    end, "schema v1: $.root.actions[1].results[2].location duplicates a sibling location identity")
+  end)
+
+  it("rejects impossible RFC 3339 timestamps", function()
+    for _, timestamp in ipairs({
+      "2026-99-01T12:00:00Z",
+      "2026-02-29T12:00:00Z",
+      "2024-02-30T12:00:00Z",
+      "2026-08-01T24:00:00Z",
+      "2026-08-01T12:60:00Z",
+      "2026-08-01T12:00:61Z",
+    }) do
+      local document = Fixtures.document()
+      document.updated_at = timestamp
+
+      assert.has_error(function()
+        Schema.validate(document)
+      end, "schema v1: $.updated_at must be a UTC RFC 3339 timestamp at second precision")
+    end
+
+    local leap_year = Fixtures.document()
+    leap_year.updated_at = "2024-02-29T23:59:59Z"
+    assert.has_no.errors(function()
+      Schema.validate(leap_year)
+    end)
   end)
 
   it("rejects every schema-v1 structural and semantic violation", function()

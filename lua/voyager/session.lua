@@ -19,7 +19,7 @@ local committing_statuses = {
 
 local function normalize(path)
   local value = path:gsub("\\", "/")
-  return vim.fs.normalize(value)
+  return vim.fs.normalize(value, { expand_env = false })
 end
 
 local function trim_root(path)
@@ -867,7 +867,7 @@ function Session:_decide_dirty(intent, continuation)
   self._interaction_tokens.note_input = nil
   self._interaction_tokens.flow_picker = nil
   local token = self:_replace_interaction_token("dirty_decision")
-  self._ui.select({ "Save", "Discard", "Cancel" }, {
+  local selected, select_error = pcall(self._ui.select, { "Save", "Discard", "Cancel" }, {
     prompt = "Save changes to Voyager flow?",
   }, function(choice)
     if not self:_consume_interaction(token) or self._state ~= state or state.phase ~= "deciding" then
@@ -882,6 +882,14 @@ function Session:_decide_dirty(intent, continuation)
       self:_remount_after_interaction(state)
     end
   end)
+  if not selected then
+    if self:_consume_interaction(token) and self._state == state and state.phase == "deciding" then
+      state.phase = "active"
+      self._ui.notify("Voyager: dirty-decision UI failed: " .. tostring(select_error), vim.log.levels.ERROR)
+      self:_remount_after_interaction(state)
+    end
+    return false
+  end
   return true
 end
 
@@ -1075,22 +1083,22 @@ function Session:load()
     if not self:_consume_interaction(token) or entry == nil then
       return
     end
-    local loaded, candidate, load_error = pcall(store.load, store, entry, project_root_value)
-    if not loaded then
-      load_error = candidate
-      candidate = nil
-    end
-    if not candidate then
-      self._ui.notify("Voyager load failed: " .. tostring(load_error or "unknown error"), vim.log.levels.ERROR)
-      return
-    end
-    local function install()
+    local function load_and_install()
+      local loaded, candidate, load_error = pcall(store.load, store, entry, project_root_value)
+      if not loaded then
+        load_error = candidate
+        candidate = nil
+      end
+      if not candidate then
+        self._ui.notify("Voyager load failed: " .. tostring(load_error or "unknown error"), vim.log.levels.ERROR)
+        return
+      end
       return self:_install_loaded_flow(candidate, project_root_value, config, locator, store, load_context)
     end
     if self:is_active() and self._state.flow:is_dirty() then
-      self:_decide_dirty("load", install)
+      self:_decide_dirty("load", load_and_install)
     else
-      install()
+      load_and_install()
     end
   end)
   return true

@@ -7,6 +7,7 @@ local RequestGroup = require("voyager.lsp.request_group")
 local function prepared(name, uri)
   return {
     name = name,
+    kind = 12,
     uri = uri or ("file:///project/" .. name .. ".lua"),
     range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = #name } },
     selectionRange = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = #name } },
@@ -66,6 +67,13 @@ local function new_harness(opts)
       return { winid = winid, encoding = encoding }
     end,
     select = function(items, select_opts, callback)
+      if opts.select_then_error then
+        callback(items[1])
+        error(opts.select_then_error)
+      end
+      if opts.select_error then
+        error(opts.select_error)
+      end
       table.insert(select_calls, {
         items = items,
         opts = select_opts,
@@ -167,6 +175,67 @@ describe("Voyager call hierarchy", function()
     assert.same(second, client.requests[2].params.item)
     client:reply_followup(nil, {})
     assert.equals("empty", env.completions[1].status)
+  end)
+
+  it("rejects malformed prepared items without opening or leaking a picker", function()
+    local client = FakeClient.new({ id = 1, name = "alpha" })
+    local env = new_harness({ clients = { client } })
+
+    client:reply_prepare(nil, { 42, { name = "missing URI" } })
+
+    assert.equals(0, #env.select_calls)
+    assert.equals(1, #env.completions)
+    assert.equals("error", env.completions[1].status)
+    assert.same(
+      { "normalization", "normalization" },
+      vim.tbl_map(function(failure)
+        return failure.kind
+      end, env.completions[1].failures)
+    )
+    assert.is_true(env.handle:is_done())
+    assert.equals(1, env.timers.created[1].close_count)
+  end)
+
+  it("keeps valid prepared items and reports malformed siblings as partial", function()
+    local client = FakeClient.new({ id = 1, name = "alpha" })
+    local env = new_harness({ clients = { client } })
+    local valid = prepared("valid")
+
+    client:reply_prepare(nil, { valid, false })
+    assert.same({ "textDocument/prepareCallHierarchy", "callHierarchy/incomingCalls" }, client.methods)
+    client:reply_followup(nil, {})
+
+    assert.equals("partial", env.completions[1].status)
+    assert.equals("normalization", env.completions[1].failures[1].kind)
+  end)
+
+  it("settles when the call-hierarchy picker provider throws", function()
+    local client = FakeClient.new({ id = 1, name = "alpha" })
+    local env = new_harness({ clients = { client }, select_error = "picker exploded" })
+
+    assert.has_no.errors(function()
+      client:reply_prepare(nil, { prepared("first"), prepared("second") })
+    end)
+
+    assert.equals(1, #env.completions)
+    assert.equals("error", env.completions[1].status)
+    assert.equals("ui", env.completions[1].failures[1].kind)
+    assert.is_true(env.handle:is_done())
+  end)
+
+  it("cancels a follow-up started by a picker that then throws", function()
+    local client = FakeClient.new({ id = 1, name = "alpha" })
+    local env = new_harness({ clients = { client }, select_then_error = "picker exploded late" })
+
+    client:reply_prepare(nil, { prepared("first"), prepared("second") })
+
+    assert.equals(1, #env.completions)
+    assert.equals("error", env.completions[1].status)
+    assert.equals("ui", env.completions[1].failures[1].kind)
+    assert.same({ client.request_id }, client.cancelled)
+    assert.equals(1, env.timers.created[2].close_count)
+    client:reply_followup(nil, {})
+    assert.equals(1, #env.completions)
   end)
 
   it("treats picker cancellation as one logical cancellation", function()

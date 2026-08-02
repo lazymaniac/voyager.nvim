@@ -1,5 +1,19 @@
 local M = {}
 
+local function find_root(path, marker)
+  local current = vim.fs.normalize(path:gsub("\\", "/"), { expand_env = false })
+  while current do
+    if vim.uv.fs_stat(vim.fs.joinpath(current, marker)) then
+      return current
+    end
+    local parent = vim.fs.dirname(current)
+    if not parent or parent == current then
+      return nil
+    end
+    current = parent
+  end
+end
+
 function M.native()
   return {
     now = function()
@@ -10,9 +24,7 @@ function M.native()
     pid = vim.uv.os_getpid,
     cwd = vim.fn.getcwd,
     dirname = vim.fs.dirname,
-    find_root = function(path, marker)
-      return vim.fs.root(path, marker)
-    end,
+    find_root = find_root,
 
     fs_realpath = vim.uv.fs_realpath,
     fs_stat = vim.uv.fs_stat,
@@ -38,13 +50,22 @@ function M.native()
 
     list_buffers = vim.api.nvim_list_bufs,
     find_buffer = function(exact_name)
+      local loaded = {}
       for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-        if
-          vim.api.nvim_buf_is_valid(bufnr)
-          and vim.api.nvim_buf_is_loaded(bufnr)
-          and vim.api.nvim_buf_get_name(bufnr) == exact_name
-        then
-          return bufnr
+        if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr) then
+          local name = vim.api.nvim_buf_get_name(bufnr)
+          if name == exact_name then
+            return bufnr
+          end
+          table.insert(loaded, { bufnr = bufnr, name = name })
+        end
+      end
+      local target_realpath = vim.uv.fs_realpath(exact_name)
+      if target_realpath then
+        for _, candidate in ipairs(loaded) do
+          if vim.uv.fs_realpath(candidate.name) == target_realpath then
+            return candidate.bufnr
+          end
         end
       end
     end,

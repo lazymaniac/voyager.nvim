@@ -232,6 +232,13 @@ open a list for multiple results. References and call hierarchy always present a
 list when non-empty. Successful empty responses remain visible as an action with
 zero results.
 
+With the default list presenter, Voyager tracks destinations opened with
+`<CR>`, a double-click, or a user-entered quickfix/location-list jump command
+such as `:cc`, `:cnext`, or `:ll` (including command abbreviations). Neovim does
+not emit an attributable event for programmatic `vim.cmd()` jumps or arbitrary
+`<Cmd>`/Lua callback mappings; integrations that navigate that way should use
+`navigation.on_list` and call Voyager's supplied `select(item)` callback.
+
 Select any earlier location in the sidebar and continue from there. Its existing
 children stay intact, so exploring again creates or extends a sibling branch
 instead of replacing the path you already followed.

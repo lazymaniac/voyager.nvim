@@ -2,7 +2,7 @@ local M = {}
 
 local function normalize(path)
   local normalized = path:gsub("\\", "/")
-  return vim.fs.normalize(normalized)
+  return vim.fs.normalize(normalized, { expand_env = false })
 end
 
 function M.new(spec)

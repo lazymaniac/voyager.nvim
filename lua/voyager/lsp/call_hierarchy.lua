@@ -31,16 +31,53 @@ local function combine_failures(...)
 end
 
 local function prepared_items(result)
-  if result == nil or (type(result) == "table" and next(result) == nil) then
+  if result == nil or (type(result) == "table" and vim.islist(result) and #result == 0) then
     return {}, true
   end
   if type(result) == "table" and result.uri ~= nil then
     return { result }, false
   end
-  if type(result) == "table" and #result > 0 then
+  if type(result) == "table" and vim.islist(result) then
     return result, false
   end
-  return {}, false
+  return {}, false, "prepareCallHierarchy result must be an item, a list, or nil"
+end
+
+local function valid_position(value)
+  return type(value) == "table"
+    and type(value.line) == "number"
+    and value.line % 1 == 0
+    and value.line >= 0
+    and type(value.character) == "number"
+    and value.character % 1 == 0
+    and value.character >= 0
+end
+
+local function valid_range(value)
+  if type(value) ~= "table" or not valid_position(value.start) or not valid_position(value["end"]) then
+    return false
+  end
+  local start = value.start
+  local finish = value["end"]
+  return finish.line > start.line or (finish.line == start.line and finish.character >= start.character)
+end
+
+local function prepared_item_error(item)
+  if type(item) ~= "table" then
+    return "CallHierarchyItem must be an object"
+  end
+  if type(item.name) ~= "string" or item.name == "" then
+    return "CallHierarchyItem.name must be a non-empty string"
+  end
+  if type(item.kind) ~= "number" or item.kind % 1 ~= 0 or item.kind < 1 then
+    return "CallHierarchyItem.kind must be a positive integer"
+  end
+  if type(item.uri) ~= "string" or item.uri == "" then
+    return "CallHierarchyItem.uri must be a non-empty string"
+  end
+  if not valid_range(item.range) or not valid_range(item.selectionRange) then
+    return "CallHierarchyItem ranges are invalid"
+  end
 end
 
 local function classify(stage, summary, items, failures)
@@ -177,7 +214,7 @@ function M.start(opts)
     state.picker_serial = state.picker_serial + 1
     local picker_token = state.picker_serial
     state.picker_open = true
-    opts.select(prepared, {
+    local opened, select_error = pcall(opts.select, prepared, {
       prompt = action.label,
       format_item = function(item)
         return string.format("%s · %s", item.item.name or "<anonymous>", item.client.name)
@@ -198,6 +235,24 @@ function M.start(opts)
       end
       start_followup(selected)
     end)
+    if not opened and not state.done then
+      state.picker_open = false
+      state.picker_required = false
+      local active = state.active_stage
+      state.stage_marker = nil
+      state.active_stage = nil
+      if active then
+        active:cancel("picker error")
+      end
+      finish(outcome(
+        "error",
+        {},
+        {},
+        combine_failures(state.prepare_failures, {
+          { kind = "ui", message = tostring(select_error) },
+        })
+      ))
+    end
   end
 
   function handle:cancel(reason)
@@ -240,8 +295,9 @@ function M.start(opts)
       return opts.make_position_params(context.winid, snapshot.offset_encoding)
     end,
   }, function(stage)
-    state.prepare_failures = combine_failures(stage.failures)
+    local validation_failures = {}
     if stage.status == "cancelled" then
+      state.prepare_failures = combine_failures(stage.failures)
       finish(outcome("cancelled", {}, {}, state.prepare_failures))
       return
     end
@@ -249,17 +305,38 @@ function M.start(opts)
     local flattened = {}
     local has_empty_response = false
     for _, response in ipairs(stage.responses) do
-      local items, is_empty = prepared_items(response.result)
+      local items, is_empty, response_error = prepared_items(response.result)
       has_empty_response = has_empty_response or is_empty
-      for _, item in ipairs(items) do
-        table.insert(flattened, {
+      if response_error then
+        table.insert(validation_failures, {
+          kind = "normalization",
           client_id = response.client.id,
-          client = response.client,
-          item = vim.deepcopy(item),
-          response_index = #flattened + 1,
+          client_name = response.client.name,
+          response_index = 0,
+          message = response_error,
         })
       end
+      for index, item in ipairs(items) do
+        local item_error = prepared_item_error(item)
+        if item_error then
+          table.insert(validation_failures, {
+            kind = "normalization",
+            client_id = response.client.id,
+            client_name = response.client.name,
+            response_index = index,
+            message = item_error,
+          })
+        else
+          table.insert(flattened, {
+            client_id = response.client.id,
+            client = response.client,
+            item = vim.deepcopy(item),
+            response_index = #flattened + 1,
+          })
+        end
+      end
     end
+    state.prepare_failures = combine_failures(stage.failures, validation_failures)
 
     if #flattened == 0 then
       local status

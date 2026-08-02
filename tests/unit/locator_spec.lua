@@ -80,6 +80,33 @@ describe("Voyager locators", function()
     assert.same({}, env.buffers)
   end)
 
+  it("keeps environment syntax literal in project-relative locators", function()
+    local env = Buffer.new({
+      files = {
+        ["/project/lua/$HOME.lua"] = { "literal environment name" },
+        ["/project/~/notes.lua"] = { "literal tilde directory" },
+      },
+    })
+    local locator = Locator.new(env.runtime, "/project", nil)
+
+    assert.same({ "literal environment name" }, locator:source({ kind = "project", path = "lua/$HOME.lua" }))
+    assert.same({ "literal tilde directory" }, locator:source({ kind = "project", path = "~/notes.lua" }))
+  end)
+
+  it("keeps environment syntax literal in project roots and absolute locators", function()
+    local env = Buffer.new({
+      files = {
+        ["/project/$HOME/lua/main.lua"] = { "literal project root" },
+        ["/external/$HOME.lua"] = { "literal absolute target" },
+      },
+    })
+    local locator = Locator.new(env.runtime, "/project/$HOME", nil)
+
+    assert.same({ kind = "project", path = "lua/main.lua" }, locator:from_uri("file:///project/$HOME/lua/main.lua"))
+    assert.same({ kind = "absolute", path = "/external/$HOME.lua" }, locator:from_uri("file:///external/$HOME.lua"))
+    assert.same({ "literal absolute target" }, locator:source({ kind = "absolute", path = "/external/$HOME.lua" }))
+  end)
+
   it("requires an exact loaded non-file URI or a valid resolver result", function()
     local env = Buffer.new({
       buffers = {

@@ -97,6 +97,14 @@ describe("Voyager storage", function()
         cwd = "/outside",
         expected = "/repo/lua",
       },
+      {
+        name = "literal environment syntax in LSP root",
+        file = "/repo/$HOME/lua/main.lua",
+        clients = { { config = { root_dir = "/repo/$HOME" } } },
+        git_root = "/repo",
+        cwd = "/repo",
+        expected = "/repo/$HOME",
+      },
     }
 
     for _, case in ipairs(cases) do
@@ -136,6 +144,30 @@ describe("Voyager storage", function()
 
     fs.files[path16] = "collision-16"
     assert.matches("%-" .. flow.root_key .. "%.json$", store:path_for(flow))
+  end)
+
+  it("refuses to save past an unreadable document at the expected flow path", function()
+    local flow = Fixtures.new_flow()
+    local path = "/project/.voyager/flows/" .. flow.flow_id .. ".json"
+    for _, content in ipairs({
+      "{not-json}\n",
+      (Schema.encode(Fixtures.document()):gsub('"schema_version": 1', '"schema_version": 2', 1)),
+    }) do
+      local fs = FakeFS.new({
+        directories = { "/project/.voyager/flows" },
+        files = { [path] = content },
+      })
+      local store = new_store(fs)
+
+      local resolved, path_error = store:path_for(flow)
+      assert.is_nil(resolved)
+      assert.matches("schema v1", path_error, nil, true)
+      local saved, save_error = store:save(flow)
+      assert.is_nil(saved)
+      assert.matches("schema v1", save_error, nil, true)
+      assert.same({ [path] = content }, fs.files)
+      assert.same({}, fs:operation_names())
+    end
   end)
 
   it("returns an empty list for a missing directory and sorts valid entries deterministically", function()

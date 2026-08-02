@@ -3,6 +3,8 @@ local Presentation = require("voyager.lsp.presentation")
 
 local created_buffers
 local created_windows
+local created_presenters
+local previous_switchbuf
 
 local function buffer(lines)
   local bufnr = vim.api.nvim_create_buf(true, false)
@@ -92,6 +94,7 @@ local function presenter(env, navigation, overrides)
       overrides.notification = message
     end,
   })
+  table.insert(created_presenters, instance)
   return instance, current, overrides
 end
 
@@ -101,15 +104,25 @@ local function tagged_item(env, marker)
   return value
 end
 
+local function feed_and_wait(keys, predicate)
+  vim.api.nvim_feedkeys(vim.keycode(keys), "xt", false)
+  assert(vim.wait(1000, predicate, 10, false), "scheduled list activation did not settle")
+end
+
 describe("Voyager LSP presentation", function()
   before_each(function()
     close_list_windows()
     vim.fn.setqflist({}, "r")
     created_buffers = {}
     created_windows = {}
+    created_presenters = {}
+    previous_switchbuf = vim.o.switchbuf
   end)
 
   after_each(function()
+    for _, instance in ipairs(created_presenters) do
+      instance:invalidate()
+    end
     close_list_windows()
     for index = #created_windows, 1, -1 do
       local winid = created_windows[index]
@@ -122,6 +135,7 @@ describe("Voyager LSP presentation", function()
         pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
       end
     end
+    vim.o.switchbuf = previous_switchbuf
     vim.fn.setqflist({}, "r")
   end)
 
@@ -208,7 +222,10 @@ describe("Voyager LSP presentation", function()
     assert.same({ generation = 4, request_token = 12, node_id = "loc-result" }, list.items[1].user_data.voyager)
     assert.is_nil(first.raw.voyager)
 
+    local jumps_before = vim.deepcopy(vim.fn.getjumplist(env.source_win))
+    assert(instance:_arm_list_activation(1))
     vim.cmd("cfirst")
+    assert.is_false(vim.deep_equal(jumps_before, vim.fn.getjumplist(env.source_win)))
     local target_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_cursor(target_win, { 1, 0 })
     instance:on_cursor_moved(target_win)
@@ -217,6 +234,44 @@ describe("Voyager LSP presentation", function()
     instance:on_cursor_moved(target_win)
     instance:on_cursor_moved(target_win)
     assert.same({ "loc-result" }, current)
+  end)
+
+  it("ignores unrelated source movement to the highlighted quickfix coordinate", function()
+    local env = fixture()
+    local instance, current = presenter(env)
+    instance:present(
+      env.context,
+      { tagged_item(env, "first"), tagged_item(env, "second") },
+      Actions.get("implementation")
+    )
+
+    vim.api.nvim_set_current_win(env.source_win)
+    vim.api.nvim_win_set_buf(env.source_win, env.target)
+    vim.api.nvim_win_set_cursor(env.source_win, { 1, 1 })
+    instance:on_cursor_moved(env.source_win)
+
+    assert.same({}, current)
+  end)
+
+  it("uses metadata only for passive cursor movement and ignores ordinary keys before querying", function()
+    local env = fixture()
+    local instance = presenter(env)
+    instance:present(
+      env.context,
+      { tagged_item(env, "first"), tagged_item(env, "second") },
+      Actions.get("implementation")
+    )
+    local queries = {}
+    local active_list = instance._active_list
+    instance._active_list = function(self, include_items)
+      table.insert(queries, include_items == false and "metadata" or tostring(include_items))
+      return active_list(self, include_items)
+    end
+
+    instance:on_cursor_moved(env.source_win)
+    instance:_record_list_key("x")
+
+    assert.same({ "metadata" }, queries)
   end)
 
   it("tracks a non-initial result selected from the native quickfix list", function()
@@ -233,12 +288,69 @@ describe("Voyager LSP presentation", function()
     })
 
     instance:present(env.context, { first, second }, Actions.get("implementation"))
-    vim.cmd("clast")
+    feed_and_wait(":cne<CR>", function()
+      return #current == 1
+    end)
     assert.equals(2, vim.fn.getqflist({ idx = 0 }).idx)
 
-    instance:on_cursor_moved(vim.api.nvim_get_current_win())
-
     assert.same({ "loc-second" }, current)
+  end)
+
+  it("tracks a typed initial-item command without a list-index transition", function()
+    local env = fixture()
+    local instance, current = presenter(env)
+
+    instance:present(
+      env.context,
+      { tagged_item(env, "first"), tagged_item(env, "second") },
+      Actions.get("implementation")
+    )
+    feed_and_wait(":cc<CR>", function()
+      return #current == 1
+    end)
+
+    assert.same({ "loc-result" }, current)
+  end)
+
+  it("does not attribute a compound command that navigates again after quickfix", function()
+    local env = fixture()
+    local instance, current = presenter(env)
+    instance:present(
+      env.context,
+      { tagged_item(env, "first"), tagged_item(env, "second") },
+      Actions.get("implementation")
+    )
+
+    vim.api.nvim_feedkeys(vim.keycode(":cc | buffer " .. env.target .. "<CR>"), "xt", false)
+    vim.wait(20)
+
+    assert.equals(env.target, vim.api.nvim_get_current_buf())
+    assert.same({}, current)
+  end)
+
+  it("tracks an Enter activation that jumps to an already-visible target window", function()
+    local env = fixture()
+    vim.api.nvim_set_current_win(env.source_win)
+    vim.cmd("vsplit")
+    local target_win = vim.api.nvim_get_current_win()
+    table.insert(created_windows, target_win)
+    vim.api.nvim_win_set_buf(target_win, env.target)
+    vim.api.nvim_set_current_win(env.source_win)
+    vim.o.switchbuf = "useopen"
+    local instance, current = presenter(env)
+
+    instance:present(
+      env.context,
+      { tagged_item(env, "first"), tagged_item(env, "second") },
+      Actions.get("implementation")
+    )
+    feed_and_wait("<CR>", function()
+      return #current == 1
+    end)
+    local selected_win = vim.api.nvim_get_current_win()
+
+    assert.equals(target_win, selected_win)
+    assert.same({ "loc-result" }, current)
   end)
 
   it("uses a location-list owner fallback and preserves call objects", function()
@@ -250,17 +362,79 @@ describe("Voyager LSP presentation", function()
     local item = vim.deepcopy(env.item)
     item.raw = call
     env.context.winid = 999999
-    local instance = presenter(env, { loclist = true })
+    local instance, current = presenter(env, { loclist = true })
 
     instance:present(env.context, { item }, Actions.get("incoming_calls"))
 
-    local list = vim.fn.getloclist(env.source_win, { id = 0, idx = 0, title = 0, context = 0, items = 0 })
+    local list = vim.fn.getloclist(env.source_win, { id = 0, idx = 0, title = 0, context = 0, items = 0, winid = 0 })
     assert.equals(1, #list.items)
     assert.equals("incoming calls", list.title)
     assert.same({ bufnr = env.source, method = "callHierarchy/incomingCalls" }, list.context)
     assert.equals("caller", list.items[1].user_data.from.name)
     assert.same({ generation = 4, request_token = 12, node_id = "loc-result" }, list.items[1].user_data.voyager)
     assert.is_nil(call.voyager)
+
+    vim.api.nvim_set_current_win(list.winid)
+    feed_and_wait("<CR>", function()
+      return #current == 1
+    end)
+    assert.same({ "loc-result" }, current)
+  end)
+
+  it("tracks a typed location-list command from the observed owner", function()
+    local env = fixture()
+    local instance, current = presenter(env, { loclist = true })
+    instance:present(env.context, { env.item }, Actions.get("incoming_calls"))
+
+    vim.api.nvim_set_current_win(env.source_win)
+    feed_and_wait(":ll<CR>", function()
+      return #current == 1
+    end)
+
+    assert.same({ "loc-result" }, current)
+  end)
+
+  it("does not attribute a location-list command from a foreign owner", function()
+    local env = fixture()
+    vim.cmd("tabnew")
+    local foreign_win = vim.api.nvim_get_current_win()
+    table.insert(created_windows, foreign_win)
+    vim.fn.setloclist(foreign_win, {}, " ", {
+      title = "foreign",
+      items = { vim.deepcopy(env.item.list_item) },
+    })
+    vim.api.nvim_set_current_win(env.source_win)
+    local instance, current = presenter(env, { loclist = true })
+    instance:present(
+      env.context,
+      { tagged_item(env, "first"), tagged_item(env, "second") },
+      Actions.get("incoming_calls")
+    )
+
+    vim.api.nvim_set_current_win(foreign_win)
+    vim.api.nvim_feedkeys(vim.keycode(":ll<CR>"), "xt", false)
+    assert(vim.wait(1000, function()
+      return vim.api.nvim_get_current_buf() == env.target
+    end, 10, false))
+
+    assert.same({}, current)
+  end)
+
+  it("keeps tracking a same-ID location list after its owner closes", function()
+    local env = fixture()
+    local instance, current = presenter(env, { loclist = true })
+    instance:present(env.context, { env.item }, Actions.get("incoming_calls"))
+    local list_winid = vim.fn.getloclist(env.source_win, { winid = 0 }).winid
+    assert.is_true(vim.api.nvim_win_is_valid(list_winid))
+
+    vim.api.nvim_win_close(env.source_win, true)
+    assert.is_true(vim.api.nvim_win_is_valid(list_winid))
+    vim.api.nvim_set_current_win(list_winid)
+    feed_and_wait("<CR>", function()
+      return #current == 1
+    end)
+
+    assert.same({ "loc-result" }, current)
   end)
 
   it("rejects a replaced quickfix list even at the same target coordinate", function()
@@ -268,12 +442,16 @@ describe("Voyager LSP presentation", function()
     local instance, current = presenter(env)
     instance:present(env.context, { env.item }, Actions.get("references"))
     local original = vim.fn.getqflist({ id = 0, items = 0 })
+    assert(instance:_arm_list_activation(1))
     vim.fn.setqflist({}, " ", { title = "replacement", items = original.items })
 
     vim.api.nvim_win_set_buf(env.source_win, env.target)
     vim.api.nvim_win_set_cursor(env.source_win, { 1, 1 })
     instance:on_cursor_moved(env.source_win)
     assert.same({}, current)
+    assert.is_nil(instance._observer)
+    assert.is_nil(instance._key_namespace)
+    assert.is_nil(instance._cmdline_autocmd)
   end)
 
   it("lets custom on_list own every non-empty presentation and invalidates old selectors", function()
@@ -299,6 +477,7 @@ describe("Voyager LSP presentation", function()
       end,
       notify = function() end,
     })
+    table.insert(created_presenters, instance)
 
     instance:present(env.context, { env.item }, Actions.get("definition"))
     assert.equals(1, #captures)

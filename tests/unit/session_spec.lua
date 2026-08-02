@@ -36,6 +36,18 @@ describe("Voyager session lifecycle", function()
     assert.equals(8, #deps.autocmd_calls)
   end)
 
+  it("keeps environment syntax literal in editor-derived project roots", function()
+    local session, deps = new_session({ buffer_name = "/project/$HOME/lua/main.lua" })
+    deps.clients = {}
+    deps.runtime.find_root = function()
+      return "/project/$HOME"
+    end
+
+    assert.is_true(session:open())
+    assert.equals("/project/$HOME", session:state().project_root)
+    assert.equals("lua/main.lua", session:state().flow.root.location.locator.path)
+  end)
+
   it("does not publish a session when the initial sidebar cannot mount", function()
     local session, deps = new_session()
     deps.sidebar.mount_result = false
@@ -250,6 +262,23 @@ describe("Voyager session lifecycle", function()
     assert.is_true(deps.sidebar:is_mounted())
   end)
 
+  it("recovers when the dirty-decision UI provider throws", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
+    deps.sidebar:unmount({ owned = false })
+    deps.select_error = "picker exploded"
+
+    assert.has_no.errors(function()
+      assert.is_false(session:close("command"))
+    end)
+
+    assert.equals("active", session:state().phase)
+    assert.is_true(session:state().flow:is_dirty())
+    assert.is_true(deps.sidebar:is_mounted())
+    assert.matches("picker exploded", deps.notifications[#deps.notifications].message, nil, true)
+  end)
+
   it("saves synchronously and resumes the winning dirty-close intent", function()
     local session, deps = new_session()
     assert.is_true(session:open())
@@ -377,6 +406,36 @@ describe("Voyager session lifecycle", function()
     assert.same({ generation }, old_keymaps.restored_generations)
     assert.same({ deps.origin_buf }, loaded_keymaps.applied_buffers)
     assert.is_false(old_sidebar:is_mounted())
+  end)
+
+  it("re-reads a selected flow after saving the dirty active flow", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    assert.is_true(session:state().flow:set_note(deps.root_id, "important for auth"))
+    local stale = Fixtures.new_flow()
+    local updated = Fixtures.new_flow()
+    assert.is_true(updated:set_note(updated.root.id, "important for auth"))
+    assert(deps.store:save(updated))
+    deps.store.save_calls = {}
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    deps.store.entries = { entry }
+    deps.store.load_hook = function()
+      return #deps.store.save_calls == 0 and stale or updated
+    end
+    deps.next_sidebar = deps:new_sidebar()
+    deps.next_keymaps = deps:new_keymaps()
+    deps.next_lsp = deps:new_lsp()
+    deps.next_presenter = deps:new_presenter()
+
+    assert.is_true(session:load())
+    deps.select_callback(entry, 1)
+    deps.select_callback("Save", 1)
+
+    assert.equals(1, #deps.store.save_calls)
+    assert.equals(1, #deps.store.load_calls)
+    assert.equals("important for auth", session:state().flow.root.note)
+    assert.is_false(session:state().flow:is_dirty())
   end)
 
   it("rolls back the old popup when a loaded flow cannot mount", function()
