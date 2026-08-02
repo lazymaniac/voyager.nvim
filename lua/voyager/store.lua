@@ -47,6 +47,15 @@ local function document_from_flow(flow)
   return document
 end
 
+local function strip_transient_node_state(node)
+  node.stale = nil
+  node.stale_reason = nil
+  local children = node.kind == "location" and node.actions or node.results
+  for _, child in ipairs(children) do
+    strip_transient_node_state(child)
+  end
+end
+
 local function node_count(node)
   local total = 1
   local children = node.kind == "location" and node.actions or node.results
@@ -232,6 +241,7 @@ function Store:save(flow)
   merged.name = Locator.flow_name(merged.root.location)
   merged.root_key = Locator.root_key(merged.root.location)
   merged.flow_id = path:match("/([^/]+)%.json$")
+  strip_transient_node_state(merged.root)
 
   local ok, encoded = pcall(self._schema.encode, merged)
   if not ok then

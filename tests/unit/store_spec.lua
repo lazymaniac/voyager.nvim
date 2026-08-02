@@ -173,6 +173,23 @@ describe("Voyager storage", function()
     assert.same({ "lua/mysql.lua", "lua/memory.lua" }, result_paths(merged.root.actions[1]))
   end)
 
+  it("never persists transient stale metadata", function()
+    local fs = FakeFS.new({ directories = { "/project/.voyager/flows" } })
+    local store = new_store(fs)
+    local flow = active_with_branch("lua/mysql.lua")
+    local result = flow.root.actions[1].results[1]
+    flow.root.stale = false
+    result.stale = true
+    result.stale_reason = "file changed"
+
+    local saved = assert(store:save(flow))
+
+    assert.is_nil(saved.root.stale)
+    assert.is_nil(saved.root.actions[1].results[1].stale)
+    assert.is_nil(saved.root.actions[1].results[1].stale_reason)
+    assert.same(saved, Schema.decode(fs.files[store:path_for(saved)]))
+  end)
+
   it("loops until a short write has persisted every byte", function()
     local fs = FakeFS.new({ directories = { "/project/.voyager/flows" } })
     fs:set_short_write(3)

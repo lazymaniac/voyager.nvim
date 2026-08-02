@@ -101,7 +101,7 @@ function M.native()
       end)
     end,
     word_at_cursor = function(bufnr, winid)
-      return vim.api.nvim_win_call(winid, function()
+      local result = vim.api.nvim_win_call(winid, function()
         assert(vim.api.nvim_get_current_buf() == bufnr)
         local line = vim.api.nvim_get_current_line()
         local col = vim.api.nvim_win_get_cursor(winid)[2]
@@ -113,12 +113,13 @@ function M.native()
             break
           end
           if start_col <= col and col < end_col then
-            return text, start_col, end_col
+            return { text, start_col, end_col }
           end
           search = math.max(end_col, search + 1)
         end
-        return "", col, col
+        return { "", col, col }
       end)
+      return result[1], result[2], result[3]
     end,
     word_at = function(lines, line, byte_col)
       local text = lines[line + 1]

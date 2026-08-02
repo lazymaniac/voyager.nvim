@@ -791,7 +791,7 @@ function Session:edit_note(row)
   local token = self:_replace_interaction_token("note_input")
   self._ui.input({
     prompt = "Voyager note",
-    default = node.note or "",
+    default = node.note,
   }, function(value)
     if not self:_consume_interaction(token) or value == nil or type(value) ~= "string" then
       return

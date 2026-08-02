@@ -198,7 +198,7 @@ describe("Voyager session lifecycle", function()
     assert.is_true(session:open())
 
     assert.is_true(session:edit_note({ kind = "note", owner_id = deps.root_id }))
-    assert.equals("", deps.input_opts.default)
+    assert.is_nil(deps.input_opts.default)
     local first_callback = deps.input_callback
     assert.is_true(session:edit_note({ kind = "location", owner_id = deps.root_id }))
     local second_callback = deps.input_callback

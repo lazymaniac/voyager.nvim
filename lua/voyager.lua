@@ -39,6 +39,10 @@ function M.close()
   return session():close("command")
 end
 
+function M._session_for_tests()
+  return active_session
+end
+
 function M._reset_for_tests()
   if active_session then
     active_session:shutdown()
