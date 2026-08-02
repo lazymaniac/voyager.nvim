@@ -1,6 +1,7 @@
 NVIM ?= nvim
 STYLUA ?= stylua
 CONTAINER ?= docker
+LUAROCKS ?= luarocks
 ROOT := $(abspath .)
 DEPS := $(ROOT)/.deps
 PLENARY := $(DEPS)/plenary.nvim
@@ -11,6 +12,12 @@ NUI_REV := f535005e6ad1016383f24e39559833759453564e
 PANVIMDOC_REV := 662fb20304d20c539fb48a0bda628f5165507de7
 STYLUA_VERSION := 2.5.2
 DOC_DATE := 2026 August 01
+LUAROCKS_VERSION := 3.13.0
+ROCKSPEC := voyager.nvim-scm-1.rockspec
+ROCK_BUILD_OUTPUT := $(ROOT)/voyager.nvim-scm-1.all.rock
+ROCK_ARTIFACT_DIR := $(ROOT)/.tmp/artifacts
+ROCK_FILE := $(ROCK_ARTIFACT_DIR)/voyager.nvim-scm-1.all.rock
+ROCK_TREE := $(ROOT)/.tmp/rocks
 TEST_ENV := env VOYAGER_TEST_ROOT=$(ROOT) NVIM_APPNAME=voyager-test XDG_CONFIG_HOME=$(ROOT)/.tmp/test/config XDG_CACHE_HOME=$(ROOT)/.tmp/test/cache XDG_STATE_HOME=$(ROOT)/.tmp/test/state XDG_DATA_HOME=$(ROOT)/.tmp/test/data
 TEST_NVIM := $(TEST_ENV) $(NVIM) --headless --noplugin -i NONE -u tests/minimal_init.lua
 E2E_PROJECT := $(ROOT)/.tmp/e2e-project
@@ -25,7 +32,7 @@ else
 UNIT_COMMAND := lua require('tests.run_file')('$(TEST_FILE)')
 endif
 
-.PHONY: deps check-deps check-stylua test test-unit test-e2e format format-check docs help-check
+.PHONY: deps check-deps check-stylua check-luarocks test test-unit test-e2e format format-check docs help-check rock rock-smoke
 
 deps:
 	@scripts/ensure-dependency install plenary.nvim https://github.com/nvim-lua/plenary.nvim.git $(PLENARY_REV) $(PLENARY)
@@ -70,3 +77,30 @@ help-check:
 	@$(MAKE) docs
 	@$(NVIM) --headless -u NONE -i NONE -c "helptags doc" -c "qa!"
 	@git diff --exit-code -- doc/voyager.txt doc/tags
+
+check-luarocks:
+	@command -v $(LUAROCKS) >/dev/null 2>&1 || { echo "LuaRocks $(LUAROCKS_VERSION) is required" >&2; exit 1; }
+	@actual="$$($(LUAROCKS) --version | awk 'NR == 1 { print $$NF }')"; test "$$actual" = "$(LUAROCKS_VERSION)" || { echo "expected LuaRocks $(LUAROCKS_VERSION), got $$actual" >&2; exit 1; }
+
+rock: check-luarocks
+	@test "$(ROCK_BUILD_OUTPUT)" = "$(ROOT)/voyager.nvim-scm-1.all.rock"
+	@rm -f "$(ROCK_BUILD_OUTPUT)"
+	@mkdir -p "$(ROCK_ARTIFACT_DIR)"
+	@$(LUAROCKS) make --pack-binary-rock --deps-mode=none "$(ROCKSPEC)"
+	@test -f "$(ROCK_BUILD_OUTPUT)"
+	@mv "$(ROCK_BUILD_OUTPUT)" "$(ROCK_FILE)"
+
+rock-smoke: rock
+	@test "$(ROCK_TREE)" = "$(ROOT)/.tmp/rocks"
+	@rm -rf "$(ROCK_TREE)"
+	@mkdir -p "$(ROCK_TREE)"
+	@$(LUAROCKS) --tree "$(ROCK_TREE)" install nui.nvim 0.4.0-1
+	@$(LUAROCKS) --tree "$(ROCK_TREE)" install "$(ROCK_FILE)" --deps-mode=none
+	@rock_dir="$$($(LUAROCKS) --tree "$(ROCK_TREE)" show --rock-dir voyager.nvim scm-1)"; \
+	  test -n "$$rock_dir"; \
+	  lua_path="$$($(LUAROCKS) --tree "$(ROCK_TREE)" path --lr-path)"; \
+	  lua_cpath="$$($(LUAROCKS) --tree "$(ROCK_TREE)" path --lr-cpath)"; \
+	  VOYAGER_ROCK_DIR="$$rock_dir" LUA_PATH="$$lua_path;;" LUA_CPATH="$$lua_cpath;;" \
+	  $(NVIM) --headless --noplugin -u NONE -i NONE \
+	    --cmd 'execute "set runtimepath^=" .. fnameescape($$VOYAGER_ROCK_DIR)' \
+	    -c "runtime plugin/voyager.lua" -l tests/smoke/installed.lua
