@@ -123,6 +123,9 @@ function M.new(overrides)
     presenter_factory_calls = {},
     sidebar_factory_calls = {},
     keymaps_factory_calls = 0,
+    cursor_word = "main",
+    cursor_word_start = 6,
+    cursor_word_end = 10,
   }
   env.buffers[env.origin_buf] = {
     name = overrides.buffer_name or "/project/lua/main.lua",
@@ -198,7 +201,7 @@ function M.new(overrides)
       return { 0, cursor[1], cursor[2] + 1, 0 }
     end,
     word_at_cursor = function()
-      return "main", 6, 10
+      return env.cursor_word, env.cursor_word_start, env.cursor_word_end
     end,
     get_clients = function(filter)
       env.last_client_filter = vim.deepcopy(filter)
@@ -253,6 +256,13 @@ function M.new(overrides)
     }
   end
 
+  function env:set_cursor(byte_col, word, start_col, end_col)
+    env.windows[env.current_win_id].cursor = { 1, byte_col }
+    env.cursor_word = word
+    env.cursor_word_start = start_col
+    env.cursor_word_end = end_col
+  end
+
   function env:trigger(event, args)
     assert(self.autocmds[event], "autocmd not registered: " .. event)(args or {})
   end
@@ -277,7 +287,7 @@ function M.new(overrides)
     table.insert(self.restored_generations, generation)
   end
 
-  env.presenter = { invalidate_calls = 0, cursor_calls = {} }
+  env.presenter = { invalidate_calls = 0, cursor_calls = {}, present_calls = {} }
   function env.presenter:invalidate()
     self.invalidate_calls = self.invalidate_calls + 1
   end
@@ -285,7 +295,56 @@ function M.new(overrides)
     table.insert(self.cursor_calls, winid)
   end
 
-  env.lsp = {}
+  function env.presenter:present(context, items, action)
+    table.insert(self.present_calls, {
+      context = vim.deepcopy(context),
+      items = vim.deepcopy(items),
+      action = vim.deepcopy(action),
+    })
+    if self.on_present then
+      self.on_present(context, items, action)
+    end
+  end
+
+  env.lsp = { starts = {}, handles = {} }
+  function env.lsp:start(action_name, context, callback)
+    if self.start_error then
+      error(self.start_error)
+    end
+    local handle = { cancel_calls = {}, supersede_calls = 0, done = false }
+    function handle:cancel(reason)
+      table.insert(self.cancel_calls, reason)
+    end
+    function handle:supersede_interactive()
+      self.supersede_calls = self.supersede_calls + 1
+      if self.on_supersede then
+        self.on_supersede()
+      end
+    end
+    function handle:is_done()
+      return self.done
+    end
+    table.insert(self.starts, {
+      action_name = action_name,
+      context = vim.deepcopy(context),
+      callback = callback,
+      handle = handle,
+    })
+    table.insert(self.handles, handle)
+    if self.auto_outcome then
+      handle.done = true
+      callback(vim.deepcopy(self.auto_outcome))
+      if self.complete_twice then
+        callback(vim.deepcopy(self.auto_outcome))
+      end
+    end
+    return handle
+  end
+  function env.lsp:complete(index, outcome)
+    local start = assert(self.starts[index])
+    start.handle.done = true
+    start.callback(vim.deepcopy(outcome))
+  end
   env.locator = {
     _project_root = env.project_root,
     is_stale = function() return false end,

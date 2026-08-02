@@ -1,4 +1,5 @@
 local Locator = require("voyager.locator")
+local Actions = require("voyager.lsp.actions")
 
 local M = {}
 local Session = {}
@@ -8,6 +9,12 @@ local active_phases = {
   active = true,
   deciding = true,
   saving = true,
+}
+
+local committing_statuses = {
+  success = true,
+  partial = true,
+  empty = true,
 }
 
 local function normalize(path)
@@ -183,6 +190,42 @@ function Session:_render(state)
   })
 end
 
+local function first_failure_message(outcome)
+  local failure = type(outcome.failures) == "table" and outcome.failures[1] or nil
+  if type(failure) == "table" and type(failure.message) == "string" and failure.message ~= "" then
+    return failure.message
+  end
+end
+
+function Session:_notify_outcome(outcome)
+  local label = type(outcome.label) == "string" and outcome.label or "navigation"
+  local status = outcome.status
+  local message
+  local level = vim.log.levels.WARN
+  if status == "partial" then
+    local count = type(outcome.failures) == "table" and #outcome.failures or 0
+    message = string.format("Voyager: %s completed with %d issue%s", label, count, count == 1 and "" or "s")
+  elseif status == "empty" then
+    message = "Voyager: " .. label .. " returned no results"
+    level = vim.log.levels.INFO
+  elseif status == "error" then
+    message = "Voyager: " .. label .. " failed: " .. (first_failure_message(outcome) or "request failed")
+    level = vim.log.levels.ERROR
+  elseif status == "timeout" then
+    message = "Voyager: " .. label .. " timed out"
+  elseif status == "unsupported" then
+    message = "Voyager: " .. label .. " is not supported"
+  elseif status == "cancelled" then
+    message = "Voyager: " .. label .. " was cancelled"
+  elseif status == "superseded" then
+    message = "Voyager: " .. label .. " was superseded"
+    level = vim.log.levels.INFO
+  end
+  if message then
+    self._ui.notify(message, level)
+  end
+end
+
 function Session:_apply_source_mappings(state, bufnr)
   bufnr = bufnr or state.origin_buf
   if not self:_eligible_buffer(state, bufnr) then
@@ -232,7 +275,12 @@ function Session:_register_autocmds(state)
     callback = guarded(function()
       local winid = runtime.current_win()
       self:_record_source_window(state, winid)
-      state.presenter:on_cursor_moved(winid)
+    end),
+  })
+  runtime.create_autocmd("CursorMoved", {
+    group = state.autocmd_group,
+    callback = guarded(function()
+      state.presenter:on_cursor_moved(runtime.current_win())
     end),
   })
   runtime.create_autocmd("WinClosed", {
@@ -372,6 +420,229 @@ function Session:choose_jump_window()
   end
   self._ui.notify("Voyager: no eligible source window is available", vim.log.levels.WARN)
   return nil
+end
+
+function Session:_action_context(state, winid, bufnr)
+  local cursor = self._runtime.cursor(winid)
+  local captured, capture_error = Locator.capture_root(bufnr, winid, state.project_root, self._runtime)
+  if not captured then
+    return nil, capture_error
+  end
+  captured.identity = Locator.location_key(captured)
+
+  local origin_node_id = state.flow.current_node_id
+  local origin = state.flow:location(origin_node_id)
+  if not origin then
+    return nil, "logical current location is missing"
+  end
+  local manual_location
+  if not Locator.contains(origin.location, captured.locator, cursor) then
+    manual_location = vim.deepcopy(captured)
+  end
+
+  local from = vim.deepcopy(self._runtime.getpos(winid))
+  from[1] = bufnr
+  local tagname = select(1, self._runtime.word_at_cursor(bufnr, winid))
+  tagname = type(tagname) == "string" and vim.trim(tagname) or ""
+
+  return {
+    generation = state.generation,
+    flow_id = state.flow.flow_id,
+    origin_node_id = origin_node_id,
+    bufnr = bufnr,
+    winid = winid,
+    project_root = state.project_root,
+    timeout_ms = state.config.navigation.timeout_ms,
+    cursor = vim.deepcopy(cursor),
+    cursor_locator = vim.deepcopy(captured.locator),
+    cursor_range = vim.deepcopy(captured.range),
+    manual_location = manual_location,
+    from = from,
+    tagname = tagname ~= "" and tagname or "<anonymous>",
+  }
+end
+
+function Session:_commit_outcome(state, context, request_token, outcome)
+  assert(outcome.origin_node_id == context.origin_node_id, "navigation origin changed during request")
+  assert(type(outcome.method) == "string" and outcome.method ~= "", "navigation method is missing")
+  assert(type(outcome.label) == "string" and outcome.label ~= "", "navigation label is missing")
+
+  local identities = {}
+  for _, location in ipairs(outcome.locations or {}) do
+    local identity = location.identity or Locator.location_key(location)
+    identities[identity] = true
+  end
+  for _, item in ipairs(outcome.items or {}) do
+    assert(type(item.identity) == "string" and identities[item.identity], "navigation item identity is missing")
+  end
+
+  local commit = state.flow:commit_navigation({
+    origin_node_id = outcome.origin_node_id,
+    manual_location = context.manual_location,
+    method = outcome.method,
+    label = outcome.label,
+    locations = outcome.locations or {},
+  })
+  local tagged_items = {}
+  for _, item in ipairs(outcome.items or {}) do
+    local node_id = assert(commit.node_id_by_identity[item.identity], "committed result identity is missing")
+    local tagged = vim.deepcopy(item)
+    tagged.node_id = node_id
+    table.insert(tagged_items, tagged)
+  end
+
+  if context.manual_location
+    and state.manual_claim_token == request_token
+    and state.current_claim_token == request_token
+  then
+    state.flow:set_current(commit.effective_origin_id)
+  end
+  return tagged_items
+end
+
+function Session:run_action(action_name)
+  if not self:is_active() then
+    self._ui.notify("Voyager: no active flow", vim.log.levels.INFO)
+    return nil
+  end
+  local action_ok, action = pcall(Actions.get, action_name)
+  if not action_ok then
+    self._ui.notify("Voyager: " .. tostring(action), vim.log.levels.ERROR)
+    return nil
+  end
+
+  local state = self._state
+  local generation = state.generation
+  local flow_id = state.flow.flow_id
+  local winid = self._runtime.current_win()
+  if not self:_eligible_window(state, winid) then
+    self._ui.notify("Voyager: navigation requires an eligible source window", vim.log.levels.WARN)
+    return nil
+  end
+  local bufnr = self._runtime.win_buf(winid)
+  local context, context_error = self:_action_context(state, winid, bufnr)
+  if not context then
+    self._ui.notify("Voyager: could not capture navigation origin: " .. tostring(context_error), vim.log.levels.ERROR)
+    return nil
+  end
+
+  state.request_token = state.request_token + 1
+  local request_token = state.request_token
+  context.request_token = request_token
+  state.presentation_token = request_token
+  state.current_claim_token = request_token
+  state.manual_claim_token = context.manual_location and request_token or 0
+
+  local older_handles = {}
+  for _, handle in pairs(state.request_handles) do
+    table.insert(older_handles, handle)
+  end
+  for _, handle in ipairs(older_handles) do
+    if type(handle.supersede_interactive) == "function" then
+      pcall(handle.supersede_interactive, handle)
+    end
+  end
+
+  state.request_count = state.request_count + 1
+  self:_render(state)
+
+  local settled = false
+  local function settle(outcome)
+    if settled then
+      return
+    end
+    settled = true
+    if not self:_valid_state(state, generation) or state.flow.flow_id ~= flow_id then
+      return
+    end
+
+    state.request_handles[request_token] = nil
+    assert(state.request_count > 0, "Voyager request counter underflow")
+    state.request_count = state.request_count - 1
+
+    local tagged_items
+    if type(outcome) == "table" and committing_statuses[outcome.status] then
+      local commit_ok, commit_result = pcall(self._commit_outcome, self, state, context, request_token, outcome)
+      if commit_ok then
+        tagged_items = commit_result
+        self:_notify_outcome(outcome)
+      else
+        self._ui.notify("Voyager: " .. action.label .. " failed: " .. tostring(commit_result), vim.log.levels.ERROR)
+      end
+    else
+      outcome = type(outcome) == "table" and outcome or {
+        status = "error",
+        label = action.label,
+        failures = { { kind = "setup", message = "invalid LSP completion" } },
+      }
+      self:_notify_outcome(outcome)
+    end
+
+    self:_render(state)
+    if tagged_items
+      and #tagged_items > 0
+      and self:_valid_state(state, generation)
+      and state.flow.flow_id == flow_id
+      and state.presentation_token == request_token
+    then
+      state.presenter:present(context, tagged_items, outcome.action or action)
+    end
+  end
+
+  local started, handle = pcall(state.lsp.start, state.lsp, action_name, vim.deepcopy(context), settle)
+  if not started then
+    settle({
+      status = "error",
+      action = action,
+      method = action.method,
+      label = action.label,
+      origin_node_id = context.origin_node_id,
+      items = {},
+      locations = {},
+      failures = { { kind = "setup", message = tostring(handle) } },
+    })
+    return nil
+  end
+  if type(handle) ~= "table" then
+    settle({
+      status = "error",
+      action = action,
+      method = action.method,
+      label = action.label,
+      origin_node_id = context.origin_node_id,
+      items = {},
+      locations = {},
+      failures = { { kind = "setup", message = "LSP request did not return a handle" } },
+    })
+    return nil
+  end
+
+  local done = false
+  if type(handle.is_done) == "function" then
+    local done_ok, result = pcall(handle.is_done, handle)
+    done = done_ok and result == true
+  end
+  if not settled and self:_valid_state(state, generation) and state.flow.flow_id == flow_id and not done then
+    state.request_handles[request_token] = handle
+  end
+  return handle
+end
+
+function Session:set_current(node_id)
+  if not self:is_active() then
+    return false
+  end
+  local state = self._state
+  if not state.flow:location(node_id) then
+    return false
+  end
+  if not state.flow:set_current(node_id) then
+    return false
+  end
+  state.current_claim_token = 0
+  state.manual_claim_token = 0
+  self:_render(state)
+  return true
 end
 
 function Session:_invalidate_interactions(state)

@@ -32,7 +32,7 @@ describe("Voyager session lifecycle", function()
     assert.same({ deps.origin_buf }, deps.keymaps.applied_buffers)
     assert.is_false(deps.sidebar.mount_calls[1].focus)
     assert.equals(1, deps.sidebar.render_count)
-    assert.equals(7, #deps.autocmd_calls)
+    assert.equals(8, #deps.autocmd_calls)
   end)
 
   it("does not publish a session when the initial sidebar cannot mount", function()
@@ -110,6 +110,8 @@ describe("Voyager session lifecycle", function()
     deps:trigger("WinEnter", { buf = 12 })
     assert.equals(22, session:state().source_windows[1])
     assert.equals(22, session:choose_jump_window())
+    deps:trigger("CursorMoved")
+    assert.same({ 22 }, deps.presenter.cursor_calls)
 
     deps.windows[22].valid = false
     deps:trigger("WinClosed", { match = "22" })
