@@ -37,7 +37,10 @@ function M.new(spec)
     if spec.accepted == false then
       return false, nil
     end
-    return true, spec.missing_request_id and nil or self.request_id
+    if spec.missing_request_id then
+      return true, nil
+    end
+    return true, self.request_id
   end
 
   function client:cancel_request(request_id)
