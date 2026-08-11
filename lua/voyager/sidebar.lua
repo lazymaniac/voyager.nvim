@@ -73,7 +73,20 @@ function M.project(flow, width, status, icons)
   local visit_location
   local visit_action
 
+  local function renders_above(action)
+    local _, record = Actions.by_method(action.method)
+    return record ~= nil and record.placement == "above"
+  end
+
   visit_location = function(node, depth)
+    -- Caller-producing actions render above their symbol so the projected
+    -- rows read top-down along the call flow: entry points first, then the
+    -- symbol, then everything it leads to.
+    for _, action in ipairs(node.actions) do
+      if renders_above(action) then
+        visit_action(action, depth + 1)
+      end
+    end
     local marker
     local glyph = "  "
     if node.id == flow.current_node_id then
@@ -98,7 +111,9 @@ function M.project(flow, width, status, icons)
       table.insert(rows, row("note", node.id, note_text, note_depth, "note", width))
     end
     for _, action in ipairs(node.actions) do
-      visit_action(action, depth + 1)
+      if not renders_above(action) then
+        visit_action(action, depth + 1)
+      end
     end
   end
 

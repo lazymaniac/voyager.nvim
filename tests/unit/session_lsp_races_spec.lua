@@ -91,6 +91,39 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals(1, claim.targets[1].col)
   end)
 
+  it("returns current to an ancestor when navigation retraces the route", function()
+    local session, deps = new_session()
+    local root_id = deps.root_id
+    local site = Fixtures.location("lua/site.lua", 0, "site")
+    local commit = session:state().flow:commit_navigation({
+      origin_node_id = root_id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { site },
+    })
+    local site_id = commit.node_id_by_identity[site.identity]
+    assert.is_true(session:state().flow:set_current(site_id))
+
+    deps:add_buffer(61, "/project/lua/site.lua", { lines = { "site" } })
+    deps.windows[deps.origin_win].bufnr = 61
+    deps:set_cursor(0, "site", 0, 4)
+
+    local back = vim.deepcopy(session:state().flow.root.location)
+    back.identity = Locator.location_key(back)
+    deps.lsp.auto_outcome = outcome("definition", site_id, { back })
+    session:run_action("definition")
+
+    assert.same({}, session:state().flow:location(site_id).actions)
+    local claim = session:state().destination_claim
+    assert.is_table(claim)
+    assert.equals(root_id, claim.targets[1].node_id)
+
+    deps.windows[deps.origin_win].bufnr = deps.origin_buf
+    deps.windows[deps.origin_win].cursor = { 1, back.range.start.character }
+    deps:trigger("CursorMoved")
+    assert.equals(root_id, session:state().flow.current_node_id)
+  end)
+
   it("moves current only when the cursor lands exactly on a claimed destination", function()
     local session, deps = new_session()
     local root_id = session:state().flow.root.id

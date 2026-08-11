@@ -119,6 +119,79 @@ describe("Voyager flow", function()
     assert.not_equals(mysql.node_id_by_identity[auth.identity], memory.node_id_by_identity[auth.identity])
   end)
 
+  it("maps a reverse-route result to its ancestor instead of a new branch", function()
+    local Locator = require("voyager.locator")
+    local flow = Fixtures.new_flow()
+    local site = Fixtures.location("lua/auth.lua", 5, "caller")
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { site },
+    })
+    local site_id = commit.node_id_by_identity[site.identity]
+    local back = vim.deepcopy(flow.root.location)
+    back.identity = Locator.location_key(back)
+
+    local reverse = flow:commit_navigation({
+      origin_node_id = site_id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { back },
+    })
+    assert.equals(flow.root.id, reverse.node_id_by_identity[back.identity])
+    assert.is_nil(reverse.action_id)
+    assert.is_false(reverse.changed)
+    assert.same({}, flow:location(site_id).actions)
+
+    local fresh = Fixtures.location("lua/fresh.lua", 1, "fresh")
+    local mixed = flow:commit_navigation({
+      origin_node_id = site_id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { back, fresh },
+    })
+    assert.equals(flow.root.id, mixed.node_id_by_identity[back.identity])
+    local definition = flow:location(site_id).actions[1]
+    assert.equals(1, #definition.results)
+    assert.equals(mixed.node_id_by_identity[fresh.identity], definition.results[1].id)
+  end)
+
+  it("re-roots a manual jump onto an ancestor without a connector", function()
+    local Locator = require("voyager.locator")
+    local flow = Fixtures.new_flow()
+    local site = Fixtures.location("lua/auth.lua", 5, "caller")
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { site },
+    })
+    local site_id = commit.node_id_by_identity[site.identity]
+    assert.is_true(flow:set_current(site_id))
+
+    local back = vim.deepcopy(flow.root.location)
+    back.identity = Locator.location_key(back)
+    local impl = Fixtures.location("lua/impl.lua", 2, "impl")
+    local result = flow:commit_navigation({
+      origin_node_id = site_id,
+      manual_location = back,
+      method = "textDocument/implementation",
+      label = "implementations",
+      locations = { impl },
+    })
+
+    assert.equals(flow.root.id, result.effective_origin_id)
+    for _, node in ipairs(flow:dfs()) do
+      assert.is_true(node.kind ~= "action" or node.method ~= "voyager/manual")
+    end
+    local methods = {}
+    for _, action in ipairs(flow.root.actions) do
+      methods[action.method] = #action.results
+    end
+    assert.same({ ["textDocument/references"] = 1, ["textDocument/implementation"] = 1 }, methods)
+  end)
+
   it("keeps an empty action visible and treats its repeat as a no-op", function()
     local flow = Fixtures.new_flow()
     local first = flow:commit_navigation({

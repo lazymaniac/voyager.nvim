@@ -27,14 +27,18 @@ earlier symbol, explore a different path, annotate useful locations, and save
 the whole flow for later.
 
 >text
-    ● main — lua/main.lua:5
-      ▾ implementations (2)
-        save — lua/mysql_store.lua:2
-          ▾ references (1)
-            authorize — lua/auth.lua:5
-        ● save — lua/memory_store.lua:1
+      ▾ references (1)
+        authorize — lua/auth.lua:5
+    ● save — lua/mysql_store.lua:2
+      ▾ outgoing calls (2)
+        exec — lua/db.lua:14
           ✎ important for auth
+        audit — lua/log.lua:9
 <
+
+The tree reads in call-flow order: callers of a symbol sit above it and the
+code it leads to sits below, so the outermost entry point is at the top and the
+deepest call is at the bottom.
 
 Opening Voyager starts a new flow at the symbol under the cursor. Loading an
 old flow is always an explicit action.
@@ -318,6 +322,17 @@ exactly on one of them in a normal source window—through a quickfix jump, a
 picker, or any other navigation—and marks that destination as the flow’s
 current node. Later landings on the same action’s destinations keep updating
 the current node until a newer action runs or you pick a node in the sidebar.
+
+Retracing a route backwards never grows the tree. A destination that is already
+an ancestor on the current path—jumping from a reference site back to the
+definition you came from—is not recorded again; landing on it simply moves
+the current marker back to the existing node. A manual jump onto an ancestor
+continues from that node instead of recording a connector.
+
+In the sidebar, each location renders in call-flow order: actions that surface
+callers (references and incoming calls) appear above the symbol they were run
+from, while definitions, declarations, implementations, type definitions, and
+outgoing calls appear below it.
 
 Call-hierarchy recording follows the protocol’s prepare step without
 prompting: when a server returns several prepared items, Voyager records calls
