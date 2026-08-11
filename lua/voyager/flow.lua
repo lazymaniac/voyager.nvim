@@ -212,11 +212,51 @@ function Flow:mark_saved(document)
   self:_reindex()
 end
 
+function Flow:_location_path(node_id)
+  local found
+  local function visit(location, trail)
+    table.insert(trail, location)
+    if location.id == node_id then
+      found = vim.list_slice(trail)
+    end
+    for _, action in ipairs(location.actions) do
+      for _, result in ipairs(action.results) do
+        if found then
+          break
+        end
+        visit(result, trail)
+      end
+    end
+    table.remove(trail)
+  end
+  visit(self.root, {})
+  return found or {}
+end
+
 function Flow:_commit_direct(input)
   local origin = self:location(input.origin_node_id)
   assert(origin, "Voyager navigation origin must be a location: " .. tostring(input.origin_node_id))
   assert(type(input.method) == "string" and input.method ~= "", "Voyager navigation method is required")
   assert(type(input.label) == "string" and input.label ~= "", "Voyager navigation label is required")
+
+  -- A destination that is already on the origin's own path is the same route
+  -- travelled backwards; it maps to the existing node instead of a new branch.
+  local ancestor_by_identity = {}
+  for _, ancestor in ipairs(self:_location_path(origin.id)) do
+    ancestor_by_identity[Locator.location_key(ancestor.location)] = ancestor.id
+  end
+
+  local node_id_by_identity = {}
+  local fresh = {}
+  for _, location in ipairs(input.locations or {}) do
+    local identity = location.identity or Locator.location_key(location)
+    local ancestor_id = ancestor_by_identity[identity]
+    if ancestor_id then
+      node_id_by_identity[identity] = ancestor_id
+    else
+      table.insert(fresh, location)
+    end
+  end
 
   local changed = false
   local action
@@ -225,6 +265,14 @@ function Flow:_commit_direct(input)
       action = candidate
       break
     end
+  end
+  if not action and #fresh == 0 and #(input.locations or {}) > 0 then
+    return {
+      effective_origin_id = origin.id,
+      action_id = nil,
+      node_id_by_identity = node_id_by_identity,
+      changed = false,
+    }
   end
   if not action then
     action = action_node(self._next_id("action"), input.method, input.label)
@@ -238,8 +286,7 @@ function Flow:_commit_direct(input)
     results_by_identity[Locator.location_key(result.location)] = result
   end
 
-  local node_id_by_identity = {}
-  for _, location in ipairs(input.locations or {}) do
+  for _, location in ipairs(fresh) do
     local identity = location.identity or Locator.location_key(location)
     local result = results_by_identity[identity]
     if not result then

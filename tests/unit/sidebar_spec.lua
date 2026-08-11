@@ -130,6 +130,50 @@ describe("Voyager sidebar projection", function()
     assert.matches("…$", note.text)
   end)
 
+  it("renders callers above their symbol and callees below", function()
+    local flow = Fixtures.new_flow()
+    local caller = Fixtures.location("lua/service.lua", 2, "service.persist")
+    local top = Fixtures.location("lua/controller.lua", 9, "controller.create")
+    local callee = Fixtures.location("lua/db.lua", 4, "db.exec")
+    local refs = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { caller },
+    })
+    local caller_id = refs.node_id_by_identity[caller.identity]
+    local nested = flow:commit_navigation({
+      origin_node_id = caller_id,
+      method = "callHierarchy/incomingCalls",
+      label = "incoming calls",
+      locations = { top },
+    })
+    local top_id = nested.node_id_by_identity[top.identity]
+    local out = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "outgoing calls",
+      locations = { callee },
+    })
+    local callee_id = out.node_id_by_identity[callee.identity]
+
+    local rows = Sidebar.project(flow, 80, {}, text_icons)
+    assert.same(
+      {
+        { kind = "action", owner_id = refs.action_id },
+        { kind = "action", owner_id = nested.action_id },
+        { kind = "location", owner_id = top_id },
+        { kind = "location", owner_id = caller_id },
+        { kind = "location", owner_id = flow.root.id },
+        { kind = "action", owner_id = out.action_id },
+        { kind = "location", owner_id = callee_id },
+      },
+      vim.tbl_map(function(row)
+        return { kind = row.kind, owner_id = row.owner_id }
+      end, rows)
+    )
+  end)
+
   it("renders configurable action and marker icons", function()
     local flow = Fixtures.branched_flow()
     local nerd = Config.resolve().sidebar.icons

@@ -8,6 +8,9 @@ local order = {
   "outgoing_calls",
 }
 
+-- `placement = "above"` marks actions whose results are callers/consumers of
+-- the origin symbol; the sidebar renders them above it so a flow reads
+-- top-down from entry points toward the code they reach.
 local records = {
   definition = { method = "textDocument/definition", label = "definition" },
   declaration = { method = "textDocument/declaration", label = "declaration" },
@@ -15,6 +18,7 @@ local records = {
     method = "textDocument/references",
     label = "references",
     context = { includeDeclaration = true },
+    placement = "above",
   },
   implementation = {
     method = "textDocument/implementation",
@@ -29,6 +33,7 @@ local records = {
     prepare_method = "textDocument/prepareCallHierarchy",
     label = "incoming calls",
     direction = "incoming",
+    placement = "above",
   },
   outgoing_calls = {
     method = "callHierarchy/outgoingCalls",
