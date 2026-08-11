@@ -1,15 +1,44 @@
+-- Classic Font Awesome codepoints; present in every Nerd Fonts patched font.
+local nerd_icons = {
+  definition = "\u{f05b}",
+  declaration = "\u{f024}",
+  references = "\u{f0c1}",
+  implementation = "\u{f085}",
+  type_definition = "\u{f02b}",
+  incoming_calls = "\u{f090}",
+  outgoing_calls = "\u{f08b}",
+  manual = "\u{f124}",
+  current = "●",
+  stale = "\u{f071}",
+  note = "\u{f040}",
+  collapsed = "▸",
+  expanded = "▾",
+}
+
+local text_icons = {
+  definition = "",
+  declaration = "",
+  references = "",
+  implementation = "",
+  type_definition = "",
+  incoming_calls = "",
+  outgoing_calls = "",
+  manual = "",
+  current = "●",
+  stale = "!",
+  note = "✎",
+  collapsed = "▸",
+  expanded = "▾",
+}
+
+local icon_keys = {}
+for key in pairs(nerd_icons) do
+  icon_keys[key] = true
+end
+
 local defaults = {
-  sidebar = { width = 42, side = "right", border = "rounded" },
+  sidebar = { width = 42, side = "right", border = "rounded", icons = true },
   navigation = { timeout_ms = 10000 },
-  lsp_keymaps = {
-    definition = "gd",
-    declaration = "gD",
-    references = "grr",
-    implementation = "gri",
-    type_definition = "grt",
-    incoming_calls = "gC",
-    outgoing_calls = "gG",
-  },
   sidebar_keymaps = {
     jump_or_toggle = "<CR>",
     note = "n",
@@ -22,17 +51,8 @@ local defaults = {
 }
 
 local known = {
-  sidebar = { width = true, side = true, border = true },
+  sidebar = { width = true, side = true, border = true, icons = true },
   navigation = { timeout_ms = true },
-  lsp_keymaps = {
-    definition = true,
-    declaration = true,
-    references = true,
-    implementation = true,
-    type_definition = true,
-    incoming_calls = true,
-    outgoing_calls = true,
-  },
   sidebar_keymaps = {
     jump_or_toggle = true,
     note = true,
@@ -107,6 +127,24 @@ function M.resolve(opts)
   if not borders[result.sidebar.border] then
     fail("sidebar.border", "must be a supported NUI border")
   end
+  local icons = result.sidebar.icons
+  if icons == true then
+    result.sidebar.icons = vim.deepcopy(nerd_icons)
+  elseif icons == false then
+    result.sidebar.icons = vim.deepcopy(text_icons)
+  elseif type(icons) == "table" then
+    reject_unknown("sidebar.icons", icons, icon_keys)
+    local merged = vim.deepcopy(nerd_icons)
+    for key, value in pairs(icons) do
+      if type(value) ~= "string" then
+        fail("sidebar.icons." .. tostring(key), "must be a string")
+      end
+      merged[key] = value
+    end
+    result.sidebar.icons = merged
+  else
+    fail("sidebar.icons", "must be true, false, or a table of icon overrides")
+  end
   local timeout = result.navigation.timeout_ms
   if type(timeout) ~= "number" or timeout % 1 ~= 0 or timeout < 100 or timeout > 120000 then
     fail("navigation.timeout_ms", "must be an integer from 100 through 120000")
@@ -115,16 +153,14 @@ function M.resolve(opts)
     fail("storage.resolve_uri", "must be callable or nil")
   end
 
-  for group_name, allow_list in pairs({ lsp_keymaps = false, sidebar_keymaps = true }) do
-    local seen = {}
-    for key, value in pairs(result[group_name]) do
-      for _, lhs in ipairs(validate_lhs(group_name .. "." .. key, value, allow_list)) do
-        local normalized = vim.keycode(lhs)
-        if seen[normalized] then
-          fail(group_name, "contains duplicate normalized LHS '" .. lhs .. "'")
-        end
-        seen[normalized] = true
+  local seen = {}
+  for key, value in pairs(result.sidebar_keymaps) do
+    for _, lhs in ipairs(validate_lhs("sidebar_keymaps." .. key, value, true)) do
+      local normalized = vim.keycode(lhs)
+      if seen[normalized] then
+        fail("sidebar_keymaps", "contains duplicate normalized LHS '" .. lhs .. "'")
       end
+      seen[normalized] = true
     end
   end
   return vim.deepcopy(result)

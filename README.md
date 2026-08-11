@@ -22,6 +22,8 @@ flow is always an explicit action.
 
 - Neovim 0.12.4
 - [nui.nvim](https://github.com/MunifTanjim/nui.nvim)
+- A [Nerd Font](https://www.nerdfonts.com) for the default sidebar icons
+  (optional — set `sidebar.icons = false` for plain text)
 
 ## Installation
 
@@ -89,29 +91,29 @@ vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 
 -->
 
-## Default mappings
+## Recording without touching your config
 
-Voyager installs its LSP mappings only as session-owned, buffer-local wrappers
-in eligible source buffers, and the wrappers never change what a key does.
-Each wrapper records the action's results into the flow, then hands the
-keypress to whatever the key was already bound to: the previous buffer-local
-mapping, the current global mapping (including Neovim's built-in `gr*`
-defaults), or the native `vim.lsp.buf` function when the key had no mapping at
-all. Your jumps, pickers, and quickfix lists keep working exactly as you
-configured them. Voyager restores the previous local mappings when the session
-closes.
+Voyager installs no LSP mappings, changes no options, and never wraps or
+shadows a key. While a session is open it listens to the editor's own LSP
+traffic (the `LspRequest` autocmd): whenever your usual mapping, picker, or
+command sends one of the navigation requests below from the buffer you are
+editing, Voyager runs its own read-only request for the same action and
+records the results in the flow tree. Your `gd`, `gr*`, snacks, Telescope, or
+any other navigation behaves exactly as it does without Voyager.
 
-### LSP mappings
+| Action | LSP method |
+| --- | --- |
+| Definition | `textDocument/definition` |
+| Declaration | `textDocument/declaration` |
+| References | `textDocument/references` |
+| Implementations | `textDocument/implementation` |
+| Type definition | `textDocument/typeDefinition` |
+| Incoming calls | `callHierarchy/incomingCalls` |
+| Outgoing calls | `callHierarchy/outgoingCalls` |
 
-| Action | LSP method | Key |
-| --- | --- | --- |
-| Definition | `textDocument/definition` | `gd` |
-| Declaration | `textDocument/declaration` | `gD` |
-| References | `textDocument/references` | `grr` |
-| Implementations | `textDocument/implementation` | `gri` |
-| Type definition | `textDocument/typeDefinition` | `grt` |
-| Incoming calls | `callHierarchy/incomingCalls` | `gC` |
-| Outgoing calls | `callHierarchy/outgoingCalls` | `gG` |
+The sidebar is a compact floating card pinned to the configured editor edge.
+It grows and shrinks with the flow tree instead of reserving a full column,
+up to `sidebar.width` columns and the available editor height.
 
 ### Sidebar mappings
 
@@ -131,17 +133,11 @@ apply to the next session.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `sidebar.width` | integer | `42` | Popup width; must be at least 20 |
-| `sidebar.side` | `"left"` or `"right"` | `"right"` | Editor edge used by the popup |
+| `sidebar.width` | integer | `42` | Maximum popup width; must be at least 20 |
+| `sidebar.side` | `"left"` or `"right"` | `"right"` | Editor edge the popup is pinned to |
 | `sidebar.border` | string | `"rounded"` | One of `none`, `single`, `double`, `rounded`, `solid`, or `shadow` |
+| `sidebar.icons` | boolean or table | `true` | `true` for Nerd Font icons, `false` for plain text, or per-icon overrides |
 | `navigation.timeout_ms` | integer | `10000` | Per-network-stage timeout from 100 through 120000 milliseconds |
-| `lsp_keymaps.definition` | string or false | `"gd"` | Definition wrapper |
-| `lsp_keymaps.declaration` | string or false | `"gD"` | Declaration wrapper |
-| `lsp_keymaps.references` | string or false | `"grr"` | References wrapper |
-| `lsp_keymaps.implementation` | string or false | `"gri"` | Implementations wrapper |
-| `lsp_keymaps.type_definition` | string or false | `"grt"` | Type-definition wrapper |
-| `lsp_keymaps.incoming_calls` | string or false | `"gC"` | Incoming-call wrapper |
-| `lsp_keymaps.outgoing_calls` | string or false | `"gG"` | Outgoing-call wrapper |
 | `sidebar_keymaps.jump_or_toggle` | keymap or false | `"<CR>"` | Activate a location/note or toggle an action |
 | `sidebar_keymaps.note` | keymap or false | `"n"` | Edit a location note |
 | `sidebar_keymaps.save` | keymap or false | `"s"` | Save the flow |
@@ -153,37 +149,19 @@ apply to the next session.
 <!-- panvimdoc-include-comment
 
 sidebar.width
-: Popup width; must be an integer of at least 20.
+: Maximum popup width; must be an integer of at least 20.
 
 sidebar.side
-: Editor edge used by the popup; `left` or `right`.
+: Editor edge the popup is pinned to; `left` or `right`.
 
 sidebar.border
 : NUI border style: `none`, `single`, `double`, `rounded`, `solid`, or `shadow`.
 
+sidebar.icons
+: `true` for Nerd Font icons, `false` for plain text, or a table of per-icon overrides.
+
 navigation.timeout_ms
 : Per-network-stage timeout from 100 through 120000 milliseconds.
-
-lsp_keymaps.definition
-: Buffer-local definition wrapper; a string or `false`.
-
-lsp_keymaps.declaration
-: Buffer-local declaration wrapper; a string or `false`.
-
-lsp_keymaps.references
-: Buffer-local references wrapper; a string or `false`.
-
-lsp_keymaps.implementation
-: Buffer-local implementations wrapper; a string or `false`.
-
-lsp_keymaps.type_definition
-: Buffer-local type-definition wrapper; a string or `false`.
-
-lsp_keymaps.incoming_calls
-: Buffer-local incoming-call wrapper; a string or `false`.
-
-lsp_keymaps.outgoing_calls
-: Buffer-local outgoing-call wrapper; a string or `false`.
 
 sidebar_keymaps.jump_or_toggle
 : Activate a location/note or toggle an action; a string, string list, or `false`.
@@ -214,12 +192,11 @@ non-empty normal-mode left-hand sides after Neovim keycode normalization.
 
 ## Exploring and branching
 
-Run one of the session LSP mappings from the current location. The key behaves
-exactly as it would without Voyager—your own mapping or Neovim's default
-presents the results—while Voyager concurrently records every unique
-normalized destination below an action row such as `implementations`,
-`references`, or `incoming calls`. Successful empty responses remain visible
-as an action with zero results.
+Navigate however you always do—your own mappings, Neovim's `gr*` defaults, or
+a picker plugin. When a navigation request leaves the buffer you are editing,
+Voyager concurrently records every unique normalized destination below an
+action row such as `implementations`, `references`, or `incoming calls`.
+Successful empty responses remain visible as an action with zero results.
 
 Once an action records its destinations, Voyager watches for the cursor to land
 exactly on one of them in a normal source window—through a quickfix jump, a
@@ -315,11 +292,9 @@ The popup remounts across tabs and valid resizes without creating or resizing
 source splits.
 
 Closing cancels pending LSP requests and late interaction tokens, removes the
-session autocmd group, closes only Voyager-owned windows, and restores each
-buffer-local mapping when Voyager still owns it. A mapping changed by another
-plugin during the session is left untouched. Intentional buffers, cursors,
-jumplist/tagstack entries, and quickfix or location lists created while exploring
-are not rewound.
+session autocmd group, and closes only Voyager-owned windows. Intentional
+buffers, cursors, jumplist/tagstack entries, and quickfix or location lists
+created while exploring are not rewound.
 
 `VimLeavePre` performs teardown without a prompt or autosave, so explicitly save
 anything you want to keep before exiting Neovim.

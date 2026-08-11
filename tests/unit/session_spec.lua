@@ -17,7 +17,6 @@ describe("Voyager session lifecycle", function()
       assert.is_nil(session:open())
       assert.is_false(session:is_active())
       assert.equals(0, #deps.sidebar.mount_calls)
-      assert.same({}, deps.keymaps.applied_buffers)
       assert.same({}, deps.autocmd_calls)
     end
   end)
@@ -30,10 +29,9 @@ describe("Voyager session lifecycle", function()
     assert.equals(deps.origin_win, session:state().source_windows[1])
     assert.equals(deps.root_id, session:state().flow.current_node_id)
     assert.is_false(session:state().flow:is_dirty())
-    assert.same({ deps.origin_buf }, deps.keymaps.applied_buffers)
     assert.is_false(deps.sidebar.mount_calls[1].focus)
     assert.equals(1, deps.sidebar.render_count)
-    assert.equals(8, #deps.autocmd_calls)
+    assert.equals(7, #deps.autocmd_calls)
   end)
 
   it("keeps environment syntax literal in editor-derived project roots", function()
@@ -54,7 +52,6 @@ describe("Voyager session lifecycle", function()
     deps.sidebar.mount_error = "editor must be at least 24 columns wide"
     assert.is_nil(session:open())
     assert.is_false(session:is_active())
-    assert.same({}, deps.keymaps.applied_buffers)
     assert.same({}, deps.autocmd_calls)
     assert.same({ { owned = true } }, deps.sidebar.unmount_calls)
     assert.matches("24 columns", deps.notifications[#deps.notifications].message)
@@ -70,7 +67,6 @@ describe("Voyager session lifecycle", function()
     assert.is_nil(session:open())
     assert.is_false(session:is_active())
     assert.equals(0, #deps.sidebar.mount_calls)
-    assert.same({}, deps.keymaps.applied_buffers)
     assert.same({}, deps.autocmd_calls)
     assert.matches("entropy unavailable", deps.notifications[1].message, nil, true)
   end)
@@ -140,49 +136,53 @@ describe("Voyager session lifecycle", function()
     assert.equals(window_count, vim.tbl_count(deps.windows))
   end)
 
-  it("records through wrappers while always delegating the key's previous behavior", function()
+  it("records an observed navigation request without touching any mapping", function()
     local session, deps = new_session()
     assert.is_true(session:open())
-    local apply = deps.keymaps.apply_calls[1]
-    assert.same(deps.config.lsp_keymaps, apply.mappings)
 
-    local delegated = 0
-    local wrapper = apply.wrapper_factory("references", function()
-      delegated = delegated + 1
-      assert.equals(1, #deps.lsp.starts, "recording must start before delegation runs")
-      return true
-    end)
-    wrapper()
-    assert.equals(1, delegated)
+    deps:lsp_request("textDocument/references")
+    assert.equals(1, #deps.lsp.starts)
     assert.equals("references", deps.lsp.starts[1].action_name)
-    assert.same({}, deps.lsp_fallbacks)
+    assert.same({ line = 0, character = 6 }, deps.lsp.starts[1].context.cursor)
 
-    local without_previous = apply.wrapper_factory("definition", function()
-      return false
-    end)
-    without_previous()
-    assert.equals("definition", deps.lsp.starts[2].action_name)
-    assert.same({ "definition" }, deps.lsp_fallbacks)
+    deps:lsp_request("textDocument/implementation")
+    assert.equals("implementation", deps.lsp.starts[2].action_name)
+    assert.equals(2, #deps.lsp.starts)
+  end)
+
+  it("coalesces same-tick duplicates and ignores foreign or ineligible requests", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+
+    deps:lsp_request("textDocument/references", { client_id = 7 })
+    deps:lsp_request("textDocument/references", { client_id = 8 })
+    assert.equals(1, #deps.lsp.starts)
+
+    deps:flush_scheduled()
+    deps:lsp_request("textDocument/references")
+    assert.equals(2, #deps.lsp.starts)
+
+    deps:lsp_request("textDocument/references", { type = "cancel" })
+    deps:lsp_request("textDocument/references", { type = "complete" })
+    deps:lsp_request("textDocument/hover")
+    deps:lsp_request("voyager/manual")
+    deps:add_buffer(19, "/elsewhere/other.lua")
+    deps:lsp_request("textDocument/references", { bufnr = 19 })
+    assert.equals(2, #deps.lsp.starts)
+
+    deps:flush_scheduled()
+    session._recording = 1
+    deps:lsp_request("textDocument/references")
+    session._recording = 0
+    assert.equals(2, #deps.lsp.starts)
 
     local original_run_action = session.run_action
     session.run_action = function()
       error("recording exploded")
     end
-    local despite_failure = apply.wrapper_factory("implementation", function()
-      delegated = delegated + 1
-      return true
-    end)
-    despite_failure()
+    deps:lsp_request("textDocument/definition")
     session.run_action = original_run_action
-    assert.equals(2, delegated)
-    assert.matches("could not record implementation", deps.notifications[#deps.notifications].message, nil, true)
-
-    deps.lsp_fallback_error = "no native handler"
-    local failing_fallback = apply.wrapper_factory("declaration", function()
-      return false
-    end)
-    failing_fallback()
-    assert.matches("default declaration behavior", deps.notifications[#deps.notifications].message, nil, true)
+    assert.matches("could not record definition", deps.notifications[#deps.notifications].message, nil, true)
   end)
 
   it("dispatches typed rows without confusing locations, actions, and notes", function()
@@ -389,7 +389,6 @@ describe("Voyager session lifecycle", function()
     assert.equals(deps.project_root, session:state().project_root)
     assert.equals(1, #deps.sidebar.mount_calls)
     assert.is_false(deps.sidebar.mount_calls[1].focus)
-    assert.same({ deps.origin_buf }, deps.keymaps.applied_buffers)
     assert.equals(loaded.current_node_id, session:state().flow.current_node_id)
   end)
 
@@ -404,7 +403,6 @@ describe("Voyager session lifecycle", function()
     deps.select_callback(entry, 1)
     assert.is_false(session:is_active())
     assert.equals(0, #deps.sidebar.mount_calls)
-    assert.same({}, deps.keymaps.applied_buffers)
     assert.matches("flow changed after listing", deps.notifications[#deps.notifications].message, nil, true)
   end)
 
@@ -415,7 +413,6 @@ describe("Voyager session lifecycle", function()
     local original = session:state().flow
     local generation = session:state().generation
     local old_sidebar = deps.sidebar
-    local old_keymaps = deps.keymaps
     local old_state = session:state()
     local old_handle = deps.lsp.handles[1]
     local loaded = Fixtures.new_flow()
@@ -424,15 +421,12 @@ describe("Voyager session lifecycle", function()
     deps.store.entries = { entry }
     deps.store.load_result = loaded
     local loaded_sidebar = deps:new_sidebar()
-    local loaded_keymaps = deps:new_keymaps()
     deps.next_sidebar = loaded_sidebar
-    deps.next_keymaps = loaded_keymaps
     deps.next_lsp = deps:new_lsp()
     loaded_sidebar.on_mount = function()
       assert.equals(original, session:state().flow)
       assert.equals(generation, session:state().generation)
       assert.equals(0, #old_handle.cancel_calls)
-      assert.same({}, old_keymaps.restored_generations)
     end
 
     deps.sidebar:focus()
@@ -445,8 +439,6 @@ describe("Voyager session lifecycle", function()
     assert.same({ "load" }, old_handle.cancel_calls)
     assert.equals(old_tracking_token + 1, old_state.tracking_token)
     assert.is_nil(old_state.destination_claim)
-    assert.same({ generation }, old_keymaps.restored_generations)
-    assert.same({ deps.origin_buf }, loaded_keymaps.applied_buffers)
     assert.is_false(old_sidebar:is_mounted())
   end)
 
@@ -466,7 +458,6 @@ describe("Voyager session lifecycle", function()
       return #deps.store.save_calls == 0 and stale or updated
     end
     deps.next_sidebar = deps:new_sidebar()
-    deps.next_keymaps = deps:new_keymaps()
     deps.next_lsp = deps:new_lsp()
 
     assert.is_true(session:load())
@@ -493,7 +484,6 @@ describe("Voyager session lifecycle", function()
     loaded_sidebar.mount_result = false
     loaded_sidebar.mount_error = "editor must be at least 24 columns wide"
     deps.next_sidebar = loaded_sidebar
-    deps.next_keymaps = deps:new_keymaps()
     deps.next_lsp = deps:new_lsp()
     local old_mounts = #deps.sidebar.mount_calls
 
@@ -629,7 +619,6 @@ describe("Voyager session lifecycle", function()
     deps.store.entries = { entry }
     deps.store.load_result = Fixtures.new_flow()
     deps.next_sidebar = deps:new_sidebar()
-    deps.next_keymaps = deps:new_keymaps()
     deps.next_lsp = deps:new_lsp()
 
     assert.is_true(session:load())
@@ -661,14 +650,12 @@ describe("Voyager session lifecycle", function()
     assert.equals(generation + 1, session:state().generation)
     assert.same({ "command" }, request.cancel_calls)
     assert.is_nil(session:state().destination_claim)
-    assert.same({ generation }, deps.keymaps.restored_generations)
     assert.same({ deps.created_augroup.id }, deps.deleted_augroups)
     assert.same({ { owned = true } }, deps.sidebar.unmount_calls)
     assert.equals(deps.origin_win, deps.current_win_id)
 
     session:close("again")
     assert.equals(1, #deps.sidebar.unmount_calls)
-    assert.equals(1, #deps.keymaps.restored_generations)
 
     session, deps = new_session()
     assert.is_true(session:open())
@@ -699,9 +686,6 @@ describe("Voyager session lifecycle", function()
       store = function(locator)
         assert.equals(deps.locator, locator)
         return deps.store
-      end,
-      keymaps = function()
-        return deps.keymaps
       end,
       sidebar = function(opts)
         captured.sidebar = opts

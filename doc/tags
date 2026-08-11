@@ -3,15 +3,9 @@ voyager-:VoyagerFocus	voyager.txt	/*voyager-:VoyagerFocus*
 voyager-:VoyagerLoad	voyager.txt	/*voyager-:VoyagerLoad*
 voyager-:VoyagerOpen	voyager.txt	/*voyager-:VoyagerOpen*
 voyager-:VoyagerSave	voyager.txt	/*voyager-:VoyagerSave*
-voyager-lsp_keymaps.declaration	voyager.txt	/*voyager-lsp_keymaps.declaration*
-voyager-lsp_keymaps.definition	voyager.txt	/*voyager-lsp_keymaps.definition*
-voyager-lsp_keymaps.implementation	voyager.txt	/*voyager-lsp_keymaps.implementation*
-voyager-lsp_keymaps.incoming_calls	voyager.txt	/*voyager-lsp_keymaps.incoming_calls*
-voyager-lsp_keymaps.outgoing_calls	voyager.txt	/*voyager-lsp_keymaps.outgoing_calls*
-voyager-lsp_keymaps.references	voyager.txt	/*voyager-lsp_keymaps.references*
-voyager-lsp_keymaps.type_definition	voyager.txt	/*voyager-lsp_keymaps.type_definition*
 voyager-navigation.timeout_ms	voyager.txt	/*voyager-navigation.timeout_ms*
 voyager-sidebar.border	voyager.txt	/*voyager-sidebar.border*
+voyager-sidebar.icons	voyager.txt	/*voyager-sidebar.icons*
 voyager-sidebar.side	voyager.txt	/*voyager-sidebar.side*
 voyager-sidebar.width	voyager.txt	/*voyager-sidebar.width*
 voyager-sidebar_keymaps.close	voyager.txt	/*voyager-sidebar_keymaps.close*
@@ -25,7 +19,6 @@ voyager-table-of-contents	voyager.txt	/*voyager-table-of-contents*
 voyager-voyager.nvim	voyager.txt	/*voyager-voyager.nvim*
 voyager-voyager.nvim-commands	voyager.txt	/*voyager-voyager.nvim-commands*
 voyager-voyager.nvim-configuration	voyager.txt	/*voyager-voyager.nvim-configuration*
-voyager-voyager.nvim-default-mappings	voyager.txt	/*voyager-voyager.nvim-default-mappings*
 voyager-voyager.nvim-development	voyager.txt	/*voyager-voyager.nvim-development*
 voyager-voyager.nvim-exploring-and-branching	voyager.txt	/*voyager-voyager.nvim-exploring-and-branching*
 voyager-voyager.nvim-installation	voyager.txt	/*voyager-voyager.nvim-installation*

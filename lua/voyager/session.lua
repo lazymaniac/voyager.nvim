@@ -75,11 +75,11 @@ function M.new(opts)
     _flow_module = opts.flow,
     _locator_factory = opts.locator_factory,
     _store_factory = opts.store_factory,
-    _keymaps_factory = opts.keymaps_factory,
     _sidebar_factory = opts.sidebar_factory,
     _lsp_factory = opts.lsp_factory,
     _ui = opts.ui,
     _generation = 0,
+    _recording = 0,
     _interaction_counter = 0,
     _interaction_tokens = {},
   }, Session)
@@ -172,6 +172,7 @@ function Session:_stage_state(opts)
     interaction_tokens = {},
     tracking_token = 0,
     destination_claim = nil,
+    observer_pending = {},
     current_claim_token = 0,
     manual_claim_token = 0,
     source_windows = vim.deepcopy(opts.source_windows or { opts.origin_win }),
@@ -181,7 +182,6 @@ function Session:_stage_state(opts)
     locator = locator,
     store = store,
   }
-  state.keymaps = self._keymaps_factory()
   state.sidebar = self._sidebar_factory(config)
   state.lsp = self._lsp_factory(locator, config)
   return state
@@ -230,37 +230,37 @@ function Session:_notify_outcome(outcome)
   end
 end
 
-function Session:_delegate_action(action_name, delegate)
-  if type(delegate) == "function" and delegate() then
+function Session:_observe_lsp_request(state, args)
+  if self._recording > 0 then
     return
   end
-  local fallback = self._runtime.lsp_fallback
-  local invoked, fallback_error = pcall(fallback, action_name)
-  if not invoked then
-    self._ui.notify(
-      "Voyager: could not run the default " .. action_name .. " behavior: " .. tostring(fallback_error),
-      vim.log.levels.ERROR
-    )
-  end
-end
-
-function Session:_apply_source_mappings(state, bufnr)
-  bufnr = bufnr or state.origin_buf
-  if not self:_eligible_buffer(state, bufnr) then
+  local data = type(args.data) == "table" and args.data or {}
+  local request = type(data.request) == "table" and data.request or nil
+  if not request or request.type ~= "pending" then
     return
   end
-  state.keymaps:apply_buffer(bufnr, state.generation, state.config.lsp_keymaps, function(action_name, delegate)
-    return function()
-      local recorded, record_error = pcall(self.run_action, self, action_name)
-      if not recorded then
-        self._ui.notify(
-          "Voyager: could not record " .. action_name .. ": " .. tostring(record_error),
-          vim.log.levels.ERROR
-        )
-      end
-      self:_delegate_action(action_name, delegate)
+  local action_name = Actions.by_method(request.method)
+  if not action_name or action_name == "manual" then
+    return
+  end
+  local runtime = self._runtime
+  local winid = runtime.current_win()
+  if request.bufnr ~= runtime.current_buf() or not self:_eligible_window(state, winid) then
+    return
+  end
+  if state.observer_pending[action_name] then
+    return
+  end
+  state.observer_pending[action_name] = true
+  runtime.schedule(function()
+    if self._state == state then
+      state.observer_pending[action_name] = nil
     end
   end)
+  local recorded, record_error = pcall(self.run_action, self, action_name)
+  if not recorded then
+    self._ui.notify("Voyager: could not record " .. action_name .. ": " .. tostring(record_error), vim.log.levels.ERROR)
+  end
 end
 
 function Session:_valid_state(state, generation)
@@ -286,15 +286,12 @@ function Session:_register_autocmds(state)
     end
   end
 
-  for _, event in ipairs({ "BufEnter", "LspAttach" }) do
-    runtime.create_autocmd(event, {
-      group = state.autocmd_group,
-      callback = guarded(function(args)
-        local bufnr = args.buf or runtime.current_buf()
-        self:_apply_source_mappings(state, bufnr)
-      end),
-    })
-  end
+  runtime.create_autocmd("LspRequest", {
+    group = state.autocmd_group,
+    callback = guarded(function(args)
+      self:_observe_lsp_request(state, args)
+    end),
+  })
   runtime.create_autocmd("WinEnter", {
     group = state.autocmd_group,
     callback = guarded(function()
@@ -407,7 +404,6 @@ function Session:open()
   self._generation = generation
   self._state = staged
   self:_register_autocmds(staged)
-  self:_apply_source_mappings(staged)
   self:_render(staged)
   return true
 end
@@ -1106,7 +1102,6 @@ function Session:_install_loaded_flow(candidate, project_root_value, config, loc
     end
     old.request_handles = {}
     old.request_count = 0
-    old.keymaps:restore_all(previous_generation)
     self:_delete_autocmds(old)
   else
     self._interaction_counter = self._interaction_counter + 1
@@ -1116,7 +1111,6 @@ function Session:_install_loaded_flow(candidate, project_root_value, config, loc
   self._generation = staged.generation
   self._state = staged
   self:_register_autocmds(staged)
-  self:_apply_source_mappings(staged)
   self:_render(staged)
   self:_jump_loaded_current(staged)
   return true
@@ -1211,7 +1205,6 @@ function Session:_teardown(source)
   state.request_count = 0
   self:_delete_autocmds(state)
   state.sidebar:unmount({ owned = true })
-  state.keymaps:restore_all(previous_generation)
   if owned_focus and fallback and self._runtime.win_valid(fallback) then
     self._runtime.set_current_win(fallback)
   end
@@ -1245,12 +1238,27 @@ function M.native(config_provider, runtime, overrides)
   local Store = require("voyager.store")
   local Schema = require("voyager.schema")
   local Flow = require("voyager.flow")
-  local Keymaps = require("voyager.keymaps")
   local Sidebar = require("voyager.sidebar")
   local Actions = require("voyager.lsp.actions")
   local Normalize = require("voyager.lsp.normalize")
   local RequestGroup = require("voyager.lsp.request_group")
   local Lsp = require("voyager.lsp")
+
+  local controller
+  -- Every Voyager-originated client request is dispatched synchronously inside
+  -- request_group.start, so this counter is what lets the LspRequest observer
+  -- distinguish the user's navigation from Voyager's own recording traffic.
+  local recording_request_group = {
+    start = function(request_opts)
+      controller._recording = controller._recording + 1
+      local started, result = pcall(RequestGroup.start, request_opts)
+      controller._recording = controller._recording - 1
+      if not started then
+        error(result, 0)
+      end
+      return result
+    end,
+  }
 
   local factories = vim.tbl_extend("force", {
     flow = Flow,
@@ -1260,9 +1268,6 @@ function M.native(config_provider, runtime, overrides)
     store = function(locator)
       return Store.new({ runtime = runtime, schema = Schema, locator = locator, flow = Flow })
     end,
-    keymaps = function()
-      return Keymaps.new({ notify = runtime.notify })
-    end,
     sidebar = function(opts)
       return Sidebar.new(opts)
     end,
@@ -1270,7 +1275,7 @@ function M.native(config_provider, runtime, overrides)
       return Lsp.new({
         actions = Actions,
         normalizer = Normalize.new({ locator = locator }),
-        request_group = RequestGroup,
+        request_group = recording_request_group,
         get_clients = runtime.get_clients,
         make_position_params = runtime.make_position_params,
         timer = runtime.timer,
@@ -1282,14 +1287,12 @@ function M.native(config_provider, runtime, overrides)
     end,
   }, overrides or {})
 
-  local controller
   controller = M.new({
     config_provider = config_provider,
     runtime = runtime,
     flow = factories.flow,
     locator_factory = factories.locator,
     store_factory = factories.store,
-    keymaps_factory = factories.keymaps,
     sidebar_factory = function(config)
       return factories.sidebar({
         sidebar = config.sidebar,
