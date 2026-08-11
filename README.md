@@ -6,10 +6,10 @@ earlier symbol, explore a different path, annotate useful locations, and save th
 whole flow for later.
 
 ```text
-  ▾ references (1)
+  ▾ ▲ references (1)
     authorize — lua/auth.lua:5
 ● save — lua/mysql_store.lua:2
-  ▾ outgoing calls (2)
+  ▾ ▼ outgoing calls (2)
     exec — lua/db.lua:14
       ✎ important for auth
     audit — lua/log.lua:9
@@ -75,6 +75,8 @@ vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 | `:VoyagerSave` | Explicitly save or merge the active flow |
 | `:VoyagerLoad` | Pick a saved flow for the current project |
 | `:VoyagerClose` | Close Voyager, prompting when the flow is dirty |
+| `:VoyagerToggle` | Open Voyager, or close it when a session is active |
+| `:VoyagerExport` | Send every resolvable flow location to the quickfix list |
 
 <!-- panvimdoc-include-comment
 
@@ -92,6 +94,12 @@ vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 
 :VoyagerClose
 : Close Voyager, prompting when the flow is dirty.
+
+:VoyagerToggle
+: Open Voyager, or close it when a session is active.
+
+:VoyagerExport
+: Send every resolvable flow location to the quickfix list.
 
 -->
 
@@ -124,10 +132,16 @@ up to `sidebar.width` columns and the available editor height.
 | Key | Behavior |
 | --- | --- |
 | `<CR>` | Jump from a location or note row; toggle an action row |
+| `o` | Jump but keep focus in the sidebar |
+| `a` | Jump to the selected node and pick an LSP action to record |
+| `p` | Peek at the selected location in a preview float |
+| `x` | Delete the selected branch, or clear the selected note |
 | `n` | Add, edit, or remove a note on the selected location |
 | `s` | Save or merge the active flow |
 | `L` | Pick and load a saved project flow |
 | `za` | Collapse or expand the selected action subtree |
+| `zM`, `zR` | Collapse or expand every action |
+| `?` | Show a key reference |
 | `q`, `<Esc>` | Close Voyager |
 
 ## Configuration
@@ -141,14 +155,23 @@ apply to the next session.
 | `sidebar.side` | `"left"` or `"right"` | `"right"` | Editor edge the popup is pinned to |
 | `sidebar.border` | string | `"rounded"` | One of `none`, `single`, `double`, `rounded`, `solid`, or `shadow` |
 | `sidebar.icons` | boolean or table | `true` | `true` for Nerd Font icons, `false` for plain text, or per-icon overrides |
+| `sidebar.path` | string | `"relative"` | Location paths: `relative`, `filename`, or `shortened` |
 | `navigation.timeout_ms` | integer | `10000` | Per-network-stage timeout from 100 through 120000 milliseconds |
 | `sidebar_keymaps.jump_or_toggle` | keymap or false | `"<CR>"` | Activate a location/note or toggle an action |
+| `sidebar_keymaps.jump_stay` | keymap or false | `"o"` | Jump but keep focus in the sidebar |
+| `sidebar_keymaps.run_action` | keymap or false | `"a"` | Jump to the node and pick an action to record |
+| `sidebar_keymaps.preview` | keymap or false | `"p"` | Peek at the selected location |
+| `sidebar_keymaps.delete` | keymap or false | `"x"` | Delete the selected branch or note |
 | `sidebar_keymaps.note` | keymap or false | `"n"` | Edit a location note |
 | `sidebar_keymaps.save` | keymap or false | `"s"` | Save the flow |
 | `sidebar_keymaps.load` | keymap or false | `"L"` | Load a flow |
 | `sidebar_keymaps.toggle` | keymap or false | `"za"` | Toggle an action subtree |
+| `sidebar_keymaps.collapse_all` | keymap or false | `"zM"` | Collapse every action |
+| `sidebar_keymaps.expand_all` | keymap or false | `"zR"` | Expand every action |
+| `sidebar_keymaps.help` | keymap or false | `"?"` | Show the key reference |
 | `sidebar_keymaps.close` | keymap or false | `{ "q", "<Esc>" }` | Close Voyager |
 | `storage.resolve_uri` | function or nil | `nil` | Resolve a non-file URI to a valid loaded buffer |
+| `storage.autosave` | boolean | `false` | Save dirty flows automatically on close, load, and quit |
 
 <!-- panvimdoc-include-comment
 
@@ -164,11 +187,26 @@ sidebar.border
 sidebar.icons
 : `true` for Nerd Font icons, `false` for plain text, or a table of per-icon overrides.
 
+sidebar.path
+: Location path display: `relative`, `filename`, or `shortened`.
+
 navigation.timeout_ms
 : Per-network-stage timeout from 100 through 120000 milliseconds.
 
 sidebar_keymaps.jump_or_toggle
 : Activate a location/note or toggle an action; a string, string list, or `false`.
+
+sidebar_keymaps.jump_stay
+: Jump but keep focus in the sidebar; a string, string list, or `false`.
+
+sidebar_keymaps.run_action
+: Jump to the node and pick an action to record; a string, string list, or `false`.
+
+sidebar_keymaps.preview
+: Peek at the selected location; a string, string list, or `false`.
+
+sidebar_keymaps.delete
+: Delete the selected branch or note; a string, string list, or `false`.
 
 sidebar_keymaps.note
 : Edit a location note; a string, string list, or `false`.
@@ -182,17 +220,46 @@ sidebar_keymaps.load
 sidebar_keymaps.toggle
 : Toggle an action subtree; a string, string list, or `false`.
 
+sidebar_keymaps.collapse_all
+: Collapse every action; a string, string list, or `false`.
+
+sidebar_keymaps.expand_all
+: Expand every action; a string, string list, or `false`.
+
+sidebar_keymaps.help
+: Show the key reference; a string, string list, or `false`.
+
 sidebar_keymaps.close
 : Close Voyager; a string, string list, or `false`.
 
 storage.resolve_uri
 : Optional resolver from a non-file URI to a valid loaded buffer.
 
+storage.autosave
+: Save dirty flows automatically on close, load, and quit.
+
 -->
 
 A sidebar `keymap` is a string or non-empty string list. Mapping values set to
 `false` are disabled. Enabled mappings in each group must have distinct,
 non-empty normal-mode left-hand sides after Neovim keycode normalization.
+
+## Appearance
+
+Every part of a row carries a dedicated highlight group with a sensible
+default link, overridable like any other group: `VoyagerHeader`,
+`VoyagerDirty`, `VoyagerRequests`, `VoyagerSymbol`, `VoyagerAncestor`,
+`VoyagerPath`, `VoyagerActionLabel`, `VoyagerCount`, `VoyagerIcon`,
+`VoyagerDisclosure`, `VoyagerDirectionUp`, `VoyagerDirectionDown`,
+`VoyagerCurrent`, `VoyagerCurrentLine`, `VoyagerStale`, `VoyagerNote`, and
+`VoyagerFlash`. The current row gets a full-line highlight, every location on
+the current node's path renders its symbol emphasized, action rows carry
+`▲`/`▼` cues for the caller/callee direction, and a short `VoyagerFlash`
+highlight marks the target line after every sidebar jump.
+
+`sidebar.path` trims location paths when the card gets crowded:
+`"relative"` (default) shows the project-relative path, `"filename"` only the
+file name, and `"shortened"` a `l/a/store.lua`-style abbreviation.
 
 ## Exploring and branching
 
@@ -225,7 +292,13 @@ for the first one while your own mapping keeps its usual behavior.
 
 Select any earlier location in the sidebar and continue from there. Its existing
 children stay intact, so exploring again creates or extends a sibling branch
-instead of replacing the path you already followed.
+instead of replacing the path you already followed. The sidebar can also drive
+the exploration directly: `a` jumps to the selected node and offers the seven
+actions in a picker, `o` jumps while keeping focus in the sidebar, `p` peeks at
+the selected location in a bordered preview float, and `x` prunes a branch you
+no longer need (deletions survive the save merge, so pruned branches do not
+come back from disk). `:VoyagerExport` hands every resolvable location to the
+quickfix list for `:cdo`-style follow-up work.
 
 If the editor cursor no longer matches Voyager's logical current node when an
 action starts, Voyager stages a `manual jump` connector for the actual source
@@ -243,7 +316,9 @@ and can be useful for reminders such as “important for auth”.
 
 ## Saving, merging, and loading
 
-Saving is explicit—Voyager never autosaves. Each project stores human-readable,
+Saving is explicit by default, and `storage.autosave = true` opts into saving
+dirty flows automatically on close, load, and quit instead of prompting (the
+prompt returns if an automatic save fails). Each project stores human-readable,
 schema-versioned JSON under:
 
 ```text
@@ -311,8 +386,13 @@ session autocmd group, and closes only Voyager-owned windows. Intentional
 buffers, cursors, jumplist/tagstack entries, and quickfix or location lists
 created while exploring are not rewound.
 
-`VimLeavePre` performs teardown without a prompt or autosave, so explicitly save
-anything you want to keep before exiting Neovim.
+`VimLeavePre` performs teardown without a prompt, so explicitly save anything
+you want to keep before exiting Neovim — or set `storage.autosave = true` to
+have quitting save the flow for you.
+
+Run `:checkhealth voyager` to verify the Neovim version, `nui.nvim`, and
+storage writability. For statuslines, `require("voyager").status()` returns
+`nil` or `{ name, dirty, locations, requests }` for the active flow.
 
 ## Development
 

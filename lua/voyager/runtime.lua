@@ -159,6 +159,31 @@ function M.native()
     get_clients = vim.lsp.get_clients,
     make_position_params = vim.lsp.util.make_position_params,
     schedule = vim.schedule,
+    filetype_match = function(name)
+      return vim.filetype.match({ filename = name })
+    end,
+    set_quickfix = function(list)
+      vim.fn.setqflist({}, " ", list)
+    end,
+    flash_line = (function()
+      local namespace = vim.api.nvim_create_namespace("voyager-flash")
+      return function(bufnr, row)
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+          return
+        end
+        vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
+        local marked = pcall(vim.api.nvim_buf_set_extmark, bufnr, namespace, row - 1, 0, {
+          line_hl_group = "VoyagerFlash",
+        })
+        if marked then
+          vim.defer_fn(function()
+            if vim.api.nvim_buf_is_valid(bufnr) then
+              vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
+            end
+          end, 200)
+        end
+      end
+    end)(),
     create_augroup = vim.api.nvim_create_augroup,
     delete_augroup = vim.api.nvim_del_augroup_by_id,
     create_autocmd = vim.api.nvim_create_autocmd,

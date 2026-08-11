@@ -17,7 +17,7 @@ describe("Voyager sidebar projection", function()
 
   it("projects the flow in stable depth-first order", function()
     local flow = Fixtures.branched_flow()
-    local rows, header = Sidebar.project(flow, 42, { dirty = true, request_count = 2 }, text_icons)
+    local rows, header = Sidebar.project(flow, 42, { dirty = true, request_count = 2 }, { icons = text_icons })
     assert.same(
       {
         { kind = "location", owner_id = flow.root.id },
@@ -30,8 +30,8 @@ describe("Voyager sidebar projection", function()
         return { kind = row.kind, owner_id = row.owner_id }
       end, rows)
     )
-    assert.matches("%*", header)
-    assert.matches("2 requests", header)
+    assert.matches("%*", header.text)
+    assert.matches("2 requests", header.text)
   end)
 
   it("keeps duplicate display text distinct by kind and owner ID", function()
@@ -39,7 +39,7 @@ describe("Voyager sidebar projection", function()
     local first = flow.root.actions[1].results[1]
     local second = flow.root.actions[1].results[2]
     second.location = vim.deepcopy(first.location)
-    local rows = Sidebar.project(flow, 42, { dirty = false, request_count = 0 }, text_icons)
+    local rows = Sidebar.project(flow, 42, { dirty = false, request_count = 0 }, { icons = text_icons })
     local first_row = assert(row_for(rows, "location", first.id))
     local second_row, second_index = row_for(rows, "location", second.id)
 
@@ -67,13 +67,13 @@ describe("Voyager sidebar projection", function()
     })
     implementation.results[2].stale = true
 
-    local expanded = Sidebar.project(flow, 42, { dirty = true, request_count = 0 }, text_icons)
+    local expanded = Sidebar.project(flow, 42, { dirty = true, request_count = 0 }, { icons = text_icons })
     assert.equals("current", row_for(expanded, "location", auth_id).marker)
     assert.equals("stale", row_for(expanded, "location", implementation.results[2].id).marker)
     assert.matches("references %(0%)", row_for(expanded, "action", empty.action_id).text)
 
     assert.is_true(flow:toggle(implementation.id))
-    local collapsed = Sidebar.project(flow, 42, { dirty = true, request_count = 0 }, text_icons)
+    local collapsed = Sidebar.project(flow, 42, { dirty = true, request_count = 0 }, { icons = text_icons })
     local action_row, action_index = row_for(collapsed, "action", implementation.id)
     assert.equals("descendant_current", action_row.marker)
     assert.is_nil(row_for(collapsed, "location", auth_id))
@@ -95,7 +95,7 @@ describe("Voyager sidebar projection", function()
       label = "definition",
       locations = { project, absolute, uri },
     })
-    local rows = Sidebar.project(flow, 80, { dirty = true, request_count = 0 }, text_icons)
+    local rows = Sidebar.project(flow, 80, { dirty = true, request_count = 0 }, { icons = text_icons })
 
     assert.matches(
       "lua/auth.lua:3",
@@ -121,7 +121,7 @@ describe("Voyager sidebar projection", function()
     local flow = Fixtures.branched_flow()
     local owner = flow.root.actions[1].results[1]
     flow:set_note(owner.id, "important 😀 authentication path that is deliberately long")
-    local rows = Sidebar.project(flow, 20, { dirty = true, request_count = 0 }, text_icons)
+    local rows = Sidebar.project(flow, 20, { dirty = true, request_count = 0 }, { icons = text_icons })
     local note = row_for(rows, "note", owner.id)
 
     assert.equals(3, note.depth)
@@ -157,7 +157,7 @@ describe("Voyager sidebar projection", function()
     })
     local callee_id = out.node_id_by_identity[callee.identity]
 
-    local rows = Sidebar.project(flow, 80, {}, text_icons)
+    local rows = Sidebar.project(flow, 80, {}, { icons = text_icons })
     assert.same(
       {
         { kind = "action", owner_id = refs.action_id },
@@ -174,10 +174,73 @@ describe("Voyager sidebar projection", function()
     )
   end)
 
+  it("attaches highlight segments, direction cues, and ancestor emphasis", function()
+    local flow = Fixtures.branched_flow()
+    local implementations = flow.root.actions[1]
+    local mysql = implementations.results[1]
+    local nested = flow:commit_navigation({
+      origin_node_id = mysql.id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { Fixtures.location("lua/auth.lua", 8, "AuthService.login") },
+    })
+    local auth_id = nested.node_id_by_identity[Fixtures.identity("lua/auth.lua", 8)]
+    assert.is_true(flow:set_current(auth_id))
+
+    local rows = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    local function groups(row_value)
+      local result = {}
+      for _, part in ipairs(row_value.segments) do
+        if part.hl and part.text ~= "" then
+          result[part.hl] = true
+        end
+      end
+      return result
+    end
+
+    local impl_row = row_for(rows, "action", implementations.id)
+    assert.matches("▼", impl_row.text, nil, true)
+    assert.is_true(groups(impl_row)["VoyagerDirectionDown"])
+    assert.is_true(groups(impl_row)["VoyagerActionLabel"])
+    assert.is_true(groups(impl_row)["VoyagerCount"])
+
+    local refs_row = row_for(rows, "action", nested.action_id)
+    assert.matches("▲", refs_row.text, nil, true)
+    assert.is_true(groups(refs_row)["VoyagerDirectionUp"])
+
+    assert.is_true(groups(row_for(rows, "location", mysql.id))["VoyagerAncestor"])
+    assert.is_true(groups(row_for(rows, "location", implementations.results[2].id))["VoyagerSymbol"])
+    assert.is_true(groups(row_for(rows, "location", auth_id))["VoyagerCurrent"])
+    assert.is_true(groups(row_for(rows, "note", mysql.id))["VoyagerNote"])
+
+    local _, header = Sidebar.project(flow, 80, { dirty = true, request_count = 1 }, { icons = text_icons })
+    local header_groups = {}
+    for _, part in ipairs(header.segments) do
+      header_groups[part.hl or ""] = true
+    end
+    assert.is_true(header_groups["VoyagerHeader"])
+    assert.is_true(header_groups["VoyagerDirty"])
+    assert.is_true(header_groups["VoyagerRequests"])
+  end)
+
+  it("shortens or strips paths according to the display style", function()
+    local flow = Fixtures.branched_flow()
+    local mysql_id = flow.root.actions[1].results[1].id
+
+    local relative = Sidebar.project(flow, 80, {}, { icons = text_icons, path = "relative" })
+    assert.matches("lua/mysql.lua:3", row_for(relative, "location", mysql_id).text, nil, true)
+
+    local filename = Sidebar.project(flow, 80, {}, { icons = text_icons, path = "filename" })
+    assert.matches("— mysql.lua:3", row_for(filename, "location", mysql_id).text, nil, true)
+
+    local shortened = Sidebar.project(flow, 80, {}, { icons = text_icons, path = "shortened" })
+    assert.matches("— l/mysql.lua:3", row_for(shortened, "location", mysql_id).text, nil, true)
+  end)
+
   it("renders configurable action and marker icons", function()
     local flow = Fixtures.branched_flow()
     local nerd = Config.resolve().sidebar.icons
-    local rows = Sidebar.project(flow, 60, {}, nerd)
+    local rows = Sidebar.project(flow, 60, {}, { icons = nerd })
     local action_row = row_for(rows, "action", flow.root.actions[1].id)
     assert.matches(nerd.implementation, action_row.text, nil, true)
     assert.matches(nerd.expanded, action_row.text, nil, true)
@@ -185,7 +248,7 @@ describe("Voyager sidebar projection", function()
     assert.matches(nerd.current, row_for(rows, "location", flow.root.id).text, nil, true)
 
     local custom = Config.resolve({ sidebar = { icons = { implementation = "I>", current = "*" } } }).sidebar.icons
-    rows = Sidebar.project(flow, 60, {}, custom)
+    rows = Sidebar.project(flow, 60, {}, { icons = custom })
     assert.matches("I> implementations", row_for(rows, "action", flow.root.actions[1].id).text, nil, true)
     assert.matches("^%* main", row_for(rows, "location", flow.root.id).text)
   end)
@@ -373,7 +436,7 @@ describe("Voyager sidebar popup", function()
     assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
     local flow = Fixtures.branched_flow()
     sidebar:render(flow, { dirty = true, request_count = 0 })
-    local rows = Sidebar.project(flow, 40, {}, config.sidebar.icons)
+    local rows = Sidebar.project(flow, 40, {}, { icons = config.sidebar.icons })
     local targets = {
       assert(row_for(rows, "location", flow.root.id)),
       assert(row_for(rows, "action", flow.root.actions[1].id)),
@@ -422,7 +485,7 @@ describe("Voyager sidebar popup", function()
     local action = flow.root.actions[1]
     local selected = action.results[2]
     sidebar:render(flow, { dirty = false, request_count = 0 })
-    local rows = Sidebar.project(flow, 40, {}, sidebar_config.icons)
+    local rows = Sidebar.project(flow, 40, {}, { icons = sidebar_config.icons })
     local _, selected_index = row_for(rows, "location", selected.id)
     fake.set_cursor_line(selected_index + 1)
     local source_win = vim.api.nvim_get_current_win()
@@ -503,12 +566,80 @@ describe("Voyager sidebar popup", function()
     assert.is_true(flow:toggle(flow.root.actions[1].id))
     sidebar:render(flow, { dirty = true, request_count = 0 })
     local collapsed = fake.update_layout_calls[#fake.update_layout_calls]
-    assert.same({ width = 24, height = 3 }, collapsed.size)
-    assert.same({ row = 1, col = 94 }, collapsed.position)
+    assert.same({ width = 26, height = 3 }, collapsed.size)
+    assert.same({ row = 1, col = 92 }, collapsed.position)
 
     sidebar:render(flow, { dirty = true, request_count = 0 })
     assert.same(collapsed, fake.update_layout_calls[#fake.update_layout_calls])
     sidebar:unmount({ owned = true })
+  end)
+
+  it("applies highlight extmarks to the rendered popup buffer", function()
+    local fake = FakePopup.new()
+    local sidebar = Sidebar.new({
+      sidebar = Config.resolve({ sidebar = { icons = false } }).sidebar,
+      keymaps = {},
+      handlers = noop_handlers(),
+      popup_factory = fake.factory,
+      ui_state = ui_state,
+      notify = function() end,
+    })
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+    sidebar:render(Fixtures.branched_flow(), { dirty = true, request_count = 0 })
+
+    local namespace = vim.api.nvim_create_namespace("voyager-sidebar")
+    local marks = vim.api.nvim_buf_get_extmarks(fake.bufnr, namespace, 0, -1, { details = true })
+    local seen = {}
+    for _, mark in ipairs(marks) do
+      local details = mark[4]
+      if details.hl_group then
+        seen[details.hl_group] = true
+      end
+      if details.line_hl_group then
+        seen[details.line_hl_group] = true
+      end
+    end
+    assert.is_true(seen["VoyagerHeader"])
+    assert.is_true(seen["VoyagerDirty"])
+    assert.is_true(seen["VoyagerSymbol"])
+    assert.is_true(seen["VoyagerPath"])
+    assert.is_true(seen["VoyagerActionLabel"])
+    assert.is_true(seen["VoyagerCount"])
+    assert.is_true(seen["VoyagerNote"])
+    assert.is_true(seen["VoyagerCurrentLine"])
+    sidebar:unmount({ owned = true })
+  end)
+
+  it("opens and closes preview and help floats beside the popup", function()
+    local fake = FakePopup.new()
+    local config = Config.resolve({ sidebar = { icons = false } })
+    local sidebar = Sidebar.new({
+      sidebar = config.sidebar,
+      keymaps = config.sidebar_keymaps,
+      handlers = noop_handlers(),
+      popup_factory = fake.factory,
+      ui_state = ui_state,
+      notify = function() end,
+    })
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+    sidebar:render(Fixtures.branched_flow(), { dirty = false, request_count = 0 })
+    local windows_before = #vim.api.nvim_list_wins()
+
+    assert.is_true(sidebar:show_preview({
+      lines = { "local function save()", "end" },
+      title = " save ",
+      focus_line = 1,
+      filetype = "lua",
+    }))
+    assert.equals(windows_before + 1, #vim.api.nvim_list_wins())
+
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = fake.bufnr })
+    assert.equals(windows_before, #vim.api.nvim_list_wins())
+
+    assert.is_true(sidebar:show_help())
+    assert.equals(windows_before + 1, #vim.api.nvim_list_wins())
+    sidebar:unmount({ owned = true })
+    assert.equals(windows_before, #vim.api.nvim_list_wins())
   end)
 
   it("mounts only a scratch popup and preserves the source window", function()

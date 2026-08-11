@@ -13,6 +13,8 @@ local nerd_icons = {
   note = "\u{f040}",
   collapsed = "▸",
   expanded = "▾",
+  caller = "▲",
+  callee = "▼",
 }
 
 local text_icons = {
@@ -29,6 +31,8 @@ local text_icons = {
   note = "✎",
   collapsed = "▸",
   expanded = "▾",
+  caller = "▲",
+  callee = "▼",
 }
 
 local icon_keys = {}
@@ -37,34 +41,49 @@ for key in pairs(nerd_icons) do
 end
 
 local defaults = {
-  sidebar = { width = 42, side = "right", border = "rounded", icons = true },
+  sidebar = { width = 42, side = "right", border = "rounded", icons = true, path = "relative" },
   navigation = { timeout_ms = 10000 },
   sidebar_keymaps = {
     jump_or_toggle = "<CR>",
+    jump_stay = "o",
+    run_action = "a",
+    delete = "x",
+    preview = "p",
     note = "n",
     save = "s",
     load = "L",
     toggle = "za",
+    collapse_all = "zM",
+    expand_all = "zR",
+    help = "?",
     close = { "q", "<Esc>" },
   },
-  storage = { resolve_uri = nil },
+  storage = { resolve_uri = nil, autosave = false },
 }
 
 local known = {
-  sidebar = { width = true, side = true, border = true, icons = true },
+  sidebar = { width = true, side = true, border = true, icons = true, path = true },
   navigation = { timeout_ms = true },
   sidebar_keymaps = {
     jump_or_toggle = true,
+    jump_stay = true,
+    run_action = true,
+    delete = true,
+    preview = true,
     note = true,
     save = true,
     load = true,
     toggle = true,
+    collapse_all = true,
+    expand_all = true,
+    help = true,
     close = true,
   },
-  storage = { resolve_uri = true },
+  storage = { resolve_uri = true, autosave = true },
 }
 
 local borders = { none = true, single = true, double = true, rounded = true, solid = true, shadow = true }
+local path_styles = { relative = true, filename = true, shortened = true }
 
 local function fail(path, message)
   error("voyager.setup: " .. path .. " " .. message, 0)
@@ -149,8 +168,14 @@ function M.resolve(opts)
   if type(timeout) ~= "number" or timeout % 1 ~= 0 or timeout < 100 or timeout > 120000 then
     fail("navigation.timeout_ms", "must be an integer from 100 through 120000")
   end
+  if not path_styles[result.sidebar.path] then
+    fail("sidebar.path", "must be 'relative', 'filename', or 'shortened'")
+  end
   if result.storage.resolve_uri ~= nil and not vim.is_callable(result.storage.resolve_uri) then
     fail("storage.resolve_uri", "must be callable or nil")
+  end
+  if type(result.storage.autosave) ~= "boolean" then
+    fail("storage.autosave", "must be a boolean")
   end
 
   local seen = {}

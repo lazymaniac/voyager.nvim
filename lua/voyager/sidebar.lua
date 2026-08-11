@@ -4,6 +4,34 @@ local M = {}
 local Sidebar = {}
 Sidebar.__index = Sidebar
 
+local namespace = vim.api.nvim_create_namespace("voyager-sidebar")
+
+local highlight_groups = {
+  VoyagerHeader = { link = "Title" },
+  VoyagerDirty = { link = "DiagnosticWarn" },
+  VoyagerRequests = { link = "Comment" },
+  VoyagerSymbol = { link = "Identifier" },
+  VoyagerAncestor = { bold = true },
+  VoyagerPath = { link = "Comment" },
+  VoyagerActionLabel = { link = "Function" },
+  VoyagerCount = { link = "Number" },
+  VoyagerIcon = { link = "Special" },
+  VoyagerDisclosure = { link = "NonText" },
+  VoyagerDirectionUp = { link = "DiagnosticInfo" },
+  VoyagerDirectionDown = { link = "DiagnosticHint" },
+  VoyagerCurrent = { link = "DiagnosticOk" },
+  VoyagerCurrentLine = { link = "CursorLine" },
+  VoyagerStale = { link = "DiagnosticWarn" },
+  VoyagerNote = { link = "DiagnosticHint" },
+  VoyagerFlash = { link = "Visual" },
+}
+
+function M.setup_highlights()
+  for name, definition in pairs(highlight_groups) do
+    vim.api.nvim_set_hl(0, name, vim.tbl_extend("force", { default = true }, definition))
+  end
+end
+
 local function badge(icon)
   if type(icon) == "string" and icon ~= "" then
     return icon .. " "
@@ -11,28 +39,75 @@ local function badge(icon)
   return ""
 end
 
-local function truncate(text, width)
+local function segment(text, hl)
+  return { text = text, hl = hl }
+end
+
+local function truncate_segments(segments, width)
   if width <= 0 then
-    return ""
+    return { segment("") }
   end
-  if vim.fn.strdisplaywidth(text) <= width then
-    return text
+  local total = 0
+  for _, part in ipairs(segments) do
+    total = total + vim.fn.strdisplaywidth(part.text)
+  end
+  if total <= width then
+    return vim.deepcopy(segments)
   end
   local ellipsis = "…"
   local target = math.max(0, width - vim.fn.strdisplaywidth(ellipsis))
-  local characters = vim.fn.strchars(text)
-  while characters > 0 do
-    local prefix = vim.fn.strcharpart(text, 0, characters)
-    if vim.fn.strdisplaywidth(prefix) <= target then
-      return prefix .. ellipsis
+  local result = {}
+  local used = 0
+  for _, part in ipairs(segments) do
+    local part_width = vim.fn.strdisplaywidth(part.text)
+    if used + part_width <= target then
+      table.insert(result, vim.deepcopy(part))
+      used = used + part_width
+    else
+      local characters = vim.fn.strchars(part.text)
+      while characters > 0 do
+        local prefix = vim.fn.strcharpart(part.text, 0, characters)
+        if vim.fn.strdisplaywidth(prefix) <= target - used then
+          table.insert(result, segment(prefix, part.hl))
+          break
+        end
+        characters = characters - 1
+      end
+      break
     end
-    characters = characters - 1
   end
-  return ellipsis
+  table.insert(result, segment(ellipsis, "VoyagerPath"))
+  return result
 end
 
-local function locator_text(locator)
-  return locator.path or locator.uri or "<unknown>"
+local function segments_text(segments)
+  local text = {}
+  for _, part in ipairs(segments) do
+    table.insert(text, part.text)
+  end
+  return table.concat(text)
+end
+
+local function shorten_path(path)
+  local parts = vim.split(path, "/", { plain = true })
+  for index = 1, #parts - 1 do
+    local head = vim.fn.strcharpart(parts[index], 0, 1)
+    if head ~= "" then
+      parts[index] = head
+    end
+  end
+  return table.concat(parts, "/")
+end
+
+local function locator_text(locator, path_style)
+  local value = locator.path or locator.uri or "<unknown>"
+  if locator.uri ~= nil or path_style == nil or path_style == "relative" then
+    return value
+  end
+  if path_style == "filename" then
+    return value:match("([^/]+)/*$") or value
+  end
+  return shorten_path(value)
 end
 
 local function contains_current(action, current_node_id)
@@ -55,20 +130,29 @@ local function contains_current(action, current_node_id)
   return false
 end
 
-local function row(kind, owner_id, text, depth, marker, width)
+local function row(kind, owner_id, segments, depth, marker, width)
+  local truncated = truncate_segments(segments, width)
   return {
     kind = kind,
     owner_id = owner_id,
-    text = truncate(text, width),
+    text = segments_text(truncated),
+    segments = truncated,
     depth = depth,
     marker = marker,
   }
 end
 
-function M.project(flow, width, status, icons)
+function M.project(flow, width, status, display)
   status = status or {}
+  assert(type(display) == "table", "Voyager sidebar display options are required")
+  local icons = display.icons
   assert(type(icons) == "table", "Voyager sidebar icons are required")
   local rows = {}
+
+  local ancestor_ids = {}
+  for _, id in ipairs(flow:path_ids(flow.current_node_id)) do
+    ancestor_ids[id] = true
+  end
 
   local visit_location
   local visit_action
@@ -88,27 +172,30 @@ function M.project(flow, width, status, icons)
       end
     end
     local marker
-    local glyph = "  "
+    local glyph = segment("  ")
     if node.id == flow.current_node_id then
       marker = "current"
-      glyph = badge(icons.current)
+      glyph = segment(badge(icons.current), "VoyagerCurrent")
     elseif node.stale then
       marker = "stale"
-      glyph = badge(icons.stale)
+      glyph = segment(badge(icons.stale), "VoyagerStale")
     end
     local location = node.location
-    local text = string.rep("  ", depth)
-      .. glyph
-      .. location.symbol
-      .. " — "
-      .. locator_text(location.locator)
-      .. ":"
-      .. (location.range.start.line + 1)
-    table.insert(rows, row("location", node.id, text, depth, marker, width))
+    local segments = {
+      segment(string.rep("  ", depth)),
+      glyph,
+      segment(location.symbol, ancestor_ids[node.id] and "VoyagerAncestor" or "VoyagerSymbol"),
+      segment(" — ", "VoyagerPath"),
+      segment(locator_text(location.locator, display.path) .. ":" .. (location.range.start.line + 1), "VoyagerPath"),
+    }
+    table.insert(rows, row("location", node.id, segments, depth, marker, width))
     if node.note then
       local note_depth = depth + 1
-      local note_text = string.rep("  ", note_depth) .. badge(icons.note) .. node.note
-      table.insert(rows, row("note", node.id, note_text, note_depth, "note", width))
+      local note_segments = {
+        segment(string.rep("  ", note_depth)),
+        segment(badge(icons.note) .. node.note, "VoyagerNote"),
+      }
+      table.insert(rows, row("note", node.id, note_segments, note_depth, "note", width))
     end
     for _, action in ipairs(node.actions) do
       if not renders_above(action) then
@@ -119,22 +206,23 @@ function M.project(flow, width, status, icons)
 
   visit_action = function(node, depth)
     local marker
-    local current_glyph = ""
+    local current_glyph = segment("")
     if node.collapsed and contains_current(node, flow.current_node_id) then
       marker = "descendant_current"
-      current_glyph = badge(icons.current)
+      current_glyph = segment(badge(icons.current), "VoyagerCurrent")
     end
-    local disclosure = badge(node.collapsed and icons.collapsed or icons.expanded)
+    local above = renders_above(node)
     local action_name = Actions.by_method(node.method)
-    local text = string.rep("  ", depth)
-      .. current_glyph
-      .. disclosure
-      .. badge(action_name and icons[action_name])
-      .. node.label
-      .. " ("
-      .. #node.results
-      .. ")"
-    table.insert(rows, row("action", node.id, text, depth, marker, width))
+    local segments = {
+      segment(string.rep("  ", depth)),
+      current_glyph,
+      segment(badge(node.collapsed and icons.collapsed or icons.expanded), "VoyagerDisclosure"),
+      segment(badge(above and icons.caller or icons.callee), above and "VoyagerDirectionUp" or "VoyagerDirectionDown"),
+      segment(badge(action_name and icons[action_name]), "VoyagerIcon"),
+      segment(node.label, "VoyagerActionLabel"),
+      segment(" (" .. #node.results .. ")", "VoyagerCount"),
+    }
+    table.insert(rows, row("action", node.id, segments, depth, marker, width))
     if not node.collapsed then
       for _, result in ipairs(node.results) do
         visit_location(result, depth + 1)
@@ -143,15 +231,20 @@ function M.project(flow, width, status, icons)
   end
 
   visit_location(flow.root, 0)
-  local header = "Voyager · " .. flow.name
+
+  local header_segments = { segment("Voyager · " .. flow.name, "VoyagerHeader") }
   if status.dirty then
-    header = header .. " *"
+    table.insert(header_segments, segment(" *", "VoyagerDirty"))
   end
   local count = status.request_count or 0
   if count > 0 then
-    header = header .. string.format(" · %d request%s", count, count == 1 and "" or "s")
+    table.insert(
+      header_segments,
+      segment(string.format(" · %d request%s", count, count == 1 and "" or "s"), "VoyagerRequests")
+    )
   end
-  return rows, truncate(header, width)
+  header_segments = truncate_segments(header_segments, width)
+  return rows, { text = segments_text(header_segments), segments = header_segments }
 end
 
 function M.selection_index(rows, previous_kind, previous_owner_id, hidden_by_action_id)
@@ -308,6 +401,7 @@ function M.new(opts)
   assert(type(opts.keymaps) == "table", "Voyager sidebar keymaps are required")
   assert(type(opts.handlers) == "table", "Voyager sidebar handlers are required")
   assert(type(opts.notify) == "function", "Voyager sidebar notification adapter is required")
+  M.setup_highlights()
 
   return setmetatable({
     _config = vim.deepcopy(opts.sidebar),
@@ -331,6 +425,7 @@ end
 function Sidebar:_on_winclosed()
   self._winclosed_autocmd = nil
   self._mounted = false
+  self:close_preview()
   if not self._internal_close then
     self._handlers.external_close()
   end
@@ -374,11 +469,20 @@ function Sidebar:_bind_keymaps()
 
   local bindings = {
     jump_or_toggle = selected(self._handlers.activate),
+    jump_stay = selected(self._handlers.activate_stay),
+    run_action = selected(self._handlers.run_action),
+    delete = selected(self._handlers.delete),
+    preview = selected(self._handlers.preview),
     note = selected(self._handlers.note),
     toggle = selected(self._handlers.toggle),
+    collapse_all = self._handlers.collapse_all,
+    expand_all = self._handlers.expand_all,
     save = self._handlers.save,
     load = self._handlers.load,
     close = self._handlers.close,
+    help = function()
+      self:show_help()
+    end,
   }
   for name, callback in pairs(bindings) do
     each_lhs(self._keymaps[name], function(lhs)
@@ -471,6 +575,7 @@ end
 
 function Sidebar:unmount(opts)
   opts = opts or {}
+  self:close_preview()
   if not self._popup then
     self._mounted = false
     return
@@ -514,15 +619,17 @@ function Sidebar:render(flow, status)
 
   local previous = self:selected_row()
   local cap = assert(self._envelope).max_width - border_cells(self._config)
-  local rows, header = M.project(flow, cap, status, self._config.icons)
+  local rows, header = M.project(flow, cap, status, { icons = self._config.icons, path = self._config.path })
   local hidden_action_id = previous and hidden_by_action(flow, previous.owner_id) or nil
   local selected_index =
     M.selection_index(rows, previous and previous.kind or nil, previous and previous.owner_id or nil, hidden_action_id)
 
-  local lines = { header }
+  local lines = { header.text }
+  local annotated = { header.segments }
   local line_to_row = { false }
   for _, row_value in ipairs(rows) do
     table.insert(lines, row_value.text)
+    table.insert(annotated, row_value.segments)
     table.insert(line_to_row, row_value)
   end
 
@@ -539,8 +646,138 @@ function Sidebar:render(flow, status)
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modifiable = false
   vim.bo[bufnr].readonly = true
+
+  vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
+  for line_index, segments in ipairs(annotated) do
+    local col = 0
+    for _, part in ipairs(segments) do
+      local length = #part.text
+      if part.hl and length > 0 then
+        vim.api.nvim_buf_set_extmark(bufnr, namespace, line_index - 1, col, {
+          end_col = col + length,
+          hl_group = part.hl,
+        })
+      end
+      col = col + length
+    end
+  end
+  for index, row_value in ipairs(rows) do
+    if row_value.marker == "current" then
+      vim.api.nvim_buf_set_extmark(bufnr, namespace, index, 0, { line_hl_group = "VoyagerCurrentLine" })
+    end
+  end
+
   self._line_to_row = line_to_row
   set_popup_cursor(self._popup, { selected_index + 1, 0 })
+end
+
+function Sidebar:close_preview()
+  if self._preview_autocmd then
+    pcall(vim.api.nvim_del_autocmd, self._preview_autocmd)
+    self._preview_autocmd = nil
+  end
+  local preview = self._preview
+  self._preview = nil
+  if preview and preview.winid and vim.api.nvim_win_is_valid(preview.winid) then
+    pcall(vim.api.nvim_win_close, preview.winid, true)
+  end
+end
+
+function Sidebar:show_preview(opts)
+  self:close_preview()
+  if not self:is_mounted() or type(opts) ~= "table" or type(opts.lines) ~= "table" or #opts.lines == 0 then
+    return false
+  end
+
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, opts.lines)
+  vim.bo[bufnr].bufhidden = "wipe"
+  vim.bo[bufnr].modifiable = false
+  if type(opts.filetype) == "string" and opts.filetype ~= "" then
+    vim.bo[bufnr].filetype = opts.filetype
+  end
+  if type(opts.focus_line) == "number" and opts.focus_line >= 1 and opts.focus_line <= #opts.lines then
+    vim.api.nvim_buf_set_extmark(bufnr, namespace, opts.focus_line - 1, 0, { line_hl_group = "VoyagerCurrentLine" })
+  end
+
+  local geometry = assert(self._geometry)
+  local envelope = assert(self._envelope)
+  local width = 0
+  for _, line in ipairs(opts.lines) do
+    width = math.max(width, vim.fn.strdisplaywidth(line))
+  end
+  width = math.max(20, math.min(width + 1, 70, math.max(20, envelope.columns - geometry.width - 4)))
+  local height = math.max(1, math.min(#opts.lines, 12))
+  local col
+  if envelope.side == "right" then
+    col = math.max(0, geometry.col - width - 2)
+  else
+    col = math.min(envelope.columns - width, geometry.col + geometry.width + 2)
+  end
+
+  local open_ok, winid = pcall(vim.api.nvim_open_win, bufnr, false, {
+    relative = "editor",
+    row = geometry.row,
+    col = col,
+    width = width,
+    height = height,
+    style = "minimal",
+    border = self._config.border == "none" and "single" or self._config.border,
+    title = opts.title,
+    title_pos = "center",
+    focusable = false,
+  })
+  if not open_ok then
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+    return false
+  end
+  self._preview = { winid = winid, bufnr = bufnr }
+  self._preview_autocmd = vim.api.nvim_create_autocmd({ "CursorMoved", "BufLeave" }, {
+    buffer = self._popup.bufnr,
+    once = true,
+    callback = function()
+      self:close_preview()
+    end,
+  })
+  return true
+end
+
+local help_entries = {
+  { "jump_or_toggle", "jump to the location, or toggle an action" },
+  { "jump_stay", "jump but keep focus in the sidebar" },
+  { "run_action", "record an LSP action from the selected node" },
+  { "preview", "peek at the selected location" },
+  { "delete", "delete the selected branch or note" },
+  { "note", "add, edit, or remove a note" },
+  { "save", "save or merge the flow" },
+  { "load", "load a saved flow" },
+  { "toggle", "collapse or expand the selected action" },
+  { "collapse_all", "collapse every action" },
+  { "expand_all", "expand every action" },
+  { "help", "show this help" },
+  { "close", "close Voyager" },
+}
+
+function Sidebar:show_help()
+  local lines = {}
+  local key_width = 0
+  local rendered = {}
+  for _, entry in ipairs(help_entries) do
+    local value = self._keymaps[entry[1]]
+    local keys = {}
+    each_lhs(value, function(lhs)
+      table.insert(keys, lhs)
+    end)
+    if #keys > 0 then
+      local display = table.concat(keys, ", ")
+      key_width = math.max(key_width, vim.fn.strdisplaywidth(display))
+      table.insert(rendered, { display, entry[2] })
+    end
+  end
+  for _, entry in ipairs(rendered) do
+    table.insert(lines, string.format(" %-" .. key_width .. "s  %s", entry[1], entry[2]))
+  end
+  return self:show_preview({ lines = lines, title = " Voyager keys " })
 end
 
 function Sidebar:focus()

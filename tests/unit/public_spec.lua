@@ -6,6 +6,8 @@ local command_names = {
   "VoyagerSave",
   "VoyagerLoad",
   "VoyagerClose",
+  "VoyagerToggle",
+  "VoyagerExport",
 }
 
 local function delete_commands()
@@ -81,6 +83,31 @@ describe("Voyager public interface", function()
           call("shutdown")
           self.active = false
         end
+        function controller:is_active()
+          return self.active
+        end
+        function controller:export()
+          call("export")
+          return self.active and 1 or nil
+        end
+        function controller:state()
+          return {
+            request_count = 2,
+            flow = {
+              name = "main",
+              is_dirty = function()
+                return true
+              end,
+              dfs = function()
+                return {
+                  { kind = "location" },
+                  { kind = "action" },
+                  { kind = "location" },
+                }
+              end,
+            },
+          }
+        end
         env.controller = controller
         return controller
       end,
@@ -99,7 +126,7 @@ describe("Voyager public interface", function()
     package.loaded["voyager.session"] = original_session
   end)
 
-  it("registers five zero-argument commands without global mappings", function()
+  it("registers seven zero-argument commands without global mappings", function()
     local mappings_before = vim.api.nvim_get_keymap("n")
     vim.cmd("runtime plugin/voyager.lua")
     for _, command in ipairs(command_names) do
@@ -112,8 +139,10 @@ describe("Voyager public interface", function()
     vim.cmd("VoyagerSave")
     vim.cmd("VoyagerLoad")
     vim.cmd("VoyagerClose")
+    vim.cmd("VoyagerToggle")
+    vim.cmd("VoyagerExport")
     assert.same(
-      { "open", "focus", "save", "load", "close" },
+      { "open", "focus", "save", "load", "close", "open", "export" },
       vim.tbl_map(function(call)
         return call.name
       end, env.calls)
@@ -121,6 +150,15 @@ describe("Voyager public interface", function()
     assert.equals("command", env.close_source)
     assert.equals(1, env.native_calls)
     assert.equals(1, env.runtime_calls)
+  end)
+
+  it("reports statusline data only while a session is active", function()
+    local Voyager = require("voyager")
+    assert.is_nil(Voyager.status())
+    Voyager.open()
+    assert.same({ name = "main", dirty = true, locations = 2, requests = 2 }, Voyager.status())
+    Voyager.close()
+    assert.is_nil(Voyager.status())
   end)
 
   it("validates setup immediately and snapshots configuration only for future sessions", function()

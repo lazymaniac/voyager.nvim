@@ -124,16 +124,22 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals(root_id, session:state().flow.current_node_id)
   end)
 
-  it("moves current only when the cursor lands exactly on a claimed destination", function()
+  it("moves current when the cursor lands on a claimed destination", function()
     local session, deps = new_session()
     local root_id = session:state().flow.root.id
     local first = Fixtures.location("lua/def-a.lua", 4)
+    local twin = Fixtures.location("lua/def-a.lua", 4)
+    twin.range = {
+      start = { line = 4, character = 10 },
+      ["end"] = { line = 4, character = 14 },
+    }
+    twin.identity = Locator.location_key(twin)
     local second = Fixtures.location("lua/def-b.lua", 9)
-    deps.lsp.auto_outcome = outcome("references", root_id, { first, second })
+    deps.lsp.auto_outcome = outcome("references", root_id, { first, twin, second })
     session:run_action("references")
     local claim = session:state().destination_claim
     assert.is_table(claim)
-    assert.equals(2, #claim.targets)
+    assert.equals(3, #claim.targets)
 
     deps:add_buffer(51, "/project/lua/def-a.lua")
     deps:add_buffer(52, "/project/lua/def-b.lua")
@@ -144,19 +150,27 @@ describe("Voyager asynchronous navigation orchestration", function()
 
     deps.current_win_id = deps.origin_win
     deps.windows[deps.origin_win].bufnr = 51
-    deps.windows[deps.origin_win].cursor = { 5, 3 }
+    deps.windows[deps.origin_win].cursor = { 6, 0 }
     deps:trigger("CursorMoved")
     assert.equals(root_id, session:state().flow.current_node_id)
 
-    deps.windows[deps.origin_win].cursor = { 5, 0 }
+    deps.windows[deps.origin_win].cursor = { 5, 7 }
     deps:trigger("CursorMoved")
-    assert.equals(claim.targets[1].node_id, session:state().flow.current_node_id)
+    assert.equals(root_id, session:state().flow.current_node_id, "two destinations on the line stay ambiguous")
+
+    deps.windows[deps.origin_win].cursor = { 5, 2 }
+    deps:trigger("CursorMoved")
+    assert.equals(claim.targets[1].node_id, session:state().flow.current_node_id, "containment resolves the column")
     assert.is_table(session:state().destination_claim)
 
-    deps.windows[deps.origin_win].bufnr = 52
-    deps.windows[deps.origin_win].cursor = { 10, 0 }
+    deps.windows[deps.origin_win].cursor = { 5, 10 }
     deps:trigger("CursorMoved")
-    assert.equals(claim.targets[2].node_id, session:state().flow.current_node_id)
+    assert.equals(claim.targets[2].node_id, session:state().flow.current_node_id, "exact column wins")
+
+    deps.windows[deps.origin_win].bufnr = 52
+    deps.windows[deps.origin_win].cursor = { 10, 6 }
+    deps:trigger("CursorMoved")
+    assert.equals(claim.targets[3].node_id, session:state().flow.current_node_id, "unique line match tolerates column")
 
     assert.is_true(session:set_current(root_id))
     assert.is_nil(session:state().destination_claim)

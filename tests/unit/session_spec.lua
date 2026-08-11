@@ -185,6 +185,163 @@ describe("Voyager session lifecycle", function()
     assert.matches("could not record definition", deps.notifications[#deps.notifications].message, nil, true)
   end)
 
+  it("deletes rows, clears notes through delete, and refuses the root", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    local site = Fixtures.location("lua/site.lua", 1, "site")
+    local commit = session:state().flow:commit_navigation({
+      origin_node_id = deps.root_id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { site },
+    })
+    local site_id = commit.node_id_by_identity[site.identity]
+    assert.is_true(session:state().flow:set_note(site_id, "keep"))
+
+    assert.is_true(session:delete_row({ kind = "note", owner_id = site_id }))
+    assert.is_nil(session:state().flow:location(site_id).note)
+
+    assert.is_false(session:delete_row({ kind = "location", owner_id = deps.root_id }))
+    assert.matches("root cannot be deleted", deps.notifications[#deps.notifications].message, nil, true)
+
+    local renders = deps.sidebar.render_count
+    assert.is_true(session:delete_row({ kind = "location", owner_id = site_id }))
+    assert.is_nil(session:state().flow:find(site_id))
+    assert.equals(renders + 1, deps.sidebar.render_count)
+    assert.is_nil(session:state().destination_claim)
+  end)
+
+  it("jumps and records a picked action from a sidebar row", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    local site = Fixtures.location("lua/site.lua", 0, "site")
+    local commit = session:state().flow:commit_navigation({
+      origin_node_id = deps.root_id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { site },
+    })
+    local site_id = commit.node_id_by_identity[site.identity]
+    deps:add_buffer(71, "/project/lua/site.lua", { lines = { "site here" } })
+    deps.locator.open_target_result = { bufnr = 71, row = 1, col = 0 }
+    deps.cursor_word = "site"
+    deps.cursor_word_start = 0
+    deps.cursor_word_end = 4
+
+    assert.is_true(session:run_action_for_row({ kind = "location", owner_id = site_id }))
+    assert.equals(site_id, session:state().flow.current_node_id)
+    assert.equals("Voyager action", deps.select_opts.prompt)
+    deps.select_callback("references", 3)
+    assert.equals(1, #deps.lsp.starts)
+    assert.equals("references", deps.lsp.starts[1].action_name)
+    assert.equals(site_id, deps.lsp.starts[1].context.origin_node_id)
+  end)
+
+  it("previews a location beside the sidebar and rejects other rows", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    local site = Fixtures.location("lua/site.lua", 1, "site")
+    local commit = session:state().flow:commit_navigation({
+      origin_node_id = deps.root_id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { site },
+    })
+    local site_id = commit.node_id_by_identity[site.identity]
+    deps.locator.source_lines = { "l1", "l2", "l3", "l4", "l5" }
+
+    assert.is_true(session:preview_row({ kind = "location", owner_id = site_id }))
+    local preview = deps.sidebar.preview_calls[1]
+    assert.same({ "l1", "l2", "l3", "l4", "l5" }, preview.lines)
+    assert.equals(2, preview.focus_line)
+    assert.equals("lua", preview.filetype)
+    assert.matches("site", preview.title, nil, true)
+
+    assert.is_nil(session:preview_row({ kind = "action", owner_id = deps.root_id }))
+    assert.matches("cannot preview", deps.notifications[#deps.notifications].message, nil, true)
+
+    deps.locator.source_lines = false
+    assert.is_nil(session:preview_row({ kind = "location", owner_id = site_id }))
+    assert.matches("unavailable", deps.notifications[#deps.notifications].message, nil, true)
+  end)
+
+  it("exports resolvable locations to the quickfix list", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    local site = Fixtures.location("lua/site.lua", 1, "site", "local site = 1")
+    local virtual = Fixtures.location("unused", 2, "virtual")
+    virtual.locator = { kind = "uri", uri = "jdt://contents/Virtual.class" }
+    virtual.identity = require("voyager.locator").location_key(virtual)
+    session:state().flow:commit_navigation({
+      origin_node_id = deps.root_id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { site, virtual },
+    })
+
+    assert.equals(2, session:export())
+    assert.equals("Voyager: main", deps.quickfix.title)
+    assert.equals(2, #deps.quickfix.items)
+    assert.equals("/project/lua/site.lua", deps.quickfix.items[2].filename)
+    assert.equals(2, deps.quickfix.items[2].lnum)
+    assert.equals("local site = 1", deps.quickfix.items[2].text)
+    assert.matches("exported 2 locations", deps.notifications[#deps.notifications].message, nil, true)
+    assert.matches("1 unresolvable skipped", deps.notifications[#deps.notifications].message, nil, true)
+  end)
+
+  it("collapses and expands every action and keeps focus on stay-jumps", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    local site = Fixtures.location("lua/site.lua", 1, "site")
+    local commit = session:state().flow:commit_navigation({
+      origin_node_id = deps.root_id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { site },
+    })
+    local site_id = commit.node_id_by_identity[site.identity]
+
+    assert.is_true(session:set_all_collapsed(true))
+    assert.is_true(session:state().flow:find(commit.action_id).collapsed)
+    assert.is_true(session:set_all_collapsed(false))
+    assert.is_false(session:state().flow:find(commit.action_id).collapsed)
+
+    deps.sidebar.mounted = true
+    assert.is_true(session:activate_row({ kind = "location", owner_id = site_id }, { stay = true }))
+    assert.equals(deps.sidebar.winid, deps.current_win_id)
+    assert.equals(1, #deps.flashes)
+    assert.equals(deps.origin_buf, deps.flashes[1].bufnr)
+  end)
+
+  it("autosaves dirty flows on close and shutdown when enabled", function()
+    local session, deps = new_session()
+    deps.config.storage.autosave = true
+    assert.is_true(session:open())
+    assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
+    assert.is_true(session:close("command"))
+    assert.equals(1, #deps.store.save_calls)
+    assert.is_nil(deps.select_callback)
+    assert.is_false(session:is_active())
+
+    session, deps = new_session()
+    deps.config.storage.autosave = true
+    assert.is_true(session:open())
+    assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
+    deps.store.save_error = "disk full"
+    session:close("command")
+    assert.is_function(deps.select_callback)
+    deps.select_callback("Discard", 2)
+    assert.is_false(session:is_active())
+
+    session, deps = new_session()
+    deps.config.storage.autosave = true
+    assert.is_true(session:open())
+    assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
+    session:shutdown()
+    assert.equals(1, #deps.store.save_calls)
+    assert.is_false(session:is_active())
+  end)
+
   it("dispatches typed rows without confusing locations, actions, and notes", function()
     local session, deps = new_session()
     assert.is_true(session:open())

@@ -34,15 +34,21 @@ end
 
 function Flow:_reindex()
   self._index = {}
-  local function visit(node)
+  self._parents = {}
+  local function visit(node, parent_id)
     assert(not self._index[node.id], "duplicate Voyager node ID: " .. node.id)
     self._index[node.id] = node
+    self._parents[node.id] = parent_id
     local children = node.kind == "location" and node.actions or node.results
     for _, child in ipairs(children) do
-      visit(child)
+      visit(child, node.id)
     end
   end
-  visit(self.root)
+  visit(self.root, nil)
+end
+
+function Flow:parent_id(node_id)
+  return self._parents[node_id]
 end
 
 function M.new(opts)
@@ -69,6 +75,7 @@ function M.new(opts)
       notes = {},
       metadata = { [root.id] = { symbol = true, context = true } },
       collapsed = {},
+      deleted = {},
       current_node_id = true,
     },
   }, Flow)
@@ -105,6 +112,7 @@ function M.from_document(document, opts)
     notes = {},
     metadata = {},
     collapsed = {},
+    deleted = {},
     current_node_id = false,
   }
   setmetatable(self, Flow)
@@ -207,6 +215,7 @@ function Flow:mark_saved(document)
     notes = {},
     metadata = {},
     collapsed = {},
+    deleted = {},
     current_node_id = false,
   }
   self:_reindex()
@@ -231,6 +240,84 @@ function Flow:_location_path(node_id)
   end
   visit(self.root, {})
   return found or {}
+end
+
+function Flow:path_ids(node_id)
+  local ids = {}
+  for _, location in ipairs(self:_location_path(node_id)) do
+    table.insert(ids, location.id)
+  end
+  return ids
+end
+
+local function collect_subtree_ids(node, ids)
+  ids[node.id] = true
+  local children = node.kind == "location" and node.actions or node.results
+  for _, child in ipairs(children) do
+    collect_subtree_ids(child, ids)
+  end
+  return ids
+end
+
+local function remove_child(list, node_id)
+  for index, child in ipairs(list) do
+    if child.id == node_id then
+      table.remove(list, index)
+      return true
+    end
+  end
+  return false
+end
+
+function Flow:delete(node_id)
+  local node = self:find(node_id)
+  if not node or node.id == self.root.id then
+    return false
+  end
+  local parent = assert(self:find(self._parents[node_id]), "Voyager delete target has no parent")
+
+  local deleted_key
+  local surviving_location_id
+  if node.kind == "action" then
+    assert(remove_child(parent.actions, node_id))
+    deleted_key = node.method
+    surviving_location_id = parent.id
+  else
+    assert(remove_child(parent.results, node_id))
+    deleted_key = Locator.location_key(node.location)
+    surviving_location_id = assert(self._parents[parent.id], "Voyager result has no owning location")
+  end
+
+  -- The deletion journal is keyed by the surviving parent's ID so a later
+  -- save-merge can skip re-importing the branch from the on-disk document.
+  local deleted = self._journal.deleted[parent.id] or {}
+  deleted[deleted_key] = true
+  self._journal.deleted[parent.id] = deleted
+
+  local subtree = collect_subtree_ids(node, {})
+  if subtree[self.current_node_id] then
+    self.current_node_id = surviving_location_id
+    self._journal.current_node_id = true
+  end
+
+  self._dirty = true
+  self:_reindex()
+  return true
+end
+
+function Flow:set_all_collapsed(collapsed)
+  local changed = false
+  for _, node in ipairs(self:dfs()) do
+    if node.kind == "action" and node.collapsed ~= collapsed then
+      node.collapsed = collapsed
+      self._journal.collapsed[node.id] = collapsed
+      changed = true
+    end
+  end
+  if changed then
+    self._dirty = true
+  end
+  return changed
 end
 
 function Flow:_commit_direct(input)
@@ -278,6 +365,7 @@ function Flow:_commit_direct(input)
     action = action_node(self._next_id("action"), input.method, input.label)
     table.insert(origin.actions, action)
     self._index[action.id] = action
+    self._parents[action.id] = origin.id
     changed = true
   end
 
@@ -293,6 +381,7 @@ function Flow:_commit_direct(input)
       result = location_node(self._next_id("location"), clean_location(location))
       table.insert(action.results, result)
       self._index[result.id] = result
+      self._parents[result.id] = action.id
       results_by_identity[identity] = result
       self._journal.metadata[result.id] = { symbol = true }
       if location.context ~= nil and location.context ~= "" then
@@ -412,7 +501,13 @@ function M.merge(latest_document, active_flow, active_journal, next_id)
   local merge_location
   local merge_action
 
-  local function merge_action_children(latest_actions, active_actions)
+  local deleted_journal = active_journal.deleted or {}
+  local function was_deleted(active_parent_id, key)
+    local deleted = deleted_journal[active_parent_id]
+    return deleted ~= nil and deleted[key] == true
+  end
+
+  local function merge_action_children(latest_actions, active_actions, active_location_id)
     local result = {}
     local active_by_method = {}
     local matched = {}
@@ -424,7 +519,7 @@ function M.merge(latest_document, active_flow, active_journal, next_id)
       if active_action then
         matched[active_action] = true
         table.insert(result, merge_action(latest_action, active_action))
-      else
+      elseif not was_deleted(active_location_id, latest_action.method) then
         table.insert(result, import_node(latest_action))
       end
     end
@@ -436,7 +531,7 @@ function M.merge(latest_document, active_flow, active_journal, next_id)
     return result
   end
 
-  local function merge_result_children(latest_results, active_results)
+  local function merge_result_children(latest_results, active_results, active_action_id)
     local result = {}
     local active_by_identity = {}
     local matched = {}
@@ -444,11 +539,12 @@ function M.merge(latest_document, active_flow, active_journal, next_id)
       active_by_identity[Locator.location_key(location.location)] = location
     end
     for _, latest_location in ipairs(latest_results) do
-      local active_location = active_by_identity[Locator.location_key(latest_location.location)]
+      local identity = Locator.location_key(latest_location.location)
+      local active_location = active_by_identity[identity]
       if active_location then
         matched[active_location] = true
         table.insert(result, merge_location(latest_location, active_location))
-      else
+      elseif not was_deleted(active_action_id, identity) then
         table.insert(result, import_node(latest_location))
       end
     end
@@ -480,7 +576,7 @@ function M.merge(latest_document, active_flow, active_journal, next_id)
     if metadata_touch.context ~= true then
       merged.location.context = latest.location.context
     end
-    merged.actions = merge_action_children(latest.actions, active.actions)
+    merged.actions = merge_action_children(latest.actions, active.actions, active.id)
     return merged
   end
 
@@ -490,7 +586,7 @@ function M.merge(latest_document, active_flow, active_journal, next_id)
     if active_journal.collapsed[active.id] == nil then
       merged.collapsed = latest.collapsed
     end
-    merged.results = merge_result_children(latest.results, active.results)
+    merged.results = merge_result_children(latest.results, active.results, active.id)
     return merged
   end
 
