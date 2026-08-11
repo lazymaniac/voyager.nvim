@@ -100,48 +100,6 @@ local function fake_sidebar(env)
   return sidebar
 end
 
-local function fake_keymaps()
-  local keymaps = {
-    applied_buffers = {},
-    apply_calls = {},
-    restored_generations = {},
-  }
-  function keymaps:apply_buffer(bufnr, generation, mappings, wrapper_factory)
-    table.insert(self.applied_buffers, bufnr)
-    table.insert(self.apply_calls, {
-      bufnr = bufnr,
-      generation = generation,
-      mappings = vim.deepcopy(mappings),
-      wrapper_factory = wrapper_factory,
-    })
-  end
-  function keymaps:restore_all(generation)
-    table.insert(self.restored_generations, generation)
-  end
-  return keymaps
-end
-
-local function fake_presenter()
-  local presenter = { invalidate_calls = 0, cursor_calls = {}, present_calls = {} }
-  function presenter:invalidate()
-    self.invalidate_calls = self.invalidate_calls + 1
-  end
-  function presenter:on_cursor_moved(winid)
-    table.insert(self.cursor_calls, winid)
-  end
-  function presenter:present(context, items, action)
-    table.insert(self.present_calls, {
-      context = vim.deepcopy(context),
-      items = vim.deepcopy(items),
-      action = vim.deepcopy(action),
-    })
-    if self.on_present then
-      self.on_present(context, items, action)
-    end
-  end
-  return presenter
-end
-
 local function fake_lsp()
   local lsp = { starts = {}, handles = {} }
   function lsp:start(action_name, context, callback)
@@ -205,9 +163,8 @@ function M.new(overrides)
     locator_factory_calls = {},
     store_factory_calls = {},
     lsp_factory_calls = {},
-    presenter_factory_calls = {},
     sidebar_factory_calls = {},
-    keymaps_factory_calls = 0,
+    scheduled = {},
     cursor_word = "main",
     cursor_word_start = 6,
     cursor_word_end = 10,
@@ -317,12 +274,11 @@ function M.new(overrides)
       local cursor = assert(env.windows[winid]).cursor or { 1, 0 }
       return { line = cursor[1] - 1, character = cursor[2] }
     end,
-    getpos = function(winid)
-      local cursor = assert(env.windows[winid]).cursor or { 1, 0 }
-      return { 0, cursor[1], cursor[2] + 1, 0 }
-    end,
     word_at_cursor = function()
       return env.cursor_word, env.cursor_word_start, env.cursor_word_end
+    end,
+    schedule = function(callback)
+      table.insert(env.scheduled, callback)
     end,
     get_clients = function(filter)
       env.last_client_filter = vim.deepcopy(filter)
@@ -393,8 +349,6 @@ function M.new(overrides)
 
   env.config = Config.resolve()
   env.sidebar = fake_sidebar(env)
-  env.keymaps = fake_keymaps()
-  env.presenter = fake_presenter()
   env.lsp = fake_lsp()
   env.locator = {
     _project_root = env.project_root,
@@ -490,14 +444,32 @@ function M.new(overrides)
   function env:new_sidebar()
     return fake_sidebar(self)
   end
-  function env:new_keymaps()
-    return fake_keymaps()
-  end
-  function env:new_presenter()
-    return fake_presenter()
-  end
   function env:new_lsp()
     return fake_lsp()
+  end
+
+  function env:flush_scheduled()
+    local callbacks = self.scheduled
+    self.scheduled = {}
+    for _, callback in ipairs(callbacks) do
+      callback()
+    end
+  end
+
+  function env:lsp_request(method, opts)
+    opts = opts or {}
+    self:trigger("LspRequest", {
+      buf = opts.bufnr or self.origin_buf,
+      data = {
+        client_id = opts.client_id or 7,
+        request_id = opts.request_id or 1,
+        request = {
+          type = opts.type or "pending",
+          bufnr = opts.bufnr or self.origin_buf,
+          method = method,
+        },
+      },
+    })
   end
 
   function env:session_options()
@@ -516,12 +488,6 @@ function M.new(overrides)
         table.insert(env.store_factory_calls, locator)
         return env.store
       end,
-      keymaps_factory = function()
-        env.keymaps_factory_calls = env.keymaps_factory_calls + 1
-        local value = env.next_keymaps or env.keymaps
-        env.next_keymaps = nil
-        return value
-      end,
       sidebar_factory = function(config)
         table.insert(env.sidebar_factory_calls, vim.deepcopy(config))
         local value = env.next_sidebar or env.sidebar
@@ -532,12 +498,6 @@ function M.new(overrides)
         table.insert(env.lsp_factory_calls, { locator = locator, config = vim.deepcopy(config) })
         local value = env.next_lsp or env.lsp
         env.next_lsp = nil
-        return value
-      end,
-      presenter_factory = function(config)
-        table.insert(env.presenter_factory_calls, vim.deepcopy(config))
-        local value = env.next_presenter or env.presenter
-        env.next_presenter = nil
         return value
       end,
       ui = { input = env.runtime.input, select = env.runtime.select, notify = env.runtime.notify },

@@ -75,12 +75,11 @@ function M.new(opts)
     _flow_module = opts.flow,
     _locator_factory = opts.locator_factory,
     _store_factory = opts.store_factory,
-    _keymaps_factory = opts.keymaps_factory,
     _sidebar_factory = opts.sidebar_factory,
     _lsp_factory = opts.lsp_factory,
-    _presenter_factory = opts.presenter_factory,
     _ui = opts.ui,
     _generation = 0,
+    _recording = 0,
     _interaction_counter = 0,
     _interaction_tokens = {},
   }, Session)
@@ -171,7 +170,9 @@ function Session:_stage_state(opts)
     request_token = 0,
     interaction_token = 0,
     interaction_tokens = {},
-    presentation_token = 0,
+    tracking_token = 0,
+    destination_claim = nil,
+    observer_pending = {},
     current_claim_token = 0,
     manual_claim_token = 0,
     source_windows = vim.deepcopy(opts.source_windows or { opts.origin_win }),
@@ -181,10 +182,8 @@ function Session:_stage_state(opts)
     locator = locator,
     store = store,
   }
-  state.keymaps = self._keymaps_factory()
   state.sidebar = self._sidebar_factory(config)
   state.lsp = self._lsp_factory(locator, config)
-  state.presenter = self._presenter_factory(config)
   return state
 end
 
@@ -231,16 +230,37 @@ function Session:_notify_outcome(outcome)
   end
 end
 
-function Session:_apply_source_mappings(state, bufnr)
-  bufnr = bufnr or state.origin_buf
-  if not self:_eligible_buffer(state, bufnr) then
+function Session:_observe_lsp_request(state, args)
+  if self._recording > 0 then
     return
   end
-  state.keymaps:apply_buffer(bufnr, state.generation, state.config.lsp_keymaps, function(action_name)
-    return function()
-      self:run_action(action_name)
+  local data = type(args.data) == "table" and args.data or {}
+  local request = type(data.request) == "table" and data.request or nil
+  if not request or request.type ~= "pending" then
+    return
+  end
+  local action_name = Actions.by_method(request.method)
+  if not action_name or action_name == "manual" then
+    return
+  end
+  local runtime = self._runtime
+  local winid = runtime.current_win()
+  if request.bufnr ~= runtime.current_buf() or not self:_eligible_window(state, winid) then
+    return
+  end
+  if state.observer_pending[action_name] then
+    return
+  end
+  state.observer_pending[action_name] = true
+  runtime.schedule(function()
+    if self._state == state then
+      state.observer_pending[action_name] = nil
     end
   end)
+  local recorded, record_error = pcall(self.run_action, self, action_name)
+  if not recorded then
+    self._ui.notify("Voyager: could not record " .. action_name .. ": " .. tostring(record_error), vim.log.levels.ERROR)
+  end
 end
 
 function Session:_valid_state(state, generation)
@@ -266,15 +286,12 @@ function Session:_register_autocmds(state)
     end
   end
 
-  for _, event in ipairs({ "BufEnter", "LspAttach" }) do
-    runtime.create_autocmd(event, {
-      group = state.autocmd_group,
-      callback = guarded(function(args)
-        local bufnr = args.buf or runtime.current_buf()
-        self:_apply_source_mappings(state, bufnr)
-      end),
-    })
-  end
+  runtime.create_autocmd("LspRequest", {
+    group = state.autocmd_group,
+    callback = guarded(function(args)
+      self:_observe_lsp_request(state, args)
+    end),
+  })
   runtime.create_autocmd("WinEnter", {
     group = state.autocmd_group,
     callback = guarded(function()
@@ -285,7 +302,7 @@ function Session:_register_autocmds(state)
   runtime.create_autocmd("CursorMoved", {
     group = state.autocmd_group,
     callback = guarded(function()
-      state.presenter:on_cursor_moved(runtime.current_win())
+      self:_check_destination_claim(state, runtime.current_win())
     end),
   })
   runtime.create_autocmd("WinClosed", {
@@ -387,7 +404,6 @@ function Session:open()
   self._generation = generation
   self._state = staged
   self:_register_autocmds(staged)
-  self:_apply_source_mappings(staged)
   self:_render(staged)
   return true
 end
@@ -456,11 +472,6 @@ function Session:_action_context(state, winid, bufnr)
     manual_location = vim.deepcopy(captured)
   end
 
-  local from = vim.deepcopy(self._runtime.getpos(winid))
-  from[1] = bufnr
-  local tagname = select(1, self._runtime.word_at_cursor(bufnr, winid))
-  tagname = type(tagname) == "string" and vim.trim(tagname) or ""
-
   return {
     generation = state.generation,
     flow_id = state.flow.flow_id,
@@ -473,8 +484,6 @@ function Session:_action_context(state, winid, bufnr)
     cursor_locator = vim.deepcopy(captured.locator),
     cursor_range = vim.deepcopy(captured.range),
     manual_location = manual_location,
-    from = from,
-    tagname = tagname ~= "" and tagname or "<anonymous>",
   }
 end
 
@@ -546,7 +555,8 @@ function Session:run_action(action_name)
   state.request_token = state.request_token + 1
   local request_token = state.request_token
   context.request_token = request_token
-  state.presentation_token = request_token
+  state.tracking_token = request_token
+  state.destination_claim = nil
   state.current_claim_token = request_token
   state.manual_claim_token = context.manual_location and request_token or 0
 
@@ -602,9 +612,9 @@ function Session:run_action(action_name)
       and #tagged_items > 0
       and self:_valid_state(state, generation)
       and state.flow.flow_id == flow_id
-      and state.presentation_token == request_token
+      and state.tracking_token == request_token
     then
-      state.presenter:present(context, tagged_items, outcome.action or action)
+      self:_arm_destination_claim(state, context, tagged_items)
     end
   end
 
@@ -647,11 +657,7 @@ function Session:run_action(action_name)
   return handle
 end
 
-function Session:set_current(node_id)
-  if not self:is_active() then
-    return false
-  end
-  local state = self._state
+function Session:_make_current(state, node_id)
   if not state.flow:location(node_id) then
     return false
   end
@@ -662,6 +668,83 @@ function Session:set_current(node_id)
   state.manual_claim_token = 0
   self:_render(state)
   return true
+end
+
+function Session:set_current(node_id)
+  if not self:is_active() then
+    return false
+  end
+  local state = self._state
+  state.destination_claim = nil
+  return self:_make_current(state, node_id)
+end
+
+function Session:_arm_destination_claim(state, context, tagged_items)
+  local targets = {}
+  for _, item in ipairs(tagged_items) do
+    local list_item = item.list_item
+    if
+      type(item.node_id) == "string"
+      and type(list_item) == "table"
+      and type(list_item.lnum) == "number"
+      and type(list_item.col) == "number"
+    then
+      table.insert(targets, {
+        node_id = item.node_id,
+        bufnr = list_item.bufnr,
+        filename = list_item.filename,
+        lnum = list_item.lnum,
+        col = list_item.col,
+      })
+    end
+  end
+  if #targets == 0 then
+    state.destination_claim = nil
+    return
+  end
+  state.destination_claim = {
+    generation = state.generation,
+    flow_id = state.flow.flow_id,
+    request_token = context.request_token,
+    targets = targets,
+  }
+end
+
+function Session:_check_destination_claim(state, winid)
+  local claim = state.destination_claim
+  if not claim then
+    return
+  end
+  if
+    claim.generation ~= state.generation
+    or claim.flow_id ~= state.flow.flow_id
+    or claim.request_token ~= state.tracking_token
+  then
+    state.destination_claim = nil
+    return
+  end
+  if not self:_eligible_window(state, winid) then
+    return
+  end
+  local runtime = self._runtime
+  local bufnr = runtime.win_buf(winid)
+  local cursor = runtime.cursor(winid)
+  local buffer_path
+  for _, target in ipairs(claim.targets) do
+    if cursor.line == target.lnum - 1 and cursor.character == target.col - 1 then
+      local matches = false
+      if type(target.bufnr) == "number" then
+        matches = target.bufnr == bufnr
+      elseif type(target.filename) == "string" then
+        buffer_path = buffer_path or realpath(runtime, runtime.buffer_name(bufnr))
+        matches = buffer_path == realpath(runtime, target.filename)
+      end
+      if matches then
+        self:_make_current(state, target.node_id)
+        return
+      end
+    end
+  end
 end
 
 function Session:_replace_interaction_token(kind)
@@ -829,7 +912,8 @@ function Session:_invalidate_interactions(state)
   state.interaction_tokens = {}
   self._interaction_counter = self._interaction_counter + 1
   self._interaction_tokens = {}
-  state.presentation_token = state.presentation_token + 1
+  state.tracking_token = state.tracking_token + 1
+  state.destination_claim = nil
   state.current_claim_token = state.current_claim_token + 1
   state.manual_claim_token = state.manual_claim_token + 1
 end
@@ -1018,8 +1102,6 @@ function Session:_install_loaded_flow(candidate, project_root_value, config, loc
     end
     old.request_handles = {}
     old.request_count = 0
-    old.presenter:invalidate()
-    old.keymaps:restore_all(previous_generation)
     self:_delete_autocmds(old)
   else
     self._interaction_counter = self._interaction_counter + 1
@@ -1029,7 +1111,6 @@ function Session:_install_loaded_flow(candidate, project_root_value, config, loc
   self._generation = staged.generation
   self._state = staged
   self:_register_autocmds(staged)
-  self:_apply_source_mappings(staged)
   self:_render(staged)
   self:_jump_loaded_current(staged)
   return true
@@ -1122,10 +1203,8 @@ function Session:_teardown(source)
   end
   state.request_handles = {}
   state.request_count = 0
-  state.presenter:invalidate()
   self:_delete_autocmds(state)
   state.sidebar:unmount({ owned = true })
-  state.keymaps:restore_all(previous_generation)
   if owned_focus and fallback and self._runtime.win_valid(fallback) then
     self._runtime.set_current_win(fallback)
   end
@@ -1155,24 +1234,31 @@ function Session:shutdown()
   return self:_teardown("shutdown")
 end
 
-function Session:_resolve_location(node_id)
-  if not self:is_active() then
-    return nil
-  end
-  return self._state.flow:location(node_id)
-end
-
 function M.native(config_provider, runtime, overrides)
   local Store = require("voyager.store")
   local Schema = require("voyager.schema")
   local Flow = require("voyager.flow")
-  local Keymaps = require("voyager.keymaps")
   local Sidebar = require("voyager.sidebar")
   local Actions = require("voyager.lsp.actions")
   local Normalize = require("voyager.lsp.normalize")
   local RequestGroup = require("voyager.lsp.request_group")
   local Lsp = require("voyager.lsp")
-  local Presentation = require("voyager.lsp.presentation")
+
+  local controller
+  -- Every Voyager-originated client request is dispatched synchronously inside
+  -- request_group.start, so this counter is what lets the LspRequest observer
+  -- distinguish the user's navigation from Voyager's own recording traffic.
+  local recording_request_group = {
+    start = function(request_opts)
+      controller._recording = controller._recording + 1
+      local started, result = pcall(RequestGroup.start, request_opts)
+      controller._recording = controller._recording - 1
+      if not started then
+        error(result, 0)
+      end
+      return result
+    end,
+  }
 
   local factories = vim.tbl_extend("force", {
     flow = Flow,
@@ -1182,9 +1268,6 @@ function M.native(config_provider, runtime, overrides)
     store = function(locator)
       return Store.new({ runtime = runtime, schema = Schema, locator = locator, flow = Flow })
     end,
-    keymaps = function()
-      return Keymaps.new({ notify = runtime.notify })
-    end,
     sidebar = function(opts)
       return Sidebar.new(opts)
     end,
@@ -1192,26 +1275,24 @@ function M.native(config_provider, runtime, overrides)
       return Lsp.new({
         actions = Actions,
         normalizer = Normalize.new({ locator = locator }),
-        request_group = RequestGroup,
+        request_group = recording_request_group,
         get_clients = runtime.get_clients,
         make_position_params = runtime.make_position_params,
         timer = runtime.timer,
-        select = runtime.select,
+        select = function(items, _, on_choice)
+          local first = type(items) == "table" and items[1] or nil
+          on_choice(first, first ~= nil and 1 or nil)
+        end,
       })
-    end,
-    presenter = function(opts)
-      return Presentation.new(opts)
     end,
   }, overrides or {})
 
-  local controller
   controller = M.new({
     config_provider = config_provider,
     runtime = runtime,
     flow = factories.flow,
     locator_factory = factories.locator,
     store_factory = factories.store,
-    keymaps_factory = factories.keymaps,
     sidebar_factory = function(config)
       return factories.sidebar({
         sidebar = config.sidebar,
@@ -1243,21 +1324,6 @@ function M.native(config_provider, runtime, overrides)
       })
     end,
     lsp_factory = factories.lsp,
-    presenter_factory = function(config)
-      return factories.presenter({
-        navigation = config.navigation,
-        resolve_node = function(node_id)
-          return controller:_resolve_location(node_id)
-        end,
-        choose_window = function()
-          return controller:choose_jump_window()
-        end,
-        set_current = function(node_id)
-          return controller:set_current(node_id)
-        end,
-        notify = runtime.notify,
-      })
-    end,
     ui = { input = runtime.input, select = runtime.select, notify = runtime.notify },
   })
   return controller

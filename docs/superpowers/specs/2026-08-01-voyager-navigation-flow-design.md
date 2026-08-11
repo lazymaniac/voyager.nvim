@@ -6,9 +6,9 @@
 
 ## Summary
 
-Voyager is a project-local code exploration notebook for Neovim. Opening it starts a new, unsaved flow at the current symbol and shows that flow in a small right-side popup. While the session is active, Voyager's buffer-local LSP mappings use Neovim's native LSP entry points, preserve their normal jump or list behavior, and record every normalizable final destination from each non-superseded action as a branch in the flow.
+Voyager is a project-local code exploration notebook for Neovim. Opening it starts a new, unsaved flow at the current symbol and shows that flow in a small right-side popup. While the session is active, Voyager installs no mappings at all: it passively observes the editor's own LSP traffic through the `LspRequest` autocmd, and whenever the user's navigation sends a supported method from the edited buffer it records every normalizable final destination of its own read-only request as a branch in the flow. The user-visible LSP behavior is never altered.
 
-The user can revisit any earlier location, run another LSP action, annotate important locations, explicitly save the flow as JSON, and later load a saved flow from a picker. Closing Voyager removes its popup, autocmds, requests, and temporary mappings. Intentional navigation performed during the session remains in the user's buffers, cursor history, jumplist, and result lists.
+The user can revisit any earlier location, run another LSP action, annotate important locations, explicitly save the flow as JSON, and later load a saved flow from a picker. Closing Voyager removes its popup, autocmds, and requests. Intentional navigation performed during the session remains in the user's buffers, cursor history, jumplist, and result lists.
 
 ## Context and problem
 
@@ -19,19 +19,19 @@ The finished first release needs one coherent mental model: an exploration is a 
 ## Goals
 
 - Show a compact, non-modal flow tree beside the user's existing editor layout.
-- Record definition, declaration, references, implementation, type-definition, incoming-call, and outgoing-call navigation performed through Voyager while a session is active.
-- Preserve every normalizable final navigation destination, including alternatives the user did not initially select; call hierarchy preserves every result for the prepared item the user selects.
+- Record definition, declaration, references, implementation, type-definition, incoming-call, and outgoing-call navigation observed while a session is active, however the user triggers it.
+- Preserve every normalizable final navigation destination, including alternatives the user did not initially select; call hierarchy preserves every result for the recorded prepared item.
 - Let users return to an earlier node and extend a different branch without losing prior work.
 - Attach editable free-text notes to individual location nodes.
 - Save and merge flows explicitly in project-local, human-readable JSON files.
-- Remove Voyager-owned mappings, windows, autocmds, and request state idempotently on close, restoring pre-session local mapping semantics when still owned.
+- Remove Voyager-owned windows, autocmds, and request state idempotently on close; Voyager never installs or restores user mappings.
 - Ship with deterministic tests, accurate help, and release metadata.
 
 ## Non-goals
 
 - Supporting Neovim versions older than the current target, 0.12.4.
 - Globally replacing or monkey-patching `vim.lsp.buf.*`.
-- Observing arbitrary LSP calls made by unrelated mappings or plugins.
+- Attributing an observed request to a specific mapping or plugin; any pending request for a supported method from the currently edited, eligible buffer is treated as navigation and recorded.
 - Autosave, cloud sync, or cross-project flow storage.
 - Coordinating simultaneous writes to the same flow from multiple Neovim processes; sequential saves always merge the latest document, while a true same-instant race is last-rename-wins.
 - Persisting a non-file LSP URI that cannot provide source text through an existing buffer or `storage.resolve_uri` at capture time.
@@ -46,33 +46,33 @@ The finished first release needs one coherent mental model: an exploration is a 
 
 The initial root-only flow is not considered modified. Dirty means any persisted value changed: a new action or result, refreshed display metadata, a note edit or clear, a collapse toggle, or a different current node. A no-op note submission, an identical already-known result, selecting the already-current node, and repeating an existing empty result do not mark the flow dirty. Closing or replacing a dirty flow prompts to save, discard, or cancel. An untouched root-only flow closes without a prompt. If save from that prompt fails, the flow remains open and dirty.
 
-`:VoyagerClose`, `q`, and `<Esc>` close the session. Lifecycle is a serialized state machine: `active`, `deciding`, `saving`, `closing`, then `closed`. The first close/load intent entering `deciding` wins; later lifecycle requests are ignored with an informational notification until that transition resolves, so they cannot replace its callback or open another prompt. Close is idempotent: it cancels the session generation, removes session autocmds, closes only Voyager-owned windows, and restores every mapping snapshot once. `VimLeavePre` performs teardown without a prompt or autosave; the explicit-save policy means an unsaved in-memory flow is discarded when Neovim itself exits.
+`:VoyagerClose`, `q`, and `<Esc>` close the session. Lifecycle is a serialized state machine: `active`, `deciding`, `saving`, `closing`, then `closed`. The first close/load intent entering `deciding` wins; later lifecycle requests are ignored with an informational notification until that transition resolves, so they cannot replace its callback or open another prompt. Close is idempotent: it cancels the session generation, removes session autocmds, and closes only Voyager-owned windows. `VimLeavePre` performs teardown without a prompt or autosave; the explicit-save policy means an unsaved in-memory flow is discarded when Neovim itself exits.
 
 ### Exploring code
 
-Voyager supplies configurable buffer-local mappings for these actions while active:
+Voyager records these actions while active, whichever mapping, picker, or command triggers them:
 
-| Action | LSP method | Default key |
-| --- | --- | --- |
-| Definition | `textDocument/definition` | `gd` |
-| Declaration | `textDocument/declaration` | `gD` |
-| References | `textDocument/references` | `grr` |
-| Implementations | `textDocument/implementation` | `gri` |
-| Type definition | `textDocument/typeDefinition` | `grt` |
-| Incoming calls | `callHierarchy/incomingCalls` | `gC` |
-| Outgoing calls | `callHierarchy/outgoingCalls` | `gG` |
+| Action | LSP method |
+| --- | --- |
+| Definition | `textDocument/definition` |
+| Declaration | `textDocument/declaration` |
+| References | `textDocument/references` |
+| Implementations | `textDocument/implementation` |
+| Type definition | `textDocument/typeDefinition` |
+| Incoming calls | `callHierarchy/incomingCalls` |
+| Outgoing calls | `callHierarchy/outgoingCalls` |
 
-Running an action from a source location creates or updates an action group below that location. The group shows every unique returned destination. Presentation mirrors Neovim 0.12.4: definition, declaration, implementation, and type-definition jump when exactly one location is returned and otherwise open a quickfix or configured location list; references and call hierarchy open the list for every non-empty result set. When the user opens a returned destination, Voyager marks the matching location as current. Selecting a location in the sidebar also jumps there and makes it current.
+Running an action from a source location creates or updates an action group below that location. The group shows every unique returned destination. Voyager never presents LSP results and never intercepts the trigger: the user's own mapping, Neovim's built-in `gr*` defaults, or a picker plugin performs the visible navigation while Voyager records concurrently. When the user then lands exactly on a returned destination in a normal source window, Voyager marks the matching location as current. Selecting a location in the sidebar also jumps there and makes it current.
 
-Before attaching an action, Voyager compares both the source locator and cursor with the current location. A non-empty range is start-inclusive/end-exclusive; a zero-width range matches only exact start equality. A matching cursor uses the current node. Otherwise Voyager stages a synthetic `manual jump` action directly below the current node and a location for the actual cursor, then uses that staged location as the LSP origin. The connector and LSP action commit together only on successful completion, including an empty success; failure, unsupported methods, picker cancellation, or supersession discard both. Ordinary cursor movement is never recorded. This keeps the active branch unambiguous even when the same physical location also appears elsewhere in the tree.
+Before attaching an action, Voyager compares both the source locator and cursor with the current location. A non-empty range is start-inclusive/end-exclusive; a zero-width range matches only exact start equality. A matching cursor uses the current node. Otherwise Voyager stages a synthetic `manual jump` action directly below the current node and a location for the actual cursor, then uses that staged location as the LSP origin. The connector and LSP action commit together only on successful completion, including an empty success; failure, unsupported methods, or supersession discard both. Ordinary cursor movement is never recorded. This keeps the active branch unambiguous even when the same physical location also appears elsewhere in the tree.
 
-A staged manual origin carries a current-claim token. If that claim still owns current/presentation when the action commits, the manual location becomes current before presentation; a selected or single-jump result then overrides it. Empty/list results leave the manual location current until a destination is selected. A newer action or explicit current-node change invalidates the claim, so an older completion may add its branch but never move current.
+A staged manual origin carries a current-claim token. If that claim still owns current when the action commits, the manual location becomes current at commit time; a later cursor landing on one of the recorded destinations then overrides it. Empty results leave the manual location current. A newer action or explicit current-node change invalidates the claim, so an older completion may add its branch but never move current.
 
 The user may select any earlier location and continue exploring from it. Existing action groups and destinations stay in place, so revisiting an ancestor creates a sibling path instead of replacing the old path.
 
 ### Sidebar interaction
 
-The default popup is a NUI floating window with its own `nofile` scratch buffer, relative to the editor, anchored to the right edge, and leaves the source window visible underneath. Voyager never mounts a user buffer into its UI or changes source buffer options, split sizes, `modifiable`, or `readonly`. It is 42 columns wide by default and uses the available editor height between the tabline and command line. Width, side, and border are configurable. Geometry requires at least 24 columns and 4 available rows; initial mount is atomic and creates no session if that check fails. If `VimResized` makes an active popup invalid, Voyager unmounts it under the remount guard but keeps the session; a later valid resize remounts it without taking focus. Every Open/Focus/TabEnter/cancel remount revalidates geometry; while still invalid it notifies and keeps the session hidden rather than focusing or mounting a bad window. Otherwise width is capped so at least two source columns remain. LSP completion rerenders the popup but never steals focus from the source window.
+The default popup is a NUI floating window with its own `nofile` scratch buffer, relative to the editor, anchored to the configured edge, and leaves the source window visible underneath. Voyager never mounts a user buffer into its UI or changes source buffer options, split sizes, `modifiable`, or `readonly`. The popup fits its rendered content: each render measures the projected lines and resizes the float, so a small flow occupies a small card instead of a full column. Content is capped by the configured maximum width (42 by default) and the available editor height between the tabline and command line, with a minimum footprint that keeps the header readable. Maximum width, side, border, and icons are configurable. The envelope requires at least 24 columns and 4 available rows; initial mount is atomic and creates no session if that check fails. If `VimResized` makes an active popup invalid, Voyager unmounts it under the remount guard but keeps the session; a later valid resize remounts it without taking focus. Every Open/Focus/TabEnter/cancel remount revalidates geometry; while still invalid it notifies and keeps the session hidden rather than focusing or mounting a bad window. Otherwise width is capped so at least two source columns remain. LSP completion rerenders the popup but never steals focus from the source window.
 
 There is one process-wide session and one popup window. The project root remains the root captured at open or load. On `TabEnter`, Voyager remounts the popup in the active tab without changing source focus. A `popup_remounting` guard distinguishes that owned close from an external `WinClosed`, so tab changes do not end the session. Closing a source window merely clears that focus candidate.
 
@@ -89,7 +89,7 @@ Default sidebar mappings are:
 | `za` | Collapse or expand the selected action subtree |
 | `q`, `<Esc>` | Close Voyager |
 
-Location rows show symbol, one-based line, and a project-relative path, compact absolute path, or URI as appropriate. The current location has a distinct marker. Action rows show a human label and result count, for example `implementations (3)`. A collapsed action containing the current node carries a descendant-current marker. A note appears on a second indented row with a pencil marker and is truncated to the popup width. Empty-result actions remain visible as `references (0)`. Stale locations remain visible with a stale marker.
+Location rows show symbol, one-based line, and a project-relative path, compact absolute path, or URI as appropriate. The current location has a distinct marker. Action rows show a disclosure marker, a per-method icon, a human label, and a result count, for example `implementations (3)`. Icons default to Nerd Font glyphs from the classic Font Awesome range; `sidebar.icons = false` switches to plain-text markers and a table merges per-icon overrides. A collapsed action containing the current node carries a descendant-current marker. A note appears on a second indented row with a pencil marker and is truncated to the popup width. Empty-result actions remain visible as `references (0)`. Stale locations remain visible with a stale marker.
 
 `n` calls `vim.ui.input` with the existing note prefilled. Notes are stored as one trimmed UTF-8 line; CR/LF runs from a custom input provider become one space. A non-empty normalized response replaces the note, while an empty one removes it. Cancelling input leaves the note unchanged. The callback captures the session generation, flow ID, node ID, and a note-input token; close, load, or a newer input invalidates it so a late provider callback cannot edit a replaced flow.
 
@@ -112,7 +112,7 @@ flowchart LR
 
 ### `session.lua`
 
-Owns the single active session: flow, current node, dirty state, request generation, popup lifecycle, autocmd group, source buffers, and restorable mapping snapshots. It is the only module allowed to start or close a session. Repeated open, load replacement, focus transfer, late callbacks, and idempotent teardown are resolved here.
+Owns the single active session: flow, current node, dirty state, request generation, popup lifecycle, autocmd group, source buffers, the LspRequest observer, and the destination claim. It is the only module allowed to start or close a session. Repeated open, load replacement, focus transfer, late callbacks, and idempotent teardown are resolved here.
 
 ### `flow.lua`
 
@@ -120,7 +120,7 @@ Defines and mutates the in-memory tree. It creates location and action nodes, in
 
 ### `lsp.lua`
 
-Defines the action registry and adapters. Standard location actions snapshot supporting clients and use each native `vim.lsp.Client:request` API so Voyager receives raw results/errors independently and can finalize a hung-client deadline without losing completed responses. They then reproduce Neovim 0.12.4's high-level jump/list behavior or invoke the configured presentation callback. Call hierarchy uses the protocol's required two-stage request. This module normalizes client responses into Voyager locations and reports request success, partial failure, empty success, timeout, or total failure to the session.
+Defines the action registry and adapters. Standard location actions snapshot supporting clients and use each native `vim.lsp.Client:request` API so Voyager receives raw results/errors independently and can finalize a hung-client deadline without losing completed responses. The adapters only record; presentation belongs to the delegated key behavior. Call hierarchy uses the protocol's required two-stage request. This module normalizes client responses into Voyager locations and reports request success, partial failure, empty success, timeout, or total failure to the session.
 
 ### `sidebar.lua`
 
@@ -175,23 +175,21 @@ There is exactly one logical saved flow per root identity; another exploration f
 
 ## LSP integration
 
-### Session-scoped mappings
+### Passive request observation
 
-Voyager does not patch global APIs. Eligible source buffers are listed normal file buffers that are either under the session project root or correspond to a location already present in the active flow. This permits continued exploration into an external dependency reached through LSP without mapping unrelated projects. Voyager-owned, terminal, prompt, and other special buffers are excluded. When a session starts, it snapshots the existing buffer-local mapping for each configured LSP key in the origin buffer, including callback/RHS and mapping flags, then installs a buffer-local Voyager wrapper. A registry keyed by session generation, buffer, mode, and LHS makes this operation idempotent, so `BufEnter` and `LspAttach` can safely apply it to additional eligible buffers without replacing the original snapshot. A global mapping needs no snapshot because deleting Voyager's local wrapper reveals it again.
+Voyager does not patch global APIs and installs no mappings. Eligible source buffers are listed normal file buffers that are either under the session project root or correspond to a location already present in the active flow. This permits continued exploration into an external dependency reached through LSP without observing unrelated projects. Voyager-owned, terminal, prompt, and other special buffers are excluded.
 
-On close, Voyager restores a snapshot only when the current buffer-local mapping is still the wrapper installed by that session. If no prior local mapping existed, it only deletes its wrapper. If another owner changed the same key during the session, Voyager leaves that newer mapping intact and warns instead of overwriting it. Restoration recreates the callback or RHS, description, expression/remap, silent, nowait, script, and replace-keycode behavior exposed by public setters. Read-only source provenance such as SID, source line, and script version cannot be recreated and is explicitly outside the guarantee.
+A session-scoped `LspRequest` autocmd watches every request any client sends. A `pending` event for a supported navigation method triggers recording when the request's buffer is the current buffer, the current window is eligible, and the event was not produced by Voyager itself. Because Neovim dispatches every Voyager-originated `client:request` synchronously inside the shared request-group stage, a recording-depth counter incremented around that stage cleanly separates Voyager's own traffic — including asynchronous call-hierarchy follow-ups — from the user's. Native multi-client functions send one request per client in the same tick, so a per-action suppression flag cleared on the next scheduler tick coalesces those duplicates into one logical recording. The observed event supplies only the method and buffer; the recording captures its origin from the current cursor, which is where the user's own navigation was just invoked.
 
-The mapping wrapper captures the current source location and current flow node ID as the request origin, then delegates to the relevant adapter. The adapter snapshots supporting clients and sends one `client:request` per client with position parameters generated from the captured window and that client's `offset_encoding`. References alone add `{ includeDeclaration = true }`. Async callbacks retain IDs, never Lua node-table references, and resolve them against the active flow at mutation time.
+The recording adapter captures the current source location and current flow node ID as the request origin. It snapshots supporting clients and sends one `client:request` per client with position parameters generated from the captured window and that client's `offset_encoding`. References alone add `{ includeDeclaration = true }`. Async callbacks retain IDs, never Lua node-table references, and resolve them against the active flow at mutation time. Recording failures are reported and never affect the user's in-flight navigation.
 
-Voyager cannot use the high-level functions' `on_list` option as its capture mechanism: in Neovim 0.12.4 that callback replaces the default jump/list behavior, is not invoked for an empty aggregate result, and does not expose per-client errors. Owning native per-client callbacks is therefore required for the approved empty, partial-error, timeout, and total-error behavior. After recording, Voyager builds the same `vim.lsp.LocationOpts.OnList` shape and either invokes `navigation.on_list` or performs the pinned default presentation described above.
-
-Like Neovim's high-level option, a configured `navigation.on_list` receives every non-empty presentation set, including a single definition, and replaces the default jump/quickfix/location-list presenter. `navigation.loclist` and `reuse_win` apply only when `on_list` is nil.
+Voyager cannot use the high-level functions' `on_list` option as its capture mechanism: in Neovim 0.12.4 that callback replaces the default jump/list behavior, is not invoked for an empty aggregate result, and does not expose per-client errors. Owning native per-client callbacks is therefore required for the approved empty, partial-error, timeout, and total-error behavior, and it keeps the recording request fully separate from the user's presentation.
 
 ### Normalization
 
 The adapter accepts singleton or list responses from one or more clients. Both `Location` and `LocationLink` are converted to one structure. For `LocationLink`, `targetSelectionRange` is the navigation and deduplication range, falling back to `targetRange`; for `Location`, `range` is used. Each responding client's range is converted from its `offset_encoding` to canonical zero-based UTF-8 byte positions before deduplication or persistence. Conversion reads an exact loaded target buffer first so unsaved text matches the server snapshot, then falls back to the filesystem adapter for an unloaded file without creating a listed buffer. Non-file URIs use the resolver rule above; an unresolved item is an invalid/omitted item for that client's otherwise successful response. A destination buffer is created or loaded only when the user jumps. Jumping can then use Neovim byte columns safely, while new requests still generate positions in the target client's encoding.
 
-Multi-client responses are processed by client name then client ID, preserving each server's result order. Voyager keeps two views: presentation items retain every normalized raw location, including duplicates, while flow locations deduplicate by locator key and canonical selection range. Each presentation item maps to its deduplicated flow node ID. Jump-versus-list decisions use the raw presentation count, matching Neovim when two clients return the same target; tree counts remain unique destination counts.
+Multi-client responses are processed by client name then client ID, preserving each server's result order. Voyager keeps two views: presentation items retain every normalized raw location, including duplicates, while flow locations deduplicate by locator key and canonical selection range. Each presentation item maps to its deduplicated flow node ID and feeds the destination claim; tree counts remain unique destination counts.
 
 If at least one client succeeds, valid results are recorded and protocol, timeout, or normalization failures produce one summarized notification. A client returning a truly empty result still counts as success. If all clients fail normalization/protocol/timeout or no client supports the method, the tree is not mutated.
 
@@ -200,24 +198,22 @@ If at least one client succeeds, valid results are recorded and protocol, timeou
 Incoming and outgoing calls use a custom adapter because the native call-hierarchy functions do not expose a capture callback. The adapter mirrors Neovim's two-stage, same-client flow:
 
 1. sends `textDocument/prepareCallHierarchy` at the origin;
-2. continues directly when exactly one `CallHierarchyItem` exists, or uses `vim.ui.select` when multiple prepared items exist;
+2. continues directly when exactly one `CallHierarchyItem` exists, and silently selects the first prepared item when several exist, because recording must not add UI on top of the delegated key behavior;
 3. sends `callHierarchy/incomingCalls` or `callHierarchy/outgoingCalls` to the same client for the selected item;
 4. converts incoming `fromRanges` using `call.from.uri` and outgoing `fromRanges` using the selected prepared item's origin URI, labelling them with `call.from.name` or `call.to.name` respectively;
-5. records the complete deduplicated follow-up result and opens the configured result list only when at least one presentation item exists.
+5. records the complete deduplicated follow-up result without presenting anything.
 
-The adapter retains `(client_id, item, response_index)` through the picker so client-specific item data is returned only to its originating client. A successful prepare or follow-up with no locations creates the visible zero-result action but does not open an empty quickfix/location list. This is an intentional usability exception to Neovim 0.12.4's deprecated call-hierarchy response handler. Cancelling the prepare-item picker finalizes the logical request without creating an action or marking the flow dirty. Unsupported prepare or follow-up methods notify the user and do not create an action group.
+The adapter retains `(client_id, item, response_index)` through selection so client-specific item data is returned only to its originating client. A successful prepare or follow-up with no locations creates the visible zero-result action. Unsupported prepare or follow-up methods notify the user and do not create an action group.
 
-Presentation ownership also governs prepare-item pickers. An older action with exactly one prepared item may complete its follow-up and record silently. An older action with multiple prepared items cannot choose without UI, so it finalizes as superseded without mutation. If its picker was already open when a newer action starts, the older picker token is invalidated, any callback is ignored, and the older action finalizes as superseded.
+The prepared-item selector remains an injectable seam with `vim.ui.select` semantics; production wires the non-interactive first-item selector, and interaction-ownership tokens still let an older superseded action finalize without mutation.
 
-Neovim's `vim.ui.select` contract has no cancellation handle. Voyager therefore owns and cancels its callback token, not a third-party provider's window: session teardown invalidates the token and any later selection is ignored. Provider-owned picker UI follows that provider's normal cancel/lifecycle behavior and is excluded from Voyager's window-teardown guarantee.
+### Destination tracking
 
-### Selection tracking
+Each logical action receives a monotonically increasing request token. Because presentation is delegated, Voyager cannot observe which list row or picker entry the user activated; the only universal signal is where the cursor actually lands. When the newest action commits at least one destination, the session arms a destination claim holding the generation, flow ID, request token, and each committed destination's buffer-or-path plus exact start position. On every `CursorMoved` in an eligible normal source window, a cursor sitting exactly on a claimed destination's start makes that node current. The claim stays armed after a match, so stepping through the same result set—`:cnext` in the native quickfix, repeated picker jumps, or any other navigation—keeps updating current until a newer action arms a new claim, an explicit sidebar selection supersedes it, or the flow is replaced or closed.
 
-Each logical action receives a monotonically increasing request token and stores its origin node ID and normalized result identities. A single definition/declaration/implementation/type-definition result is selected immediately after Voyager reproduces the native jump, including Neovim's jumplist and tagstack update. A standard quickfix/location-list item keeps its original `Location` or `LocationLink`, while a call item keeps its original call-hierarchy response; both add a nested Voyager request token and location-node ID in `user_data`. A session observer first arms on an attributable user activation—`<CR>` or double-click in the observed list, or a non-compound user-entered quickfix/location-list jump command recognized at `CmdlineLeave`—then schedules a verifier that requires the same list ID, request/presentation token, active tagged item, and exact entered buffer/cursor before changing current. This prevents unrelated movement to the same coordinate from changing the flow. Neovim exposes no passive event for programmatic `vim.cmd()` jumps or arbitrary `<Cmd>`/Lua callback mappings, so integrations using those paths must configure `navigation.on_list` and call Voyager's supplied `select(item)` callback.
+An exact-position match on the newest action's own destinations is deliberately weaker attribution than list-row observation, and it is the honest trade for never owning presentation: landing on a recorded destination of the action the user just ran is treated as choosing it. Explicitly selecting a node in the sidebar drops the claim so a later coincidental landing cannot override the user's stated choice.
 
-Logical actions may overlap and every non-superseded valid response is recorded beneath its captured origin. The newest-started action alone owns jump/list presentation; an older action completing later updates the tree silently instead of moving the user unexpectedly or replacing the newer list. The newest presented list replaces the prior selection observer. Any older recorded result remains navigable from the sidebar.
-
-If `navigation.on_list` is configured, Voyager calls it as `on_list(list, select)`. `list` has the standard `vim.lsp.LocationOpts.OnList` fields and tagged items; `select(item)` checks the session generation, active presentation token, item tag, and referenced node ID before it jumps and makes that node current. Every default or custom presentation replaces the active presentation token, so an older `select` becomes a no-op after newer presentation, flow replacement, or close. A custom presenter that navigates without calling `select` still records the tree but deliberately leaves the current node unchanged.
+Logical actions may overlap and every non-superseded valid response is recorded beneath its captured origin. The newest-started action alone owns destination tracking; an older action completing later updates the tree silently and never arms a claim. Any older recorded result remains navigable from the sidebar.
 
 ### Async safety
 
@@ -225,7 +221,7 @@ Every logical action captures the active session generation and snapshots its su
 
 Dispatch uses a barrier because an in-process Neovim client may invoke its callback before `client:request` returns. The adapter creates every client slot, starts logical status/deadline ownership, and sets `dispatching` before the first call. A synchronous callback may settle its slot but cannot finalize while the barrier is set. A false/nil dispatch result settles setup failure; a returned request ID attaches only if that slot is still pending. Releasing the barrier after the final dispatch performs the first possible aggregate finalization.
 
-Every asynchronous LSP, note-input, flow-picker, prepare-picker, and dirty-decision callback validates its generation, flow/interaction token, and referenced IDs before acting. Load and close invalidate all outstanding interaction tokens. A late callback may only perform provider-local cleanup; it cannot change the flow, focus, mappings, or Voyager UI.
+Every asynchronous LSP, note-input, flow-picker, and dirty-decision callback validates its generation, flow/interaction token, and referenced IDs before acting. Load and close invalidate all outstanding interaction tokens. A late callback may only perform provider-local cleanup; it cannot change the flow, focus, mappings, or Voyager UI.
 
 The sidebar header owns request status; there is no separate spinner window. A request counter supports overlapping requests, and the exactly-once finalizer decrements it for success, empty success, error, timeout, cancellation, supersession, and setup failure. Successful empty requests create a visible zero-result action. Failed or superseded requests do not mutate the tree. Notifications include the action label and a concise reason.
 
@@ -305,11 +301,11 @@ Saving is explicit through `s` or `:VoyagerSave`. The session keeps the revision
 - matching nodes retain the active tree's IDs so sidebar selections, result-list tags, and in-flight request origins remain valid; saved-only IDs are imported unless they collide, in which case they and any saved references are remapped;
 - `created_at` is preserved, `revision` increments from the latest disk value, and `updated_at` changes only after a successful write.
 
-Production merge, encode, synchronous filesystem write/flush/rename, and active-tree replacement run without yielding inside one Neovim main-loop callback while lifecycle state is `saving`; no LSP, input, or picker callback can interleave with that snapshot. The canonical JSON goes to a uniquely named sibling temporary file, is flushed and closed, then atomically renamed over the destination. On success, the merged tree replaces the active tree, its revision becomes the new base, the mutation journal clears, and the session becomes clean. Because active IDs are retained and async work resolves IDs against the current tree, save is safe while requests or a tagged result list are pending; callbacks that run after save return create a new mutation epoch and mark the flow dirty again. A failed validation, encode, write, or rename removes its temporary file, leaves the prior document untouched, and restores the pre-save dirty state. Simultaneous cross-process writes remain subject to the stated last-rename-wins non-goal.
+Production merge, encode, synchronous filesystem write/flush/rename, and active-tree replacement run without yielding inside one Neovim main-loop callback while lifecycle state is `saving`; no LSP, input, or picker callback can interleave with that snapshot. The canonical JSON goes to a uniquely named sibling temporary file, is flushed and closed, then atomically renamed over the destination. On success, the merged tree replaces the active tree, its revision becomes the new base, the mutation journal clears, and the session becomes clean. Because active IDs are retained and async work resolves IDs against the current tree, save is safe while requests or a destination claim are pending; callbacks that run after save return create a new mutation epoch and mark the flow dirty again. A failed validation, encode, write, or rename removes its temporary file, leaves the prior document untouched, and restores the pre-save dirty state. Simultaneous cross-process writes remain subject to the stated last-rename-wins non-goal.
 
 ### Loading
 
-`L` or `:VoyagerLoad` scans `.voyager/flows/*.json`, validates each supported document and its filename/root hash, and opens `vim.ui.select` with the persisted user-facing flow `name`, relative path, and update time, sorted by update time descending and then name/path ascending. Invalid JSON and unsupported newer schemas are reported and skipped. They are never overwritten automatically. An empty directory gives one informational notification; cancelling the picker changes nothing. Its callback uses the same cancellable session token as the call-hierarchy picker.
+`L` or `:VoyagerLoad` scans `.voyager/flows/*.json`, validates each supported document and its filename/root hash, and opens `vim.ui.select` with the persisted user-facing flow `name`, relative path, and update time, sorted by update time descending and then name/path ascending. Invalid JSON and unsupported newer schemas are reported and skipped. They are never overwritten automatically. An empty directory gives one informational notification; cancelling the picker changes nothing. Its callback uses a cancellable session token.
 
 Loading replaces the current flow only after the dirty-flow prompt succeeds. It jumps the most recently used source window to the saved current node. If that node is stale, Voyager makes the root logically and visually current, jumps there when valid, and marks the flow dirty with a current-node repair so the next explicit save fixes the document. Missing files and out-of-range positions remain in the tree as stale rows. Attempting to open one warns without removing it. A load with a valid current node becomes clean until mutated.
 
@@ -343,21 +339,10 @@ require("voyager").setup({
     width = 42,
     side = "right",
     border = "rounded",
+    icons = true,
   },
   navigation = {
-    loclist = false,
-    reuse_win = false,
     timeout_ms = 10000,
-    on_list = nil,
-  },
-  lsp_keymaps = {
-    definition = "gd",
-    declaration = "gD",
-    references = "grr",
-    implementation = "gri",
-    type_definition = "grt",
-    incoming_calls = "gC",
-    outgoing_calls = "gG",
   },
   sidebar_keymaps = {
     jump_or_toggle = "<CR>",
@@ -376,22 +361,22 @@ vim.keymap.set("n", "<leader>vo", "<cmd>VoyagerOpen<cr>")
 vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 ```
 
-An LSP mapping value is `string|false`; `false` disables that action wrapper. A sidebar mapping is `string|string[]|false`. Each enabled string must be a non-empty Neovim-valid normal-mode LHS after keycode normalization, arrays must be non-empty, and enabled mappings within each group must have unique normalized LHS values. `sidebar.side` is `"left"|"right"`; width is an integer of at least 20; border is one of `"none"`, `"single"`, `"double"`, `"rounded"`, `"solid"`, or `"shadow"`; `navigation.loclist` and `reuse_win` are booleans; `navigation.timeout_ms` is an integer from 100 through 120000 and cannot be disabled; `navigation.on_list` is `nil` or the callback contract defined under selection tracking; and `storage.resolve_uri` is `nil` or `fun(uri:string): integer?` returning a valid loaded buffer. `setup` validates all fields immediately with path-specific errors. Configuration changed during an active session applies to the next session, avoiding partial remapping.
+A sidebar mapping is `string|string[]|false`. Each enabled string must be a non-empty Neovim-valid normal-mode LHS after keycode normalization, arrays must be non-empty, and enabled mappings must have unique normalized LHS values. `sidebar.side` is `"left"|"right"`; width is the popup's maximum and an integer of at least 20; border is one of `"none"`, `"single"`, `"double"`, `"rounded"`, `"solid"`, or `"shadow"`; `sidebar.icons` is `true` (Nerd Font defaults), `false` (plain text), or a table of string overrides for known icon names; `navigation.timeout_ms` is an integer from 100 through 120000 and cannot be disabled; and `storage.resolve_uri` is `nil` or `fun(uri:string): integer?` returning a valid loaded buffer. `setup` validates all fields immediately with path-specific errors. Configuration changed during an active session applies to the next session, avoiding partial remapping.
 
 No implicit global mappings are created for opening or loading Voyager.
 
 ## Testing and delivery
 
-The stale template test and network-dependent bootstrap are replaced with a deterministic, pinned headless Neovim harness. `make deps` installs exact revisions of `nui.nvim` and the test framework; `make test` performs no cloning and fails promptly with an actionable message when those dependencies are missing. Production modules use small clock, filesystem, input/select, and presentation adapters whose defaults call Neovim; tests inject deterministic implementations.
+The stale template test and network-dependent bootstrap are replaced with a deterministic, pinned headless Neovim harness. `make deps` installs exact revisions of `nui.nvim` and the test framework; `make test` performs no cloning and fails promptly with an actionable message when those dependencies are missing. Production modules use small clock, filesystem, and input/select adapters whose defaults call Neovim; tests inject deterministic implementations.
 
 Coverage is organized by responsibility:
 
 - **Flow model:** insert, repeat action, manual connector, deduplicate, backtrack, sibling branch, note edit/clear, dirty no-ops, collapse, and recursive merge.
-- **Configuration:** defaults, deep merge, invalid types/enums/ranges, empty and duplicate normalized keymaps, disabled mappings, and custom URI resolver validation.
+- **Configuration:** defaults, deep merge, invalid types/enums/ranges, empty and duplicate normalized sidebar keymaps, disabled mappings, icon preset and override resolution, and custom URI resolver validation.
 - **Storage:** schema and root-hash validation including delimiter/Unicode/URI identities, absent optional fields, unknown-key rejection, canonical JSON round trip, sequential-writer revision merge, touched metadata/note/view precedence, ID/current-node remapping, atomic replacement failure, corrupt/newer document handling, project/absolute stale detection, and custom-URI resolver restart behavior.
-- **LSP:** singleton/list and `LocationLink` normalization, mixed UTF-8/UTF-16 clients over Unicode text, duplicate raw presentation mapped to one flow node, unresolved live non-file URIs, references, implementations, both same-client call-hierarchy directions, prepare-picker cancellation/supersession with counter settlement, empty success, partial/total error, hung-client timeout, request-token presentation ownership, and late callback rejection.
-- **Session lifecycle:** repeated open focuses, dirty view-state prompts, owned-mapping behavior restoration, external remap precedence, project/external result buffers, tab remount, external popup close/cancel, save during an active request/result observer, late note/load/decision callbacks, idempotent close, flow replacement, and no late UI mutation.
-- **Sidebar:** stable row order, every row-kind/key combination, collapse fallback, line-to-node mapping, jump behavior, note display/input, selection preservation, tagged result selection, and load picker metadata.
+- **LSP:** singleton/list and `LocationLink` normalization, mixed UTF-8/UTF-16 clients over Unicode text, duplicate raw presentation mapped to one flow node, unresolved live non-file URIs, references, implementations, both same-client call-hierarchy directions, prepare-item supersession with counter settlement, empty success, partial/total error, hung-client timeout, request-token tracking ownership, and late callback rejection.
+- **Session lifecycle:** repeated open focuses, dirty view-state prompts, observed-request recording with duplicate coalescing and self-traffic exclusion, project/external result buffers, tab remount, external popup close/cancel, save during an active request/destination claim, late note/load/decision callbacks, idempotent close, flow replacement, and no late UI mutation.
+- **Sidebar:** stable row order, every row-kind/key combination, collapse fallback, line-to-node mapping, jump behavior, note display/input, selection preservation, icon rendering, content-fit growth and collapse, and load picker metadata.
 
 The repository includes a tiny deterministic LSP fixture server implementing all seven actions and both position encodings. `make test-e2e` starts it against a pinned fixture project and performs the open, branch, note, save, restart, and load journey headlessly. `make test` includes that target. Neither test command depends on a user's language servers.
 
@@ -410,6 +395,6 @@ The implementation is ready when a user can complete this journey in a real LSP-
 3. Return to the root and explore another implementation while the first branch remains visible.
 4. Add a note such as `important for auth` to any location.
 5. Explicitly save, close Neovim, restart, load the flow from the picker, and recover the same branches, notes, collapse state, and current node.
-6. Close Voyager and observe that its popup, mappings, autocmds, and pending requests are gone; the intended navigation position and lists remain; and focus returns only when it was inside Voyager-owned UI.
+6. Close Voyager and observe that its popup, autocmds, and pending requests are gone; the intended navigation position and lists remain; and focus returns only when it was inside Voyager-owned UI.
 
 All automated suites and formatting checks must pass on the pinned target. Unsupported LSP methods, empty results, partial client failure, corrupt storage, stale files, overlapping requests, and callbacks arriving after close must produce the specified behavior without leaked Voyager-owned UI or unintended editor-state mutation.

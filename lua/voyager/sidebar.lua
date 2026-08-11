@@ -1,6 +1,15 @@
+local Actions = require("voyager.lsp.actions")
+
 local M = {}
 local Sidebar = {}
 Sidebar.__index = Sidebar
+
+local function badge(icon)
+  if type(icon) == "string" and icon ~= "" then
+    return icon .. " "
+  end
+  return ""
+end
 
 local function truncate(text, width)
   if width <= 0 then
@@ -56,8 +65,9 @@ local function row(kind, owner_id, text, depth, marker, width)
   }
 end
 
-function M.project(flow, width, status)
+function M.project(flow, width, status, icons)
   status = status or {}
+  assert(type(icons) == "table", "Voyager sidebar icons are required")
   local rows = {}
 
   local visit_location
@@ -68,10 +78,10 @@ function M.project(flow, width, status)
     local glyph = "  "
     if node.id == flow.current_node_id then
       marker = "current"
-      glyph = "● "
+      glyph = badge(icons.current)
     elseif node.stale then
       marker = "stale"
-      glyph = "! "
+      glyph = badge(icons.stale)
     end
     local location = node.location
     local text = string.rep("  ", depth)
@@ -84,7 +94,7 @@ function M.project(flow, width, status)
     table.insert(rows, row("location", node.id, text, depth, marker, width))
     if node.note then
       local note_depth = depth + 1
-      local note_text = string.rep("  ", note_depth) .. "✎ " .. node.note
+      local note_text = string.rep("  ", note_depth) .. badge(icons.note) .. node.note
       table.insert(rows, row("note", node.id, note_text, note_depth, "note", width))
     end
     for _, action in ipairs(node.actions) do
@@ -97,10 +107,18 @@ function M.project(flow, width, status)
     local current_glyph = ""
     if node.collapsed and contains_current(node, flow.current_node_id) then
       marker = "descendant_current"
-      current_glyph = "● "
+      current_glyph = badge(icons.current)
     end
-    local disclosure = node.collapsed and "▸ " or "▾ "
-    local text = string.rep("  ", depth) .. current_glyph .. disclosure .. node.label .. " (" .. #node.results .. ")"
+    local disclosure = badge(node.collapsed and icons.collapsed or icons.expanded)
+    local action_name = Actions.by_method(node.method)
+    local text = string.rep("  ", depth)
+      .. current_glyph
+      .. disclosure
+      .. badge(action_name and icons[action_name])
+      .. node.label
+      .. " ("
+      .. #node.results
+      .. ")"
     table.insert(rows, row("action", node.id, text, depth, marker, width))
     if not node.collapsed then
       for _, result in ipairs(node.results) do
@@ -137,7 +155,7 @@ function M.selection_index(rows, previous_kind, previous_owner_id, hidden_by_act
   return 1
 end
 
-function M.compute_geometry(config, ui_state)
+function M.compute_envelope(config, ui_state)
   if ui_state.columns < 24 then
     return nil, "editor must be at least 24 columns wide"
   end
@@ -147,10 +165,31 @@ function M.compute_geometry(config, ui_state)
     return nil, "editor must have at least 4 usable rows"
   end
 
-  local width = math.min(config.width, ui_state.columns - 2)
   return {
     row = ui_state.tabline_rows,
-    col = config.side == "left" and 0 or ui_state.columns - width,
+    columns = ui_state.columns,
+    side = config.side,
+    max_width = math.min(config.width, ui_state.columns - 2),
+    max_height = height,
+  }
+end
+
+local function border_cells(config)
+  if config.border == "none" then
+    return 0
+  end
+  return 2
+end
+
+function M.fit(config, envelope, content)
+  local cells = border_cells(config)
+  local content_width = content and content.width or 0
+  local content_height = content and content.height or 1
+  local width = math.min(envelope.max_width, math.max(20, content_width + cells))
+  local height = math.min(envelope.max_height, math.max(1 + cells, content_height + cells))
+  return {
+    row = envelope.row,
+    col = envelope.side == "left" and 0 or envelope.columns - width,
     width = width,
     height = height,
   }
@@ -184,19 +223,15 @@ local function native_ui_state()
   }
 end
 
-local function content_size(config, geometry)
-  local border_cells = config.border == "none" and 0 or 2
-  return {
-    width = geometry.width - border_cells,
-    height = geometry.height - border_cells,
-  }
-end
-
 local function popup_layout(config, geometry)
+  local cells = border_cells(config)
   return {
     relative = "editor",
     position = { row = geometry.row, col = geometry.col },
-    size = content_size(config, geometry),
+    size = {
+      width = geometry.width - cells,
+      height = geometry.height - cells,
+    },
   }
 end
 
@@ -254,6 +289,7 @@ end
 function M.new(opts)
   assert(type(opts) == "table", "Voyager sidebar options are required")
   assert(type(opts.sidebar) == "table", "Voyager sidebar configuration is required")
+  assert(type(opts.sidebar.icons) == "table", "Voyager sidebar icons are required")
   assert(type(opts.keymaps) == "table", "Voyager sidebar keymaps are required")
   assert(type(opts.handlers) == "table", "Voyager sidebar handlers are required")
   assert(type(opts.notify) == "function", "Voyager sidebar notification adapter is required")
@@ -354,15 +390,17 @@ function Sidebar:_create_popup(geometry)
   self:_bind_keymaps()
 end
 
-function Sidebar:_open(opts, geometry)
+function Sidebar:_open(opts, envelope)
+  self._envelope = envelope
+  local fitted = M.fit(self._config, envelope, self._content)
   if not self._popup then
-    self:_create_popup(geometry)
+    self:_create_popup(fitted)
     self._popup:mount()
   else
-    self._popup:update_layout(popup_layout(self._config, geometry))
+    self._popup:update_layout(popup_layout(self._config, fitted))
     self._popup:show()
   end
-  self._geometry = geometry
+  self._geometry = fitted
   self._tabpage = opts.tabpage
   self._mounted = true
   self:_bind_winclosed()
@@ -374,8 +412,8 @@ end
 
 function Sidebar:mount(opts)
   opts = opts or {}
-  local geometry, reason = M.compute_geometry(self._config, self._ui_state())
-  if not geometry then
+  local envelope, reason = M.compute_envelope(self._config, self._ui_state())
+  if not envelope then
     return nil, reason
   end
   if self._mounted then
@@ -386,7 +424,7 @@ function Sidebar:mount(opts)
   end
 
   local ok, result = pcall(function()
-    return self:_open(opts, geometry)
+    return self:_open(opts, envelope)
   end)
   if not ok then
     self:unmount({ owned = true })
@@ -397,8 +435,8 @@ end
 
 function Sidebar:remount(opts)
   opts = opts or {}
-  local geometry, reason = M.compute_geometry(self._config, self._ui_state())
-  if not geometry then
+  local envelope, reason = M.compute_envelope(self._config, self._ui_state())
+  if not envelope then
     if self._mounted and self._popup then
       self:_with_internal_close(function()
         self._popup:hide()
@@ -437,14 +475,31 @@ function Sidebar:unmount(opts)
   self._line_to_row = {}
 end
 
+function Sidebar:_fit_to_content(fitted)
+  local geometry = self._geometry
+  if
+    self:is_mounted()
+    and (
+      not geometry
+      or geometry.row ~= fitted.row
+      or geometry.col ~= fitted.col
+      or geometry.width ~= fitted.width
+      or geometry.height ~= fitted.height
+    )
+  then
+    self._popup:update_layout(popup_layout(self._config, fitted))
+    self._geometry = fitted
+  end
+end
+
 function Sidebar:render(flow, status)
   if not self._popup or not self._popup.bufnr or not vim.api.nvim_buf_is_valid(self._popup.bufnr) then
     return
   end
 
   local previous = self:selected_row()
-  local width = content_size(self._config, assert(self._geometry)).width
-  local rows, header = M.project(flow, width, status)
+  local cap = assert(self._envelope).max_width - border_cells(self._config)
+  local rows, header = M.project(flow, cap, status, self._config.icons)
   local hidden_action_id = previous and hidden_by_action(flow, previous.owner_id) or nil
   local selected_index =
     M.selection_index(rows, previous and previous.kind or nil, previous and previous.owner_id or nil, hidden_action_id)
@@ -455,6 +510,13 @@ function Sidebar:render(flow, status)
     table.insert(lines, row_value.text)
     table.insert(line_to_row, row_value)
   end
+
+  local content_width = 0
+  for _, line in ipairs(lines) do
+    content_width = math.max(content_width, vim.fn.strdisplaywidth(line))
+  end
+  self._content = { width = content_width + 1, height = #lines }
+  self:_fit_to_content(M.fit(self._config, self._envelope, self._content))
 
   local bufnr = self._popup.bufnr
   vim.bo[bufnr].readonly = false
