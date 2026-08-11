@@ -117,11 +117,6 @@ function M.native()
       local value = vim.api.nvim_win_get_cursor(winid)
       return { line = value[1] - 1, character = value[2] }
     end,
-    getpos = function(winid)
-      return vim.api.nvim_win_call(winid, function()
-        return vim.fn.getpos(".")
-      end)
-    end,
     word_at_cursor = function(bufnr, winid)
       local result = vim.api.nvim_win_call(winid, function()
         assert(vim.api.nvim_get_current_buf() == bufnr)
@@ -163,6 +158,25 @@ function M.native()
 
     get_clients = vim.lsp.get_clients,
     make_position_params = vim.lsp.util.make_position_params,
+    lsp_fallback = function(action_name)
+      local fallbacks = {
+        definition = vim.lsp.buf.definition,
+        declaration = vim.lsp.buf.declaration,
+        references = function()
+          vim.lsp.buf.references(nil)
+        end,
+        implementation = vim.lsp.buf.implementation,
+        type_definition = vim.lsp.buf.type_definition,
+        incoming_calls = vim.lsp.buf.incoming_calls,
+        outgoing_calls = vim.lsp.buf.outgoing_calls,
+      }
+      local fallback = fallbacks[action_name]
+      if not fallback then
+        return false
+      end
+      fallback()
+      return true
+    end,
     create_augroup = vim.api.nvim_create_augroup,
     delete_augroup = vim.api.nvim_del_augroup_by_id,
     create_autocmd = vim.api.nvim_create_autocmd,

@@ -121,27 +121,6 @@ local function fake_keymaps()
   return keymaps
 end
 
-local function fake_presenter()
-  local presenter = { invalidate_calls = 0, cursor_calls = {}, present_calls = {} }
-  function presenter:invalidate()
-    self.invalidate_calls = self.invalidate_calls + 1
-  end
-  function presenter:on_cursor_moved(winid)
-    table.insert(self.cursor_calls, winid)
-  end
-  function presenter:present(context, items, action)
-    table.insert(self.present_calls, {
-      context = vim.deepcopy(context),
-      items = vim.deepcopy(items),
-      action = vim.deepcopy(action),
-    })
-    if self.on_present then
-      self.on_present(context, items, action)
-    end
-  end
-  return presenter
-end
-
 local function fake_lsp()
   local lsp = { starts = {}, handles = {} }
   function lsp:start(action_name, context, callback)
@@ -205,9 +184,9 @@ function M.new(overrides)
     locator_factory_calls = {},
     store_factory_calls = {},
     lsp_factory_calls = {},
-    presenter_factory_calls = {},
     sidebar_factory_calls = {},
     keymaps_factory_calls = 0,
+    lsp_fallbacks = {},
     cursor_word = "main",
     cursor_word_start = 6,
     cursor_word_end = 10,
@@ -317,12 +296,15 @@ function M.new(overrides)
       local cursor = assert(env.windows[winid]).cursor or { 1, 0 }
       return { line = cursor[1] - 1, character = cursor[2] }
     end,
-    getpos = function(winid)
-      local cursor = assert(env.windows[winid]).cursor or { 1, 0 }
-      return { 0, cursor[1], cursor[2] + 1, 0 }
-    end,
     word_at_cursor = function()
       return env.cursor_word, env.cursor_word_start, env.cursor_word_end
+    end,
+    lsp_fallback = function(action_name)
+      if env.lsp_fallback_error then
+        error(env.lsp_fallback_error)
+      end
+      table.insert(env.lsp_fallbacks, action_name)
+      return true
     end,
     get_clients = function(filter)
       env.last_client_filter = vim.deepcopy(filter)
@@ -394,7 +376,6 @@ function M.new(overrides)
   env.config = Config.resolve()
   env.sidebar = fake_sidebar(env)
   env.keymaps = fake_keymaps()
-  env.presenter = fake_presenter()
   env.lsp = fake_lsp()
   env.locator = {
     _project_root = env.project_root,
@@ -493,9 +474,6 @@ function M.new(overrides)
   function env:new_keymaps()
     return fake_keymaps()
   end
-  function env:new_presenter()
-    return fake_presenter()
-  end
   function env:new_lsp()
     return fake_lsp()
   end
@@ -532,12 +510,6 @@ function M.new(overrides)
         table.insert(env.lsp_factory_calls, { locator = locator, config = vim.deepcopy(config) })
         local value = env.next_lsp or env.lsp
         env.next_lsp = nil
-        return value
-      end,
-      presenter_factory = function(config)
-        table.insert(env.presenter_factory_calls, vim.deepcopy(config))
-        local value = env.next_presenter or env.presenter
-        env.next_presenter = nil
         return value
       end,
       ui = { input = env.runtime.input, select = env.runtime.select, notify = env.runtime.notify },

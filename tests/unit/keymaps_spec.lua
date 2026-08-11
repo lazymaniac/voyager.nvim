@@ -139,6 +139,116 @@ describe("Voyager keymaps", function()
     vim.api.nvim_buf_delete(live, { force = true })
   end)
 
+  it("delegates to the snapshotted local mapping before any global mapping", function()
+    local buffer = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buffer)
+    local invocations = {}
+    vim.keymap.set("n", "gY", function()
+      table.insert(invocations, "local")
+    end, { buffer = buffer })
+    vim.keymap.set("n", "gY", function()
+      table.insert(invocations, "global")
+    end, {})
+
+    local registry = Keymaps.new({ notify = function() end })
+    local delegate
+    registry:apply_buffer(buffer, 13, { references = "gY" }, function(_, delegate_fn)
+      delegate = delegate_fn
+      return function() end
+    end)
+    assert.is_true(delegate())
+    assert.same({ "local" }, invocations)
+
+    registry:restore_all(13)
+    vim.keymap.del("n", "gY")
+    vim.api.nvim_buf_delete(buffer, { force = true })
+  end)
+
+  it("delegates to the live global mapping when no local snapshot exists", function()
+    local buffer = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buffer)
+    local invocations = {}
+    vim.keymap.set("n", "gY", function()
+      table.insert(invocations, "first")
+    end, {})
+
+    local registry = Keymaps.new({ notify = function() end })
+    local delegate
+    registry:apply_buffer(buffer, 14, { references = "gY" }, function(_, delegate_fn)
+      delegate = delegate_fn
+      return function() end
+    end)
+    assert.is_true(delegate())
+    vim.keymap.set("n", "gY", function()
+      table.insert(invocations, "second")
+    end, {})
+    assert.is_true(delegate())
+    assert.same({ "first", "second" }, invocations)
+
+    registry:restore_all(14)
+    vim.keymap.del("n", "gY")
+    vim.api.nvim_buf_delete(buffer, { force = true })
+  end)
+
+  it("reports when no previous mapping exists and surfaces delegation failures", function()
+    local warnings = {}
+    local buffer = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buffer)
+    local registry = Keymaps.new({
+      notify = function(message)
+        table.insert(warnings, message)
+      end,
+    })
+    local delegate
+    registry:apply_buffer(buffer, 15, { references = "gY" }, function(_, delegate_fn)
+      delegate = delegate_fn
+      return function() end
+    end)
+    assert.is_false(delegate())
+    assert.same({}, warnings)
+    registry:restore_all(15)
+
+    vim.keymap.set("n", "gY", function()
+      error("previous mapping exploded")
+    end, { buffer = buffer })
+    registry = Keymaps.new({
+      notify = function(message)
+        table.insert(warnings, message)
+      end,
+    })
+    registry:apply_buffer(buffer, 16, { references = "gY" }, function(_, delegate_fn)
+      delegate = delegate_fn
+      return function() end
+    end)
+    assert.is_true(delegate())
+    assert.equals(1, #warnings)
+    assert.matches("previous mapping for gY failed", warnings[1], nil, true)
+
+    registry:restore_all(16)
+    vim.api.nvim_buf_delete(buffer, { force = true })
+  end)
+
+  it("replays an rhs delegation through feedkeys", function()
+    local buffer = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(buffer)
+    vim.g.voyager_rhs_hits = 0
+    vim.keymap.set("n", "gY", ":let g:voyager_rhs_hits += 1<CR>", { buffer = buffer, silent = true })
+
+    local registry = Keymaps.new({ notify = function() end })
+    local delegate
+    registry:apply_buffer(buffer, 17, { references = "gY" }, function(_, delegate_fn)
+      delegate = delegate_fn
+      return function() end
+    end)
+    assert.is_true(delegate())
+    vim.api.nvim_feedkeys("", "x", false)
+    assert.equals(1, vim.g.voyager_rhs_hits)
+
+    registry:restore_all(17)
+    vim.g.voyager_rhs_hits = nil
+    vim.api.nvim_buf_delete(buffer, { force = true })
+  end)
+
   it("inherits nowait from the effective global mapping", function()
     local buffer = vim.api.nvim_create_buf(true, false)
     local original = function() end

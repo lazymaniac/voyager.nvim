@@ -123,8 +123,6 @@ describe("Voyager session lifecycle", function()
     deps:trigger("WinEnter", { buf = 12 })
     assert.equals(22, session:state().source_windows[1])
     assert.equals(22, session:choose_jump_window())
-    deps:trigger("CursorMoved")
-    assert.same({ 22 }, deps.presenter.cursor_calls)
 
     deps.windows[22].valid = false
     deps:trigger("WinClosed", { match = "22" })
@@ -140,6 +138,51 @@ describe("Voyager session lifecycle", function()
     assert.is_nil(session:choose_jump_window())
     assert.matches("no eligible source window", deps.notifications[#deps.notifications].message)
     assert.equals(window_count, vim.tbl_count(deps.windows))
+  end)
+
+  it("records through wrappers while always delegating the key's previous behavior", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    local apply = deps.keymaps.apply_calls[1]
+    assert.same(deps.config.lsp_keymaps, apply.mappings)
+
+    local delegated = 0
+    local wrapper = apply.wrapper_factory("references", function()
+      delegated = delegated + 1
+      assert.equals(1, #deps.lsp.starts, "recording must start before delegation runs")
+      return true
+    end)
+    wrapper()
+    assert.equals(1, delegated)
+    assert.equals("references", deps.lsp.starts[1].action_name)
+    assert.same({}, deps.lsp_fallbacks)
+
+    local without_previous = apply.wrapper_factory("definition", function()
+      return false
+    end)
+    without_previous()
+    assert.equals("definition", deps.lsp.starts[2].action_name)
+    assert.same({ "definition" }, deps.lsp_fallbacks)
+
+    local original_run_action = session.run_action
+    session.run_action = function()
+      error("recording exploded")
+    end
+    local despite_failure = apply.wrapper_factory("implementation", function()
+      delegated = delegated + 1
+      return true
+    end)
+    despite_failure()
+    session.run_action = original_run_action
+    assert.equals(2, delegated)
+    assert.matches("could not record implementation", deps.notifications[#deps.notifications].message, nil, true)
+
+    deps.lsp_fallback_error = "no native handler"
+    local failing_fallback = apply.wrapper_factory("declaration", function()
+      return false
+    end)
+    failing_fallback()
+    assert.matches("default declaration behavior", deps.notifications[#deps.notifications].message, nil, true)
   end)
 
   it("dispatches typed rows without confusing locations, actions, and notes", function()
@@ -373,7 +416,7 @@ describe("Voyager session lifecycle", function()
     local generation = session:state().generation
     local old_sidebar = deps.sidebar
     local old_keymaps = deps.keymaps
-    local old_presenter = deps.presenter
+    local old_state = session:state()
     local old_handle = deps.lsp.handles[1]
     local loaded = Fixtures.new_flow()
     local entry =
@@ -382,27 +425,26 @@ describe("Voyager session lifecycle", function()
     deps.store.load_result = loaded
     local loaded_sidebar = deps:new_sidebar()
     local loaded_keymaps = deps:new_keymaps()
-    local loaded_presenter = deps:new_presenter()
     deps.next_sidebar = loaded_sidebar
     deps.next_keymaps = loaded_keymaps
     deps.next_lsp = deps:new_lsp()
-    deps.next_presenter = loaded_presenter
     loaded_sidebar.on_mount = function()
       assert.equals(original, session:state().flow)
       assert.equals(generation, session:state().generation)
       assert.equals(0, #old_handle.cancel_calls)
-      assert.equals(0, old_presenter.invalidate_calls)
       assert.same({}, old_keymaps.restored_generations)
     end
 
     deps.sidebar:focus()
+    local old_tracking_token = old_state.tracking_token
     assert.is_true(session:load())
     deps.select_callback(entry, 1)
     assert.equals(loaded, session:state().flow)
     assert.equals(generation + 1, session:state().generation)
     assert.equals(loaded_sidebar, session:state().sidebar)
     assert.same({ "load" }, old_handle.cancel_calls)
-    assert.equals(1, old_presenter.invalidate_calls)
+    assert.equals(old_tracking_token + 1, old_state.tracking_token)
+    assert.is_nil(old_state.destination_claim)
     assert.same({ generation }, old_keymaps.restored_generations)
     assert.same({ deps.origin_buf }, loaded_keymaps.applied_buffers)
     assert.is_false(old_sidebar:is_mounted())
@@ -426,7 +468,6 @@ describe("Voyager session lifecycle", function()
     deps.next_sidebar = deps:new_sidebar()
     deps.next_keymaps = deps:new_keymaps()
     deps.next_lsp = deps:new_lsp()
-    deps.next_presenter = deps:new_presenter()
 
     assert.is_true(session:load())
     deps.select_callback(entry, 1)
@@ -454,7 +495,6 @@ describe("Voyager session lifecycle", function()
     deps.next_sidebar = loaded_sidebar
     deps.next_keymaps = deps:new_keymaps()
     deps.next_lsp = deps:new_lsp()
-    deps.next_presenter = deps:new_presenter()
     local old_mounts = #deps.sidebar.mount_calls
 
     assert.is_true(session:load())
@@ -591,7 +631,6 @@ describe("Voyager session lifecycle", function()
     deps.next_sidebar = deps:new_sidebar()
     deps.next_keymaps = deps:new_keymaps()
     deps.next_lsp = deps:new_lsp()
-    deps.next_presenter = deps:new_presenter()
 
     assert.is_true(session:load())
     deps.select_callback(entry, 1)
@@ -621,7 +660,7 @@ describe("Voyager session lifecycle", function()
     assert.equals("closed", session:state().phase)
     assert.equals(generation + 1, session:state().generation)
     assert.same({ "command" }, request.cancel_calls)
-    assert.equals(1, deps.presenter.invalidate_calls)
+    assert.is_nil(session:state().destination_claim)
     assert.same({ generation }, deps.keymaps.restored_generations)
     assert.same({ deps.created_augroup.id }, deps.deleted_augroups)
     assert.same({ { owned = true } }, deps.sidebar.unmount_calls)
@@ -648,7 +687,7 @@ describe("Voyager session lifecycle", function()
     assert.is_nil(deps.select_callback)
   end)
 
-  it("wires native sidebar and presenter callbacks back to one controller", function()
+  it("wires native sidebar callbacks back to one controller", function()
     local deps = FakeSessionDeps.new()
     local captured = {}
     local factories = {
@@ -672,10 +711,6 @@ describe("Voyager session lifecycle", function()
         captured.lsp = { locator = locator, config = config }
         return deps.lsp
       end,
-      presenter = function(opts)
-        captured.presenter = opts
-        return deps.presenter
-      end,
     }
     local session = Session.native(function()
       return vim.deepcopy(deps.config)
@@ -687,7 +722,6 @@ describe("Voyager session lifecycle", function()
     }, captured.locator)
     assert.equals(deps.locator, captured.lsp.locator)
     assert.same(deps.config, captured.lsp.config)
-    assert.same(deps.config.navigation, captured.presenter.navigation)
 
     local row = { kind = "location", owner_id = deps.root_id }
     local calls = {}
@@ -709,9 +743,6 @@ describe("Voyager session lifecycle", function()
     session.close = function(_, source)
       calls.close = source
     end
-    session.set_current = function(_, node_id)
-      calls.current = node_id
-    end
     session.choose_jump_window = function()
       return deps.origin_win
     end
@@ -731,9 +762,5 @@ describe("Voyager session lifecycle", function()
 
     captured.sidebar.handlers.external_close()
     assert.equals("external_popup", calls.close)
-    assert.equals(deps.origin_win, captured.presenter.choose_window())
-    captured.presenter.set_current(deps.root_id)
-    assert.equals(deps.root_id, calls.current)
-    assert.equals(deps.flow:location(deps.root_id), captured.presenter.resolve_node(deps.root_id))
   end)
 end)

@@ -1,6 +1,6 @@
 local defaults = {
   sidebar = { width = 42, side = "right", border = "rounded" },
-  navigation = { loclist = false, reuse_win = false, timeout_ms = 10000, on_list = nil },
+  navigation = { timeout_ms = 10000 },
   lsp_keymaps = {
     definition = "gd",
     declaration = "gD",
@@ -23,7 +23,7 @@ local defaults = {
 
 local known = {
   sidebar = { width = true, side = true, border = true },
-  navigation = { loclist = true, reuse_win = true, timeout_ms = true, on_list = true },
+  navigation = { timeout_ms = true },
   lsp_keymaps = {
     definition = true,
     declaration = true,
@@ -107,18 +107,9 @@ function M.resolve(opts)
   if not borders[result.sidebar.border] then
     fail("sidebar.border", "must be a supported NUI border")
   end
-  if type(result.navigation.loclist) ~= "boolean" then
-    fail("navigation.loclist", "must be a boolean")
-  end
-  if type(result.navigation.reuse_win) ~= "boolean" then
-    fail("navigation.reuse_win", "must be a boolean")
-  end
   local timeout = result.navigation.timeout_ms
   if type(timeout) ~= "number" or timeout % 1 ~= 0 or timeout < 100 or timeout > 120000 then
     fail("navigation.timeout_ms", "must be an integer from 100 through 120000")
-  end
-  if result.navigation.on_list ~= nil and not vim.is_callable(result.navigation.on_list) then
-    fail("navigation.on_list", "must be callable or nil")
   end
   if result.storage.resolve_uri ~= nil and not vim.is_callable(result.storage.resolve_uri) then
     fail("storage.resolve_uri", "must be callable or nil")

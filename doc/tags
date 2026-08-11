@@ -10,9 +10,6 @@ voyager-lsp_keymaps.incoming_calls	voyager.txt	/*voyager-lsp_keymaps.incoming_ca
 voyager-lsp_keymaps.outgoing_calls	voyager.txt	/*voyager-lsp_keymaps.outgoing_calls*
 voyager-lsp_keymaps.references	voyager.txt	/*voyager-lsp_keymaps.references*
 voyager-lsp_keymaps.type_definition	voyager.txt	/*voyager-lsp_keymaps.type_definition*
-voyager-navigation.loclist	voyager.txt	/*voyager-navigation.loclist*
-voyager-navigation.on_list	voyager.txt	/*voyager-navigation.on_list*
-voyager-navigation.reuse_win	voyager.txt	/*voyager-navigation.reuse_win*
 voyager-navigation.timeout_ms	voyager.txt	/*voyager-navigation.timeout_ms*
 voyager-sidebar.border	voyager.txt	/*voyager-sidebar.border*
 voyager-sidebar.side	voyager.txt	/*voyager-sidebar.side*

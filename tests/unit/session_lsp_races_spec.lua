@@ -21,7 +21,7 @@ local function outcome(action_name, origin_node_id, locations, opts)
       location = vim.deepcopy(location),
       raw = { uri = location.locator.path or location.locator.uri },
       list_item = {
-        filename = location.locator.path,
+        filename = "/project/" .. location.locator.path,
         lnum = location.range.start.line + 1,
         col = location.range.start.character + 1,
         end_lnum = location.range["end"].line + 1,
@@ -62,13 +62,10 @@ describe("Voyager asynchronous navigation orchestration", function()
       start = { line = 0, character = 6 },
       ["end"] = { line = 0, character = 10 },
     }, context.cursor_range)
-    assert.same({ deps.origin_buf, 1, 7, 0 }, context.from)
-    assert.equals("main", context.tagname)
     assert.is_nil(context.manual_location)
 
     deps:set_cursor(0, "changed", 0, 7)
     assert.same({ line = 0, character = 6 }, context.cursor)
-    assert.equals("main", context.tagname)
   end)
 
   it("settles a synchronous completion before storing its handle", function()
@@ -84,9 +81,56 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals(1, #session:state().flow.root.actions)
     assert.is_nil(session:state().request_handles[1])
     assert.equals(render_count_before + 2, deps.sidebar.render_count)
-    assert.equals(1, #deps.presenter.present_calls)
-    assert.equals(1, #deps.presenter.present_calls[1].items)
-    assert.is_string(deps.presenter.present_calls[1].items[1].node_id)
+    local claim = session:state().destination_claim
+    assert.is_table(claim)
+    assert.equals(1, claim.request_token)
+    assert.equals(1, #claim.targets)
+    assert.is_string(claim.targets[1].node_id)
+    assert.equals("/project/lua/auth.lua", claim.targets[1].filename)
+    assert.equals(1, claim.targets[1].lnum)
+    assert.equals(1, claim.targets[1].col)
+  end)
+
+  it("moves current only when the cursor lands exactly on a claimed destination", function()
+    local session, deps = new_session()
+    local root_id = session:state().flow.root.id
+    local first = Fixtures.location("lua/def-a.lua", 4)
+    local second = Fixtures.location("lua/def-b.lua", 9)
+    deps.lsp.auto_outcome = outcome("references", root_id, { first, second })
+    session:run_action("references")
+    local claim = session:state().destination_claim
+    assert.is_table(claim)
+    assert.equals(2, #claim.targets)
+
+    deps:add_buffer(51, "/project/lua/def-a.lua")
+    deps:add_buffer(52, "/project/lua/def-b.lua")
+
+    deps.current_win_id = deps.sidebar.winid
+    deps:trigger("CursorMoved")
+    assert.equals(root_id, session:state().flow.current_node_id)
+
+    deps.current_win_id = deps.origin_win
+    deps.windows[deps.origin_win].bufnr = 51
+    deps.windows[deps.origin_win].cursor = { 5, 3 }
+    deps:trigger("CursorMoved")
+    assert.equals(root_id, session:state().flow.current_node_id)
+
+    deps.windows[deps.origin_win].cursor = { 5, 0 }
+    deps:trigger("CursorMoved")
+    assert.equals(claim.targets[1].node_id, session:state().flow.current_node_id)
+    assert.is_table(session:state().destination_claim)
+
+    deps.windows[deps.origin_win].bufnr = 52
+    deps.windows[deps.origin_win].cursor = { 10, 0 }
+    deps:trigger("CursorMoved")
+    assert.equals(claim.targets[2].node_id, session:state().flow.current_node_id)
+
+    assert.is_true(session:set_current(root_id))
+    assert.is_nil(session:state().destination_claim)
+    deps.windows[deps.origin_win].bufnr = 51
+    deps.windows[deps.origin_win].cursor = { 5, 0 }
+    deps:trigger("CursorMoved")
+    assert.equals(root_id, session:state().flow.current_node_id)
   end)
 
   it("settles every logical status exactly once", function()
@@ -123,7 +167,8 @@ describe("Voyager asynchronous navigation orchestration", function()
       assert.equals(renders + 2, deps.sidebar.render_count, case.status)
       assert.equals(case.commit and 1 or 0, #session:state().flow.root.actions, case.status)
       assert.is_nil(session:state().request_handles[1], case.status)
-      assert.equals(case.commit and #case.locations > 0 and 1 or 0, #deps.presenter.present_calls, case.status)
+      local expects_claim = case.commit and #case.locations > 0
+      assert.equals(expects_claim, session:state().destination_claim ~= nil, case.status)
     end
   end)
 
@@ -152,7 +197,7 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals(1, #session:state().flow.root.actions)
   end)
 
-  it("commits a staged manual connector atomically and lets presentation claim the result", function()
+  it("commits a staged manual connector atomically and lets the destination claim take over", function()
     local session, deps = new_session()
     deps:set_cursor(0, "local", 0, 5)
     session:run_action("definition")
@@ -162,18 +207,21 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals(0, #session:state().flow.root.actions)
 
     local result = Fixtures.location("lua/manual-result.lua", 0)
-    deps.presenter.on_present = function(_, items)
-      local manual = session:state().flow.root.actions[1].results[1]
-      assert.equals(manual.id, session:state().flow.current_node_id)
-      session:set_current(items[1].node_id)
-    end
     deps.lsp:complete(1, outcome("definition", context.origin_node_id, { result }))
 
     local manual = session:state().flow.root.actions[1]
     assert.equals("voyager/manual", manual.method)
     assert.equals(1, #manual.results)
     assert.equals("textDocument/definition", manual.results[1].actions[1].method)
-    assert.equals(deps.presenter.present_calls[1].items[1].node_id, session:state().flow.current_node_id)
+    assert.equals(manual.results[1].id, session:state().flow.current_node_id)
+
+    local claim = session:state().destination_claim
+    assert.is_table(claim)
+    deps:add_buffer(41, "/project/lua/manual-result.lua")
+    deps.windows[deps.origin_win].bufnr = 41
+    deps.windows[deps.origin_win].cursor = { 1, 0 }
+    deps:trigger("CursorMoved")
+    assert.equals(claim.targets[1].node_id, session:state().flow.current_node_id)
   end)
 
   it("leaves a committed manual origin current when the action is empty", function()
@@ -189,7 +237,7 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals(1, #manual.actions)
     assert.equals(0, #manual.actions[1].results)
     assert.equals(manual.id, session:state().flow.current_node_id)
-    assert.equals(0, #deps.presenter.present_calls)
+    assert.is_nil(session:state().destination_claim)
   end)
 
   it("does not let an older manual claim move current after a newer action", function()
@@ -206,7 +254,7 @@ describe("Voyager asynchronous navigation orchestration", function()
       })
     )
     assert.equals(deps.root_id, session:state().flow.current_node_id)
-    assert.equals(0, #deps.presenter.present_calls)
+    assert.is_nil(session:state().destination_claim)
     assert.equals("voyager/manual", session:state().flow.root.actions[1].method)
 
     local newer = deps.lsp.starts[2].context
@@ -242,7 +290,7 @@ describe("Voyager asynchronous navigation orchestration", function()
       })
     )
     assert.equals(existing_id, session:state().flow.current_node_id)
-    assert.equals(1, #deps.presenter.present_calls)
+    assert.is_table(session:state().destination_claim)
   end)
 
   it("keeps a manual connector entirely absent on failure", function()
@@ -254,7 +302,7 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals(0, #session:state().flow.root.actions)
   end)
 
-  it("records overlapping branches but presents only the newest token", function()
+  it("records overlapping branches but tracks destinations only for the newest token", function()
     for _, order in ipairs({ "newest_first", "oldest_first" }) do
       local session, deps = new_session()
       session:run_action("definition")
@@ -284,8 +332,10 @@ describe("Voyager asynchronous navigation orchestration", function()
 
       assert.equals(0, session:state().request_count)
       assert.equals(2, #session:state().flow.root.actions)
-      assert.equals(1, #deps.presenter.present_calls)
-      assert.equals(2, deps.presenter.present_calls[1].context.request_token)
+      local claim = session:state().destination_claim
+      assert.is_table(claim)
+      assert.equals(2, claim.request_token)
+      assert.equals("/project/lua/implementation.lua", claim.targets[1].filename)
     end
   end)
 
@@ -324,6 +374,6 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals("closed", session:state().phase)
     assert.equals(0, session:state().request_count)
     assert.equals(0, #session:state().flow.root.actions)
-    assert.equals(0, #deps.presenter.present_calls)
+    assert.is_nil(session:state().destination_claim)
   end)
 end)

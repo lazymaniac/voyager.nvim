@@ -37,7 +37,7 @@ describe("Voyager restart journey: save phase", function()
     assert.is_not_nil(popup_win)
     assert.equals("nofile", vim.bo[vim.api.nvim_win_get_buf(popup_win)].buftype)
 
-    session:run_action("implementation")
+    vim.api.nvim_feedkeys(vim.keycode("gri"), "x", false)
     E2E.wait_for_requests(session)
     local flow = session:state().flow
     local implementations = assert(
@@ -51,9 +51,19 @@ describe("Voyager restart journey: save phase", function()
       })
     )
     assert.equals(2, #implementations.results)
-    assert.equals(4, #vim.fn.getqflist())
+    E2E.wait("the native implementation quickfix list", function()
+      return #vim.fn.getqflist() == 4
+    end)
     local mysql = assert(E2E.result(implementations, "lua/mysql_store.lua"))
     local memory = assert(E2E.result(implementations, "lua/memory_store.lua"))
+
+    assert.is_table(session:state().destination_claim)
+    vim.cmd("cc 1")
+    vim.api.nvim_exec_autocmds("CursorMoved", { modeline = false })
+    local landed_suffix = assert(vim.api.nvim_buf_get_name(0):match("lua/[^/]+%.lua$"))
+    local landed = assert(E2E.result(implementations, landed_suffix))
+    assert.equals(landed.id, session:state().flow.current_node_id)
+    assert.is_table(session:state().destination_claim)
 
     local activated = session:activate_row(row("location", mysql.id))
     assert(
@@ -75,15 +85,18 @@ describe("Voyager restart journey: save phase", function()
     )
     assert.matches("mysql_store.lua$", vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf()))
     assert.matches("local function save", vim.api.nvim_get_current_line())
+    assert.is_nil(session:state().destination_claim)
     E2E.wait_for_clients(vim.api.nvim_get_current_buf())
-    session:run_action("references")
+    vim.api.nvim_feedkeys(vim.keycode("grr"), "x", false)
     E2E.wait_for_requests(session)
     flow = session:state().flow
     implementations = assert(E2E.action(flow.root, "textDocument/implementation"))
     mysql = assert(E2E.result(implementations, "lua/mysql_store.lua"))
     local references = assert(E2E.action(mysql, "textDocument/references"))
     assert.equals(1, #references.results)
-    assert.equals(2, #vim.fn.getqflist())
+    E2E.wait("the native references quickfix list", function()
+      return #vim.fn.getqflist() == 2
+    end)
 
     session:activate_row(row("location", flow.root.id))
     flow = session:state().flow

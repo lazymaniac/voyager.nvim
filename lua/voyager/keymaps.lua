@@ -38,6 +38,44 @@ local function restore_map(bufnr, map)
   })
 end
 
+local function feed(keys, map)
+  if type(keys) ~= "string" or keys == "" then
+    return
+  end
+  local literal = map.expr == 1 and map.replace_keycodes ~= 1
+  if not literal then
+    keys = vim.keycode(keys)
+  end
+  vim.api.nvim_feedkeys(keys, map.noremap == 1 and "n" or "m", literal)
+end
+
+local function invoke_map(map)
+  if map.callback then
+    local ok, result = pcall(map.callback)
+    if not ok then
+      return false, result
+    end
+    if map.expr == 1 then
+      feed(result, map)
+    end
+    return true
+  end
+  local rhs = map.rhs
+  if type(rhs) ~= "string" or rhs == "" then
+    return false, "mapping has no callback or right-hand side"
+  end
+  if map.expr == 1 then
+    local ok, evaluated = pcall(vim.api.nvim_eval, rhs)
+    if not ok then
+      return false, evaluated
+    end
+    feed(evaluated, map)
+    return true
+  end
+  feed(rhs, map)
+  return true
+end
+
 local function record_key(generation, bufnr, normalized_lhs)
   return table.concat({ tostring(generation), tostring(bufnr), "n", normalized_lhs }, "\0")
 end
@@ -51,6 +89,21 @@ function M.new(opts)
   }, Registry)
 end
 
+function Registry:_delegate(record)
+  local previous = record.original or global_map(record.normalized_lhs)
+  if not previous then
+    return false
+  end
+  local invoked, invoke_error = invoke_map(previous)
+  if not invoked then
+    self._notify(
+      "Voyager: previous mapping for " .. record.installed_lhs .. " failed: " .. tostring(invoke_error),
+      vim.log.levels.ERROR
+    )
+  end
+  return true
+end
+
 function Registry:apply_buffer(bufnr, generation, mappings, wrapper_factory)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
@@ -62,22 +115,25 @@ function Registry:apply_buffer(bufnr, generation, mappings, wrapper_factory)
       if not self._records[key] then
         local original = local_map(bufnr, normalized_lhs)
         local effective = original or global_map(normalized_lhs)
-        local wrapper = wrapper_factory(action_name)
+        local record = {
+          generation = generation,
+          bufnr = bufnr,
+          normalized_lhs = normalized_lhs,
+          installed_lhs = lhs,
+          original = original,
+          restored = false,
+        }
+        local wrapper = wrapper_factory(action_name, function()
+          return self:_delegate(record)
+        end)
         vim.keymap.set("n", lhs, wrapper, {
           buffer = bufnr,
           desc = "Voyager: " .. action_name,
           silent = true,
           nowait = effective ~= nil and effective.nowait == 1,
         })
-        self._records[key] = {
-          generation = generation,
-          bufnr = bufnr,
-          normalized_lhs = normalized_lhs,
-          installed_lhs = lhs,
-          wrapper = wrapper,
-          original = original,
-          restored = false,
-        }
+        record.wrapper = wrapper
+        self._records[key] = record
       end
     end
   end

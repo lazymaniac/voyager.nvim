@@ -92,8 +92,14 @@ vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 ## Default mappings
 
 Voyager installs its LSP mappings only as session-owned, buffer-local wrappers
-in eligible source buffers. It restores the previous local mappings when the
-session closes.
+in eligible source buffers, and the wrappers never change what a key does.
+Each wrapper records the action's results into the flow, then hands the
+keypress to whatever the key was already bound to: the previous buffer-local
+mapping, the current global mapping (including Neovim's built-in `gr*`
+defaults), or the native `vim.lsp.buf` function when the key had no mapping at
+all. Your jumps, pickers, and quickfix lists keep working exactly as you
+configured them. Voyager restores the previous local mappings when the session
+closes.
 
 ### LSP mappings
 
@@ -128,10 +134,7 @@ apply to the next session.
 | `sidebar.width` | integer | `42` | Popup width; must be at least 20 |
 | `sidebar.side` | `"left"` or `"right"` | `"right"` | Editor edge used by the popup |
 | `sidebar.border` | string | `"rounded"` | One of `none`, `single`, `double`, `rounded`, `solid`, or `shadow` |
-| `navigation.loclist` | boolean | `false` | Use a location list instead of quickfix where lists are presented |
-| `navigation.reuse_win` | boolean | `false` | Reuse a window already showing the target when possible |
 | `navigation.timeout_ms` | integer | `10000` | Per-network-stage timeout from 100 through 120000 milliseconds |
-| `navigation.on_list` | function or nil | `nil` | Custom `on_list(list, select)` presenter; replaces default jump/list presentation |
 | `lsp_keymaps.definition` | string or false | `"gd"` | Definition wrapper |
 | `lsp_keymaps.declaration` | string or false | `"gD"` | Declaration wrapper |
 | `lsp_keymaps.references` | string or false | `"grr"` | References wrapper |
@@ -158,17 +161,8 @@ sidebar.side
 sidebar.border
 : NUI border style: `none`, `single`, `double`, `rounded`, `solid`, or `shadow`.
 
-navigation.loclist
-: Use a location list instead of quickfix where lists are presented.
-
-navigation.reuse_win
-: Reuse a window already showing the target when possible.
-
 navigation.timeout_ms
 : Per-network-stage timeout from 100 through 120000 milliseconds.
-
-navigation.on_list
-: Optional custom `on_list(list, select)` presenter.
 
 lsp_keymaps.definition
 : Buffer-local definition wrapper; a string or `false`.
@@ -218,26 +212,24 @@ A sidebar `keymap` is a string or non-empty string list. Mapping values set to
 `false` are disabled. Enabled mappings in each group must have distinct,
 non-empty normal-mode left-hand sides after Neovim keycode normalization.
 
-For a custom presenter, `list` follows Neovim's `vim.lsp.LocationOpts.OnList`
-shape. Call Voyager's supplied `select(item)` callback when your UI chooses a
-tagged item so the destination becomes the flow's current node.
-
 ## Exploring and branching
 
-Run one of the session LSP mappings from the current location. Voyager adds an
-action row such as `implementations`, `references`, or `incoming calls`, then
-records every unique normalized destination below it. Definitions,
-declarations, implementations, and type definitions jump for one raw result and
-open a list for multiple results. References and call hierarchy always present a
-list when non-empty. Successful empty responses remain visible as an action with
-zero results.
+Run one of the session LSP mappings from the current location. The key behaves
+exactly as it would without Voyager—your own mapping or Neovim's default
+presents the results—while Voyager concurrently records every unique
+normalized destination below an action row such as `implementations`,
+`references`, or `incoming calls`. Successful empty responses remain visible
+as an action with zero results.
 
-With the default list presenter, Voyager tracks destinations opened with
-`<CR>`, a double-click, or a user-entered quickfix/location-list jump command
-such as `:cc`, `:cnext`, or `:ll` (including command abbreviations). Neovim does
-not emit an attributable event for programmatic `vim.cmd()` jumps or arbitrary
-`<Cmd>`/Lua callback mappings; integrations that navigate that way should use
-`navigation.on_list` and call Voyager's supplied `select(item)` callback.
+Once an action records its destinations, Voyager watches for the cursor to land
+exactly on one of them in a normal source window—through a quickfix jump, a
+picker, or any other navigation—and marks that destination as the flow's
+current node. Later landings on the same action's destinations keep updating
+the current node until a newer action runs or you pick a node in the sidebar.
+
+Call-hierarchy recording follows the protocol's prepare step without
+prompting: when a server returns several prepared items, Voyager records calls
+for the first one while your own mapping keeps its usual behavior.
 
 Select any earlier location in the sidebar and continue from there. Its existing
 children stay intact, so exploring again creates or extends a sibling branch

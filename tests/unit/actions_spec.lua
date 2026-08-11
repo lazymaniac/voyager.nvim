@@ -1,7 +1,7 @@
 local Actions = require("voyager.lsp.actions")
 
 describe("Voyager LSP actions", function()
-  it("defines the native methods and presentation policies in stable order", function()
+  it("defines the native methods in stable order", function()
     assert.same({
       "definition",
       "declaration",
@@ -12,7 +12,6 @@ describe("Voyager LSP actions", function()
       "outgoing_calls",
     }, Actions.names())
     assert.same("textDocument/declaration", Actions.get("declaration").method)
-    assert.same("always_list", Actions.get("references").presentation)
     assert.same({ includeDeclaration = true }, Actions.get("references").context)
     assert.same("incoming", Actions.get("incoming_calls").direction)
     assert.same("outgoing", Actions.get("outgoing_calls").direction)
