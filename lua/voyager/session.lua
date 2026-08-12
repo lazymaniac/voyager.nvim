@@ -77,6 +77,7 @@ function M.new(opts)
     _store_factory = opts.store_factory,
     _sidebar_factory = opts.sidebar_factory,
     _lsp_factory = opts.lsp_factory,
+    _symbols_factory = opts.symbols_factory,
     _ui = opts.ui,
     _generation = 0,
     _recording = 0,
@@ -103,6 +104,9 @@ function Session:_is_normal_named_buffer(bufnr)
 end
 
 function Session:_buffer_in_flow(state, name)
+  if not state.flow then
+    return false
+  end
   for _, node in ipairs(state.flow:dfs()) do
     if node.kind == "location" then
       local locator = node.location.locator
@@ -172,6 +176,7 @@ function Session:_stage_state(opts)
     interaction_tokens = {},
     tracking_token = 0,
     destination_claim = nil,
+    expanded_test_groups = {},
     observer_pending = {},
     current_claim_token = 0,
     manual_claim_token = 0,
@@ -184,13 +189,65 @@ function Session:_stage_state(opts)
   }
   state.sidebar = self._sidebar_factory(config)
   state.lsp = self._lsp_factory(locator, config)
+  state.symbols = self._symbols_factory and self._symbols_factory(locator, config) or nil
   return state
+end
+
+function Session:_uri_for_locator(state, locator)
+  if locator.kind == "uri" then
+    return locator.uri
+  end
+  local path = locator.kind == "project" and (state.project_root .. "/" .. locator.path) or locator.path
+  local ok, uri = pcall(self._runtime.uri_from_fname, path)
+  return ok and uri or nil
+end
+
+-- Ask the symbols service for enclosing-symbol names and kinds of freshly
+-- committed nodes; results land asynchronously and only refine display
+-- metadata, so failures stay silent behind the word-at fallback names.
+function Session:_enrich_nodes(state, generation, flow_id, items)
+  if not state.symbols then
+    return
+  end
+  local requests = {}
+  local seen = {}
+  for _, item in ipairs(items) do
+    local node_id = type(item) == "table" and item.node_id or item
+    local node = type(node_id) == "string" and state.flow:location(node_id) or nil
+    if node and not seen[node.id] then
+      seen[node.id] = true
+      local uri = self:_uri_for_locator(state, node.location.locator)
+      if uri then
+        table.insert(requests, { node_id = node.id, uri = uri, location = vim.deepcopy(node.location) })
+      end
+    end
+  end
+  if #requests == 0 then
+    return
+  end
+  pcall(state.symbols.resolve, state.symbols, requests, {
+    timeout_ms = state.config.navigation.timeout_ms,
+  }, function(results)
+    if not self:_valid_state(state, generation) or state.flow.flow_id ~= flow_id then
+      return
+    end
+    local changed = false
+    for node_id, value in pairs(results or {}) do
+      if state.flow:apply_symbol(node_id, value.symbol, value.kind) then
+        changed = true
+      end
+    end
+    if changed then
+      self:_render(state)
+    end
+  end)
 end
 
 function Session:_render(state)
   state.sidebar:render(state.flow, {
-    dirty = state.flow:is_dirty(),
+    dirty = state.flow ~= nil and state.flow:is_dirty() or false,
     request_count = state.request_count,
+    expanded_test_groups = state.expanded_test_groups,
   })
 end
 
@@ -356,33 +413,13 @@ function Session:open()
   local root_dir = project_root(runtime, origin_buf)
   local locator = self._locator_factory(root_dir, config.storage.resolve_uri)
   local store = self._store_factory(locator)
-  local root, root_error = Locator.capture_root(origin_buf, origin_win, root_dir, runtime)
-  if not root then
-    self._ui.notify("Voyager: could not capture root: " .. tostring(root_error), vim.log.levels.ERROR)
-    return nil
-  end
-  local nonce, nonce_error = runtime.random(16)
-  if not nonce then
-    self._ui.notify(
-      "Voyager: could not create flow: " .. tostring(nonce_error or "entropy unavailable"),
-      vim.log.levels.ERROR
-    )
-    return nil
-  end
-  local flow_id = Locator.flow_id(root, 8)
-  local flow = self._flow_module.new({
-    root = root,
-    name = Locator.flow_name(root),
-    flow_id = flow_id,
-    root_key = Locator.root_key(root),
-    now = runtime.now,
-    next_id = Locator.id_factory(flow_id, nonce, 0, runtime.sha256),
-  })
+  -- The flow (and its root record) is created lazily by the first observed
+  -- LSP navigation, so opening only stages an empty session.
   local generation = math.max(self._generation, self._state and self._state.generation or 0) + 1
   local staged = self:_stage_state({
     generation = generation,
     config = config,
-    flow = flow,
+    flow = nil,
     project_root = root_dir,
     locator = locator,
     store = store,
@@ -523,6 +560,53 @@ function Session:_commit_outcome(state, context, request_token, outcome)
   return tagged_items
 end
 
+-- The starting record is captured from the origin of the first navigation,
+-- not from the cursor at :VoyagerOpen time.
+function Session:_create_flow(state, bufnr, winid)
+  local runtime = self._runtime
+  local root, root_error = Locator.capture_root(bufnr, winid, state.project_root, runtime)
+  if not root then
+    self._ui.notify("Voyager: could not capture root: " .. tostring(root_error), vim.log.levels.ERROR)
+    return nil
+  end
+  local nonce, nonce_error = runtime.random(16)
+  if not nonce then
+    self._ui.notify(
+      "Voyager: could not create flow: " .. tostring(nonce_error or "entropy unavailable"),
+      vim.log.levels.ERROR
+    )
+    return nil
+  end
+  local flow_id = Locator.flow_id(root, 8)
+  state.flow = self._flow_module.new({
+    root = root,
+    name = Locator.flow_name(root),
+    flow_id = flow_id,
+    root_key = Locator.root_key(root),
+    now = runtime.now,
+    next_id = Locator.id_factory(flow_id, nonce, 0, runtime.sha256),
+  })
+  self:_render(state)
+  self:_enrich_nodes(state, state.generation, flow_id, { state.flow.root.id })
+  return true
+end
+
+function Session:ensure_flow()
+  if not self:is_active() then
+    return nil
+  end
+  local state = self._state
+  if state.flow then
+    return true
+  end
+  local winid = self._runtime.current_win()
+  if not self:_eligible_window(state, winid) then
+    self._ui.notify("Voyager: navigation requires an eligible source window", vim.log.levels.WARN)
+    return nil
+  end
+  return self:_create_flow(state, self._runtime.win_buf(winid), winid)
+end
+
 function Session:run_action(action_name)
   if not self:is_active() then
     self._ui.notify("Voyager: no active flow", vim.log.levels.INFO)
@@ -536,13 +620,16 @@ function Session:run_action(action_name)
 
   local state = self._state
   local generation = state.generation
-  local flow_id = state.flow.flow_id
   local winid = self._runtime.current_win()
   if not self:_eligible_window(state, winid) then
     self._ui.notify("Voyager: navigation requires an eligible source window", vim.log.levels.WARN)
     return nil
   end
   local bufnr = self._runtime.win_buf(winid)
+  if not state.flow and not self:_create_flow(state, bufnr, winid) then
+    return nil
+  end
+  local flow_id = state.flow.flow_id
   local context, context_error = self:_action_context(state, winid, bufnr)
   if not context then
     self._ui.notify("Voyager: could not capture navigation origin: " .. tostring(context_error), vim.log.levels.ERROR)
@@ -609,9 +696,11 @@ function Session:run_action(action_name)
       and #tagged_items > 0
       and self:_valid_state(state, generation)
       and state.flow.flow_id == flow_id
-      and state.tracking_token == request_token
     then
-      self:_arm_destination_claim(state, context, tagged_items)
+      if state.tracking_token == request_token then
+        self:_arm_destination_claim(state, context, tagged_items)
+      end
+      self:_enrich_nodes(state, generation, flow_id, tagged_items)
     end
   end
 
@@ -655,7 +744,7 @@ function Session:run_action(action_name)
 end
 
 function Session:_make_current(state, node_id)
-  if not state.flow:location(node_id) then
+  if not state.flow or not state.flow:location(node_id) then
     return false
   end
   if not state.flow:set_current(node_id) then
@@ -790,7 +879,8 @@ function Session:_valid_interaction(token)
   end
   if token.active then
     local state = self._state
-    return state.generation == token.generation and state.flow.flow_id == token.flow_id
+    local state_flow_id = state.flow and state.flow.flow_id or nil
+    return state.generation == token.generation and state_flow_id == token.flow_id
   end
   return self._generation == token.generation
 end
@@ -809,7 +899,7 @@ function Session:_notify_inapplicable(operation, row)
 end
 
 function Session:_jump_to_location(state, node_id, mark_current)
-  if self._state ~= state or not self:is_active() then
+  if self._state ~= state or not self:is_active() or not state.flow then
     return false
   end
   local node = state.flow:location(node_id)
@@ -862,7 +952,7 @@ function Session:activate_row(row, opts)
     self:_notify_inapplicable("activate", row)
     return false
   end
-  if row.kind == "action" then
+  if row.kind == "action" or row.kind == "group" then
     return self:toggle_row(row)
   end
   if row.kind ~= "location" and row.kind ~= "note" then
@@ -881,16 +971,34 @@ function Session:toggle_row(row)
   if not self:is_active() then
     return false
   end
-  local node = type(row) == "table" and self._state.flow:find(row.owner_id) or nil
+  if type(row) == "table" and row.kind == "group" then
+    return self:toggle_test_group(row)
+  end
+  local flow = self._state.flow
+  local node = type(row) == "table" and flow and flow:find(row.owner_id) or nil
   if type(row) ~= "table" or row.kind ~= "action" or not node or node.kind ~= "action" then
     self:_notify_inapplicable("toggle", row)
     return false
   end
-  local changed = self._state.flow:toggle(row.owner_id)
+  local changed = flow:toggle(row.owner_id)
   if changed then
     self:_render(self._state)
   end
   return changed
+end
+
+function Session:toggle_test_group(row)
+  if not self:is_active() then
+    return false
+  end
+  local state = self._state
+  if type(row) ~= "table" or row.kind ~= "group" or type(row.owner_id) ~= "string" then
+    self:_notify_inapplicable("toggle", row)
+    return false
+  end
+  state.expanded_test_groups[row.owner_id] = not state.expanded_test_groups[row.owner_id] or nil
+  self:_render(state)
+  return true
 end
 
 function Session:_row_location_id(row)
@@ -901,7 +1009,7 @@ function Session:_row_location_id(row)
     return row.owner_id
   end
   if row.kind == "action" then
-    return self._state.flow:parent_id(row.owner_id)
+    return self._state.flow and self._state.flow:parent_id(row.owner_id) or nil
   end
 end
 
@@ -910,6 +1018,9 @@ function Session:delete_row(row)
     return false
   end
   local state = self._state
+  if not state.flow then
+    return false
+  end
   if type(row) ~= "table" or type(row.owner_id) ~= "string" then
     self:_notify_inapplicable("delete", row)
     return false
@@ -971,24 +1082,14 @@ function Session:run_action_for_row(row)
   return true
 end
 
-function Session:preview_row(row)
-  if not self:is_active() then
-    return nil
-  end
-  local state = self._state
-  if type(row) ~= "table" or (row.kind ~= "location" and row.kind ~= "note") then
-    self:_notify_inapplicable("preview", row)
-    return nil
-  end
-  local node = state.flow:location(row.owner_id)
-  if not node then
-    self._ui.notify("Voyager: location is no longer available", vim.log.levels.WARN)
-    return nil
-  end
+function Session:_show_location_preview(state, node)
   local lines = state.locator:source(node.location.locator)
   if not lines then
-    self._ui.notify("Voyager: source for " .. tostring(node.location.symbol) .. " is unavailable", vim.log.levels.WARN)
-    return nil
+    return state.sidebar:show_preview({
+      lines = { "source for " .. tostring(node.location.symbol) .. " is unavailable" },
+      title = " " .. tostring(node.location.symbol) .. " ",
+      key = node.id .. ":unavailable",
+    })
   end
   local start_line = node.location.range.start.line + 1
   local first = math.max(1, start_line - 3)
@@ -1007,11 +1108,52 @@ function Session:preview_row(row)
     title = " " .. tostring(node.location.symbol) .. " ",
     focus_line = start_line - first + 1,
     filetype = filetype,
+    key = node.id,
   })
 end
 
-function Session:set_all_collapsed(collapsed)
+function Session:preview_row(row)
   if not self:is_active() then
+    return nil
+  end
+  local state = self._state
+  if type(row) ~= "table" or (row.kind ~= "location" and row.kind ~= "note") then
+    self:_notify_inapplicable("preview", row)
+    return nil
+  end
+  local node = state.flow and state.flow:location(row.owner_id) or nil
+  if not node then
+    self._ui.notify("Voyager: location is no longer available", vim.log.levels.WARN)
+    return nil
+  end
+  local lines = state.locator:source(node.location.locator)
+  if not lines then
+    self._ui.notify("Voyager: source for " .. tostring(node.location.symbol) .. " is unavailable", vim.log.levels.WARN)
+    return nil
+  end
+  return self:_show_location_preview(state, node)
+end
+
+-- Auto-follow: called for every sidebar cursor row; location and note rows
+-- open or refresh the preview, everything else hides it.
+function Session:follow_preview(row)
+  if not self:is_active() then
+    return nil
+  end
+  local state = self._state
+  local node
+  if type(row) == "table" and (row.kind == "location" or row.kind == "note") and state.flow then
+    node = state.flow:location(row.owner_id)
+  end
+  if not node then
+    state.sidebar:close_preview()
+    return nil
+  end
+  return self:_show_location_preview(state, node)
+end
+
+function Session:set_all_collapsed(collapsed)
+  if not self:is_active() or not self._state.flow then
     return false
   end
   local changed = self._state.flow:set_all_collapsed(collapsed)
@@ -1022,7 +1164,7 @@ function Session:set_all_collapsed(collapsed)
 end
 
 function Session:export(row)
-  if not self:is_active() then
+  if not self:is_active() or not self._state.flow then
     self._ui.notify("Voyager: no active flow to export", vim.log.levels.INFO)
     return nil
   end
@@ -1096,7 +1238,7 @@ function Session:edit_note(row)
   end
   local state = self._state
   local node_id = row.owner_id
-  local node = state.flow:location(node_id)
+  local node = state.flow and state.flow:location(node_id) or nil
   if not node then
     self._ui.notify("Voyager: note location is no longer available", vim.log.levels.WARN)
     return nil
@@ -1205,6 +1347,10 @@ function Session:save(on_success)
     return nil
   end
   local state = self._state
+  if not state.flow then
+    self._ui.notify("Voyager: nothing recorded yet", vim.log.levels.INFO)
+    return nil
+  end
   if state.phase ~= "active" then
     self:_lifecycle_busy("save")
     return nil
@@ -1398,7 +1544,7 @@ function Session:load()
       end
       return self:_install_loaded_flow(candidate, project_root_value, config, locator, store, load_context)
     end
-    if self:is_active() and self._state.flow:is_dirty() then
+    if self:is_active() and self._state.flow ~= nil and self._state.flow:is_dirty() then
       self:_resolve_dirty("load", load_and_install)
     else
       load_and_install()
@@ -1444,7 +1590,7 @@ function Session:close(source)
     return false
   end
   source = source or "close"
-  if state.flow:is_dirty() then
+  if state.flow ~= nil and state.flow:is_dirty() then
     return self:_resolve_dirty("close", function()
       self:_teardown(source)
     end)
@@ -1458,6 +1604,7 @@ function Session:shutdown()
     self:is_active()
     and state.phase == "active"
     and state.config.storage.autosave == true
+    and state.flow ~= nil
     and state.flow:is_dirty()
   then
     pcall(self.save, self)
@@ -1474,6 +1621,7 @@ function M.native(config_provider, runtime, overrides)
   local Normalize = require("voyager.lsp.normalize")
   local RequestGroup = require("voyager.lsp.request_group")
   local Lsp = require("voyager.lsp")
+  local Symbols = require("voyager.symbols")
 
   local controller
   -- Every Voyager-originated client request is dispatched synchronously inside
@@ -1516,6 +1664,17 @@ function M.native(config_provider, runtime, overrides)
         end,
       })
     end,
+    symbols = function(locator)
+      return Symbols.new({
+        locator = locator,
+        get_clients = runtime.get_clients,
+        request_group = recording_request_group,
+        timer = runtime.timer,
+        filetype_match = runtime.filetype_match,
+        get_string_parser = runtime.ts_string_parser,
+        get_node_text = runtime.ts_node_text,
+      })
+    end,
   }, overrides or {})
 
   controller = M.new({
@@ -1543,6 +1702,9 @@ function M.native(config_provider, runtime, overrides)
           end,
           preview = function(row)
             return controller:preview_row(row)
+          end,
+          cursor_row = function(row)
+            return controller:follow_preview(row)
           end,
           collapse_all = function()
             return controller:set_all_collapsed(true)
@@ -1573,6 +1735,7 @@ function M.native(config_provider, runtime, overrides)
       })
     end,
     lsp_factory = factories.lsp,
+    symbols_factory = factories.symbols,
     ui = { input = runtime.input, select = runtime.select, notify = runtime.notify },
   })
   return controller

@@ -6,21 +6,26 @@ earlier symbol, explore a different path, annotate useful locations, and save th
 whole flow for later.
 
 ```text
-  ▾ ▲ references (1)
-    authorize — lua/auth.lua:5
-● save — lua/mysql_store.lua:2
-  ▾ ▼ outgoing calls (2)
-    exec — lua/db.lua:14
+  ▾ ▲ usages (2)
+    [m] AuthService.authorize — lua/auth.lua:5
+    ▸ tests (3)
+● [f] MysqlStore.save — lua/mysql_store.lua:2
+  ▾ ▼ calls (2)
+    [f] Db.exec — lua/db.lua:14
       ✎ important for auth
-    audit — lua/log.lua:9
+    [f] Log.audit — lua/log.lua:9
 ```
 
 The tree reads in call-flow order: callers of a symbol sit above it and the
 code it leads to sits below, so the outermost entry point is at the top and
-the deepest call is at the bottom.
+the deepest call is at the bottom. Rows are labeled by meaning — `usages`,
+`callers`, and `calls` instead of raw LSP method names — every destination is
+named after its enclosing symbol with a kind badge, and results that live in
+test files fold away beneath a `tests (N)` group.
 
-Opening Voyager starts a new flow at the symbol under the cursor. Loading an old
-flow is always an explicit action.
+Opening Voyager stages an empty session; the flow and its starting record are
+created by the first LSP navigation you make. Loading an old flow is always an
+explicit action.
 
 ## Requirements
 
@@ -70,7 +75,7 @@ vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 
 | Command | Behavior |
 | --- | --- |
-| `:VoyagerOpen` | Start a new flow at the cursor, or focus the active flow |
+| `:VoyagerOpen` | Open a session that records from the first navigation, or focus the active flow |
 | `:VoyagerFocus` | Focus or remount the active sidebar |
 | `:VoyagerSave` | Explicitly save or merge the active flow |
 | `:VoyagerLoad` | Pick a saved flow for the current project |
@@ -81,7 +86,7 @@ vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 <!-- panvimdoc-include-comment
 
 :VoyagerOpen
-: Start a new flow at the cursor, or focus the active flow.
+: Open a session that records from the first navigation, or focus the active flow.
 
 :VoyagerFocus
 : Focus or remount the active sidebar.
@@ -111,17 +116,25 @@ traffic (the `LspRequest` autocmd): whenever your usual mapping, picker, or
 command sends one of the navigation requests below from the buffer you are
 editing, Voyager runs its own read-only request for the same action and
 records the results in the flow tree. Your `gd`, `gr*`, snacks, Telescope, or
-any other navigation behaves exactly as it does without Voyager.
+any other navigation behaves exactly as it does without Voyager. The first
+observed navigation also creates the flow itself, rooted at the symbol the
+request started from.
 
-| Action | LSP method |
-| --- | --- |
-| Definition | `textDocument/definition` |
-| Declaration | `textDocument/declaration` |
-| References | `textDocument/references` |
-| Implementations | `textDocument/implementation` |
-| Type definition | `textDocument/typeDefinition` |
-| Incoming calls | `callHierarchy/incomingCalls` |
-| Outgoing calls | `callHierarchy/outgoingCalls` |
+| Action | LSP method | Sidebar label |
+| --- | --- | --- |
+| Definition | `textDocument/definition` | `definition` |
+| Declaration | `textDocument/declaration` | `declaration` |
+| References | `textDocument/references` | `usages` |
+| Implementations | `textDocument/implementation` | `implementations` |
+| Type definition | `textDocument/typeDefinition` | `type definitions` |
+| Incoming calls | `callHierarchy/incomingCalls` | `callers` |
+| Outgoing calls | `callHierarchy/outgoingCalls` | `calls` |
+
+Each recorded destination is then refined asynchronously: Voyager asks a
+`textDocument/documentSymbol`-capable server (falling back to treesitter) for
+the destination's enclosing symbol and kind, so a reference site renders as
+`DurableObservationIngressService.accept` with a method badge instead of the
+bare word under the reference.
 
 The sidebar is a compact floating card pinned to the configured editor edge.
 It grows and shrinks with the flow tree instead of reserving a full column,
@@ -131,7 +144,7 @@ up to `sidebar.width` columns and the available editor height.
 
 | Key | Behavior |
 | --- | --- |
-| `<CR>` | Jump from a location or note row; toggle an action row |
+| `<CR>` | Jump from a location or note row; toggle an action or tests row |
 | `o` | Jump but keep focus in the sidebar |
 | `a` | Jump to the selected node and pick an LSP action to record |
 | `p` | Peek at the selected location in a preview float |
@@ -144,6 +157,12 @@ up to `sidebar.width` columns and the available editor height.
 | `?` | Show a key reference |
 | `q`, `<Esc>` | Close Voyager |
 
+With `sidebar.preview` enabled (the default) the preview float follows the
+cursor on its own: resting on a location or note row opens or refreshes it,
+other rows hide it, and it closes when the sidebar loses focus. Set
+`sidebar.preview = false` to fall back to the `p` peek that closes on the next
+cursor move.
+
 ## Configuration
 
 `setup()` validates every option immediately. Changes made while a flow is open
@@ -154,8 +173,10 @@ apply to the next session.
 | `sidebar.width` | integer | `42` | Maximum popup width; must be at least 20 |
 | `sidebar.side` | `"left"` or `"right"` | `"right"` | Editor edge the popup is pinned to |
 | `sidebar.border` | string | `"rounded"` | One of `none`, `single`, `double`, `rounded`, `solid`, or `shadow` |
-| `sidebar.icons` | boolean or table | `true` | `true` for Nerd Font icons, `false` for plain text, or per-icon overrides |
+| `sidebar.icons` | boolean or table | `true` | `true` for Nerd Font icons, `false` for plain text, or per-icon overrides (including `icons.kinds`) |
 | `sidebar.path` | string | `"relative"` | Location paths: `relative`, `filename`, or `shortened` |
+| `sidebar.preview` | boolean | `true` | Preview float follows the sidebar cursor and closes on focus loss |
+| `sidebar.test_paths` | string list | common test layouts | Lua patterns that classify a location as test code |
 | `navigation.timeout_ms` | integer | `10000` | Per-network-stage timeout from 100 through 120000 milliseconds |
 | `sidebar_keymaps.jump_or_toggle` | keymap or false | `"<CR>"` | Activate a location/note or toggle an action |
 | `sidebar_keymaps.jump_stay` | keymap or false | `"o"` | Jump but keep focus in the sidebar |
@@ -189,6 +210,12 @@ sidebar.icons
 
 sidebar.path
 : Location path display: `relative`, `filename`, or `shortened`.
+
+sidebar.preview
+: Preview float follows the sidebar cursor and closes on focus loss.
+
+sidebar.test_paths
+: Lua patterns that classify a location as test code.
 
 navigation.timeout_ms
 : Per-network-stage timeout from 100 through 120000 milliseconds.
@@ -248,14 +275,20 @@ non-empty normal-mode left-hand sides after Neovim keycode normalization.
 
 Every part of a row carries a dedicated highlight group with a sensible
 default link, overridable like any other group: `VoyagerHeader`,
-`VoyagerDirty`, `VoyagerRequests`, `VoyagerSymbol`, `VoyagerAncestor`,
-`VoyagerPath`, `VoyagerActionLabel`, `VoyagerCount`, `VoyagerIcon`,
-`VoyagerDisclosure`, `VoyagerDirectionUp`, `VoyagerDirectionDown`,
-`VoyagerCurrent`, `VoyagerCurrentLine`, `VoyagerStale`, `VoyagerNote`, and
-`VoyagerFlash`. The current row gets a full-line highlight, every location on
-the current node's path renders its symbol emphasized, action rows carry
-`▲`/`▼` cues for the caller/callee direction, and a short `VoyagerFlash`
-highlight marks the target line after every sidebar jump.
+`VoyagerDirty`, `VoyagerRequests`, `VoyagerSymbol`, `VoyagerVisited`,
+`VoyagerAncestor`, `VoyagerPath`, `VoyagerActionLabel`, `VoyagerCount`,
+`VoyagerIcon`, `VoyagerDisclosure`, `VoyagerDirectionUp`,
+`VoyagerDirectionDown`, `VoyagerCurrent`, `VoyagerCurrentLine`,
+`VoyagerStale`, `VoyagerNote`, and `VoyagerFlash`. The current row gets a
+full-line highlight, every location on the current node's path renders its
+symbol emphasized, locations you have already visited render dimmed through
+`VoyagerVisited` while unvisited ones stay bright, action rows carry `▲`/`▼`
+cues for the caller/callee direction, and a short `VoyagerFlash` highlight
+marks the target line after every sidebar jump.
+
+Each location is prefixed with a badge for its symbol kind (class, interface,
+record, method, and friends) resolved from the language server or treesitter;
+override the glyphs through `sidebar.icons.kinds`.
 
 `sidebar.path` trims location paths when the card gets crowded:
 `"relative"` (default) shows the project-relative path, `"filename"` only the
@@ -266,8 +299,10 @@ file name, and `"shortened"` a `l/a/store.lua`-style abbreviation.
 Navigate however you always do—your own mappings, Neovim's `gr*` defaults, or
 a picker plugin. When a navigation request leaves the buffer you are editing,
 Voyager concurrently records every unique normalized destination below an
-action row such as `implementations`, `references`, or `incoming calls`.
-Successful empty responses remain visible as an action with zero results.
+action row such as `implementations`, `usages`, or `callers`. Successful
+empty responses remain visible as an action with zero results. Destinations
+in test files gather beneath a `tests (N)` row that starts folded; `<CR>` or
+`za` on it reveals them.
 
 Once an action records its destinations, Voyager watches for the cursor to land
 exactly on one of them in a normal source window—through a quickfix jump, a
@@ -275,10 +310,11 @@ picker, or any other navigation—and marks that destination as the flow's
 current node. Later landings on the same action's destinations keep updating
 the current node until a newer action runs or you pick a node in the sidebar.
 
-Retracing a route backwards never grows the tree. A destination that is
-already an ancestor on the current path—jumping from a reference site back to
-the definition you came from—is not recorded again; landing on it simply moves
-the current marker back to the existing node. A manual jump onto an ancestor
+Revisiting recorded ground never grows the tree. A destination that already
+exists anywhere in the flow—an ancestor you retrace, or the overlapping
+result set of running `usages` on both an interface method and its
+implementation—is not recorded again; the existing node is reused and only
+genuinely new destinations create children. A manual jump onto an ancestor
 continues from that node instead of recording a connector.
 
 In the sidebar, each location renders in call-flow order: actions that surface
@@ -376,10 +412,11 @@ navigated; otherwise Voyager marks it stale.
 
 ## Lifecycle and cleanup
 
-Voyager owns one process-wide session and one NUI popup. `:VoyagerOpen` starts a
-new flow only when no session is active; repeated opens focus the existing flow.
-The popup remounts across tabs and valid resizes without creating or resizing
-source splits.
+Voyager owns one process-wide session and one NUI popup. `:VoyagerOpen` stages
+a new session only when none is active; repeated opens focus the existing one.
+Until the first navigation the sidebar shows a waiting placeholder, there is
+nothing to save, and closing never prompts. The popup remounts across tabs and
+valid resizes without creating or resizing source splits.
 
 Closing cancels pending LSP requests and late interaction tokens, removes the
 session autocmd group, and closes only Voyager-owned windows. Intentional

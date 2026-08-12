@@ -8,6 +8,7 @@ local function new_session()
   local deps = FakeSessionDeps.new()
   local session = Session.new(deps:session_options())
   assert.is_true(session:open())
+  assert.is_true(session:ensure_flow())
   return session, deps
 end
 
@@ -89,6 +90,46 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals("/project/lua/auth.lua", claim.targets[1].filename)
     assert.equals(1, claim.targets[1].lnum)
     assert.equals(1, claim.targets[1].col)
+  end)
+
+  it("enriches committed nodes with enclosing symbols and re-renders on results", function()
+    local session, deps = new_session()
+    local root_id = session:state().flow.root.id
+    local result = Fixtures.location("lua/auth.lua", 0, "authorize")
+    deps.lsp.auto_outcome = outcome("references", root_id, { result })
+    session:run_action("references")
+
+    -- resolve_calls[1] is the root enrichment from flow creation
+    local call = deps.symbols.resolve_calls[2]
+    assert.is_table(call)
+    assert.equals(1, #call.requests)
+    assert.equals("file:///project/lua/auth.lua", call.requests[1].uri)
+    assert.equals(deps.config.navigation.timeout_ms, call.opts.timeout_ms)
+    local node_id = call.requests[1].node_id
+
+    local renders = deps.sidebar.render_count
+    deps.symbols.on_done({ [node_id] = { symbol = "AuthService.authorize", kind = "method" } })
+    local node = session:state().flow:location(node_id)
+    assert.equals("AuthService.authorize", node.location.symbol)
+    assert.equals("method", node.location.symbol_kind)
+    assert.equals(renders + 1, deps.sidebar.render_count)
+
+    deps.symbols.on_done({ [node_id] = { symbol = "AuthService.authorize", kind = "method" } })
+    assert.equals(renders + 1, deps.sidebar.render_count)
+  end)
+
+  it("drops enrichment results that settle after the session closes", function()
+    local session, deps = new_session()
+    local root_id = session:state().flow.root.id
+    local result = Fixtures.location("lua/auth.lua", 0, "authorize")
+    deps.lsp.auto_outcome = outcome("references", root_id, { result })
+    session:run_action("references")
+    local node_id = deps.symbols.resolve_calls[2].requests[1].node_id
+    local flow = session:state().flow
+
+    session:shutdown()
+    deps.symbols.on_done({ [node_id] = { symbol = "Late.symbol", kind = "method" } })
+    assert.equals("authorize", flow:location(node_id).location.symbol)
   end)
 
   it("returns current to an ancestor when navigation retraces the route", function()

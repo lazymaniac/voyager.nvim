@@ -16,7 +16,7 @@ local records = {
   declaration = { method = "textDocument/declaration", label = "declaration" },
   references = {
     method = "textDocument/references",
-    label = "references",
+    label = "usages",
     context = { includeDeclaration = true },
     placement = "above",
   },
@@ -31,14 +31,14 @@ local records = {
   incoming_calls = {
     method = "callHierarchy/incomingCalls",
     prepare_method = "textDocument/prepareCallHierarchy",
-    label = "incoming calls",
+    label = "callers",
     direction = "incoming",
     placement = "above",
   },
   outgoing_calls = {
     method = "callHierarchy/outgoingCalls",
     prepare_method = "textDocument/prepareCallHierarchy",
-    label = "outgoing calls",
+    label = "calls",
     direction = "outgoing",
   },
 }

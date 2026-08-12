@@ -1,4 +1,64 @@
 -- Classic Font Awesome codepoints; present in every Nerd Fonts patched font.
+local nerd_kind_icons = {
+  file = "\u{f016}",
+  module = "\u{f187}",
+  namespace = "\u{f187}",
+  package = "\u{f187}",
+  class = "\u{f1b2}",
+  method = "\u{f0ad}",
+  property = "\u{f02b}",
+  field = "\u{f02b}",
+  constructor = "\u{f0ad}",
+  enum = "\u{f03a}",
+  enum_member = "\u{f03a}",
+  interface = "\u{f1e0}",
+  ["function"] = "\u{f0ad}",
+  variable = "\u{f1de}",
+  constant = "\u{f023}",
+  record = "\u{f1b3}",
+  struct = "\u{f1b3}",
+  string = "",
+  number = "",
+  boolean = "",
+  array = "",
+  object = "",
+  key = "",
+  null = "",
+  event = "",
+  operator = "",
+  type_parameter = "",
+}
+
+local text_kind_icons = {
+  file = "",
+  module = "[M]",
+  namespace = "[N]",
+  package = "[P]",
+  class = "[C]",
+  method = "[m]",
+  property = "[p]",
+  field = "[p]",
+  constructor = "[c]",
+  enum = "[E]",
+  enum_member = "[e]",
+  interface = "[I]",
+  ["function"] = "[f]",
+  variable = "[v]",
+  constant = "[k]",
+  record = "[R]",
+  struct = "[S]",
+  string = "",
+  number = "",
+  boolean = "",
+  array = "",
+  object = "",
+  key = "",
+  null = "",
+  event = "",
+  operator = "",
+  type_parameter = "",
+}
+
 local nerd_icons = {
   definition = "\u{f05b}",
   declaration = "\u{f024}",
@@ -35,13 +95,43 @@ local text_icons = {
   callee = "▼",
 }
 
+nerd_icons.kinds = nerd_kind_icons
+text_icons.kinds = text_kind_icons
+
 local icon_keys = {}
 for key in pairs(nerd_icons) do
   icon_keys[key] = true
 end
+local kind_keys = {}
+for key in pairs(nerd_kind_icons) do
+  kind_keys[key] = true
+end
+
+-- Lua patterns that classify a location's path (or URI) as test code.
+local default_test_paths = {
+  "/src/test/",
+  "^tests?/",
+  "/tests?/",
+  "^spec/",
+  "/spec/",
+  "_test%.%w+$",
+  "%.test%.%w+$",
+  "_spec%.%w+$",
+  "Tests?%.%w+$",
+  "Spec%.%w+$",
+  "IT%.java$",
+}
 
 local defaults = {
-  sidebar = { width = 42, side = "right", border = "rounded", icons = true, path = "relative" },
+  sidebar = {
+    width = 42,
+    side = "right",
+    border = "rounded",
+    icons = true,
+    path = "relative",
+    preview = true,
+    test_paths = default_test_paths,
+  },
   navigation = { timeout_ms = 10000 },
   sidebar_keymaps = {
     jump_or_toggle = "<CR>",
@@ -62,7 +152,15 @@ local defaults = {
 }
 
 local known = {
-  sidebar = { width = true, side = true, border = true, icons = true, path = true },
+  sidebar = {
+    width = true,
+    side = true,
+    border = true,
+    icons = true,
+    path = true,
+    preview = true,
+    test_paths = true,
+  },
   navigation = { timeout_ms = true },
   sidebar_keymaps = {
     jump_or_toggle = true,
@@ -155,10 +253,22 @@ function M.resolve(opts)
     reject_unknown("sidebar.icons", icons, icon_keys)
     local merged = vim.deepcopy(nerd_icons)
     for key, value in pairs(icons) do
-      if type(value) ~= "string" then
+      if key == "kinds" then
+        if type(value) ~= "table" then
+          fail("sidebar.icons.kinds", "must be a table of kind icon overrides")
+        end
+        reject_unknown("sidebar.icons.kinds", value, kind_keys)
+        for kind, kind_icon in pairs(value) do
+          if type(kind_icon) ~= "string" then
+            fail("sidebar.icons.kinds." .. tostring(kind), "must be a string")
+          end
+          merged.kinds[kind] = kind_icon
+        end
+      elseif type(value) ~= "string" then
         fail("sidebar.icons." .. tostring(key), "must be a string")
+      else
+        merged[key] = value
       end
-      merged[key] = value
     end
     result.sidebar.icons = merged
   else
@@ -170,6 +280,18 @@ function M.resolve(opts)
   end
   if not path_styles[result.sidebar.path] then
     fail("sidebar.path", "must be 'relative', 'filename', or 'shortened'")
+  end
+  if type(result.sidebar.preview) ~= "boolean" then
+    fail("sidebar.preview", "must be a boolean")
+  end
+  local test_paths = result.sidebar.test_paths
+  if type(test_paths) ~= "table" or not vim.islist(test_paths) then
+    fail("sidebar.test_paths", "must be a list of Lua patterns")
+  end
+  for index, pattern in ipairs(test_paths) do
+    if type(pattern) ~= "string" or pattern == "" then
+      fail(string.format("sidebar.test_paths[%d]", index), "must be a non-empty Lua pattern")
+    end
   end
   if result.storage.resolve_uri ~= nil and not vim.is_callable(result.storage.resolve_uri) then
     fail("storage.resolve_uri", "must be callable or nil")

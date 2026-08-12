@@ -9,7 +9,9 @@ voyager-navigation.timeout_ms	voyager.txt	/*voyager-navigation.timeout_ms*
 voyager-sidebar.border	voyager.txt	/*voyager-sidebar.border*
 voyager-sidebar.icons	voyager.txt	/*voyager-sidebar.icons*
 voyager-sidebar.path	voyager.txt	/*voyager-sidebar.path*
+voyager-sidebar.preview	voyager.txt	/*voyager-sidebar.preview*
 voyager-sidebar.side	voyager.txt	/*voyager-sidebar.side*
+voyager-sidebar.test_paths	voyager.txt	/*voyager-sidebar.test_paths*
 voyager-sidebar.width	voyager.txt	/*voyager-sidebar.width*
 voyager-sidebar_keymaps.close	voyager.txt	/*voyager-sidebar_keymaps.close*
 voyager-sidebar_keymaps.collapse_all	voyager.txt	/*voyager-sidebar_keymaps.collapse_all*
@@ -38,6 +40,5 @@ voyager-voyager.nvim-lifecycle-and-cleanup	voyager.txt	/*voyager-voyager.nvim-li
 voyager-voyager.nvim-minimal-setup	voyager.txt	/*voyager-voyager.nvim-minimal-setup*
 voyager-voyager.nvim-non-file-uri-resolver	voyager.txt	/*voyager-voyager.nvim-non-file-uri-resolver*
 voyager-voyager.nvim-notes	voyager.txt	/*voyager-voyager.nvim-notes*
-voyager-voyager.nvim-release-status	voyager.txt	/*voyager-voyager.nvim-release-status*
 voyager-voyager.nvim-requirements	voyager.txt	/*voyager-voyager.nvim-requirements*
 voyager.txt	voyager.txt	/*voyager.txt*

@@ -11,6 +11,7 @@ local highlight_groups = {
   VoyagerDirty = { link = "DiagnosticWarn" },
   VoyagerRequests = { link = "Comment" },
   VoyagerSymbol = { link = "Identifier" },
+  VoyagerVisited = { link = "Comment" },
   VoyagerAncestor = { bold = true },
   VoyagerPath = { link = "Comment" },
   VoyagerActionLabel = { link = "Function" },
@@ -110,7 +111,13 @@ local function locator_text(locator, path_style)
   return shorten_path(value)
 end
 
+local locations_contain_current
+
 local function contains_current(action, current_node_id)
+  return locations_contain_current(action.results, current_node_id)
+end
+
+locations_contain_current = function(results, current_node_id)
   local function visit(location)
     if location.id == current_node_id then
       return true
@@ -122,8 +129,24 @@ local function contains_current(action, current_node_id)
     end
     return false
   end
-  for _, result in ipairs(action.results) do
+  for _, result in ipairs(results) do
     if visit(result) then
+      return true
+    end
+  end
+  return false
+end
+
+function M.is_test_location(location, test_paths)
+  local value = location.locator.path or location.locator.uri
+  if type(value) ~= "string" then
+    return false
+  end
+  -- Project locators are relative, so directory patterns like "/src/test/"
+  -- also run against a slash-prefixed copy.
+  local rooted = value:sub(1, 1) == "/" and value or ("/" .. value)
+  for _, pattern in ipairs(test_paths or {}) do
+    if value:find(pattern) or rooted:find(pattern) then
       return true
     end
   end
@@ -148,6 +171,15 @@ function M.project(flow, width, status, display)
   local icons = display.icons
   assert(type(icons) == "table", "Voyager sidebar icons are required")
   local rows = {}
+
+  if flow == nil then
+    local hint = row("hint", "", { segment("  navigate to start recording", "VoyagerPath") }, 0, nil, width)
+    table.insert(rows, hint)
+    local waiting = truncate_segments({ segment("Voyager · (waiting)", "VoyagerHeader") }, width)
+    return rows, { text = segments_text(waiting), segments = waiting }
+  end
+
+  local expanded_test_groups = status.expanded_test_groups or {}
 
   local ancestor_ids = {}
   for _, id in ipairs(flow:path_ids(flow.current_node_id)) do
@@ -181,14 +213,24 @@ function M.project(flow, width, status, display)
       glyph = segment(badge(icons.stale), "VoyagerStale")
     end
     local location = node.location
+    local symbol_hl = "VoyagerSymbol"
+    if ancestor_ids[node.id] then
+      symbol_hl = "VoyagerAncestor"
+    elseif node.visited then
+      symbol_hl = "VoyagerVisited"
+    end
+    local kind_icon = location.symbol_kind and icons.kinds and icons.kinds[location.symbol_kind] or nil
     local segments = {
       segment(string.rep("  ", depth)),
       glyph,
-      segment(location.symbol, ancestor_ids[node.id] and "VoyagerAncestor" or "VoyagerSymbol"),
+      segment(badge(kind_icon), "VoyagerIcon"),
+      segment(location.symbol, symbol_hl),
       segment(" — ", "VoyagerPath"),
       segment(locator_text(location.locator, display.path) .. ":" .. (location.range.start.line + 1), "VoyagerPath"),
     }
-    table.insert(rows, row("location", node.id, segments, depth, marker, width))
+    local location_row = row("location", node.id, segments, depth, marker, width)
+    location_row.visited = node.visited == true
+    table.insert(rows, location_row)
     if node.note then
       local note_depth = depth + 1
       local note_segments = {
@@ -223,9 +265,44 @@ function M.project(flow, width, status, display)
       segment(" (" .. #node.results .. ")", "VoyagerCount"),
     }
     table.insert(rows, row("action", node.id, segments, depth, marker, width))
-    if not node.collapsed then
-      for _, result in ipairs(node.results) do
-        visit_location(result, depth + 1)
+    if node.collapsed then
+      return
+    end
+
+    -- Test-file results are kept out of the way beneath a fold-by-default
+    -- "tests" group so real code sites stay in view.
+    local direct = {}
+    local tests = {}
+    for _, result in ipairs(node.results) do
+      if M.is_test_location(result.location, display.test_paths) then
+        table.insert(tests, result)
+      else
+        table.insert(direct, result)
+      end
+    end
+    for _, result in ipairs(direct) do
+      visit_location(result, depth + 1)
+    end
+    if #tests > 0 then
+      local expanded = expanded_test_groups[node.id] == true
+      local group_marker
+      local group_glyph = segment("")
+      if not expanded and locations_contain_current(tests, flow.current_node_id) then
+        group_marker = "descendant_current"
+        group_glyph = segment(badge(icons.current), "VoyagerCurrent")
+      end
+      local group_segments = {
+        segment(string.rep("  ", depth + 1)),
+        group_glyph,
+        segment(badge(expanded and icons.expanded or icons.collapsed), "VoyagerDisclosure"),
+        segment("tests", "VoyagerActionLabel"),
+        segment(" (" .. #tests .. ")", "VoyagerCount"),
+      }
+      table.insert(rows, row("group", node.id, group_segments, depth + 1, group_marker, width))
+      if expanded then
+        for _, result in ipairs(tests) do
+          visit_location(result, depth + 2)
+        end
       end
     end
   end
@@ -247,15 +324,15 @@ function M.project(flow, width, status, display)
   return rows, { text = segments_text(header_segments), segments = header_segments }
 end
 
-function M.selection_index(rows, previous_kind, previous_owner_id, hidden_by_action_id)
+function M.selection_index(rows, previous_kind, previous_owner_id, hidden_under)
   for index, candidate in ipairs(rows) do
     if candidate.kind == previous_kind and candidate.owner_id == previous_owner_id then
       return index
     end
   end
-  if hidden_by_action_id then
+  if hidden_under then
     for index, candidate in ipairs(rows) do
-      if candidate.kind == "action" and candidate.owner_id == hidden_by_action_id then
+      if candidate.kind == hidden_under.kind and candidate.owner_id == hidden_under.owner_id then
         return index
       end
     end
@@ -360,7 +437,9 @@ local function set_popup_cursor(popup, cursor)
   end
 end
 
-local function hidden_by_action(flow, owner_id)
+-- Find the visible row (collapsed action or folded test group) that hides
+-- `owner_id`, so the cursor can fall back to it after a re-render.
+local function hidden_under_row(flow, owner_id, opts)
   local function visit_location(location, hidden)
     if location.id == owner_id then
       return hidden
@@ -369,16 +448,27 @@ local function hidden_by_action(flow, owner_id)
       if action.id == owner_id then
         return hidden
       end
-      local descendant_hidden = hidden or (action.collapsed and action.id)
+      local action_hidden = hidden
+      if not action_hidden and action.collapsed then
+        action_hidden = { kind = "action", owner_id = action.id }
+      end
       for _, result in ipairs(action.results) do
-        local found = visit_location(result, descendant_hidden)
-        if found then
+        local result_hidden = action_hidden
+        if
+          not result_hidden
+          and M.is_test_location(result.location, opts.test_paths)
+          and opts.expanded_test_groups[action.id] ~= true
+        then
+          result_hidden = { kind = "group", owner_id = action.id }
+        end
+        local found = visit_location(result, result_hidden)
+        if found ~= nil then
           return found
         end
       end
     end
   end
-  return visit_location(flow.root, nil)
+  return visit_location(flow.root, false) or nil
 end
 
 local function each_lhs(value, callback)
@@ -509,12 +599,49 @@ function Sidebar:_create_popup(geometry)
   self:_bind_keymaps()
 end
 
+-- While the cursor rests on a location or note row the preview float stays
+-- open and follows; it closes when the sidebar loses focus, not on movement.
+function Sidebar:_bind_follow_preview()
+  if self._config.preview == false or not self._popup.bufnr then
+    return
+  end
+  self._follow_autocmds = self._follow_autocmds or {}
+  table.insert(
+    self._follow_autocmds,
+    vim.api.nvim_create_autocmd("CursorMoved", {
+      buffer = self._popup.bufnr,
+      callback = function()
+        if self._handlers.cursor_row then
+          self._handlers.cursor_row(self:selected_row())
+        end
+      end,
+    })
+  )
+  table.insert(
+    self._follow_autocmds,
+    vim.api.nvim_create_autocmd("BufLeave", {
+      buffer = self._popup.bufnr,
+      callback = function()
+        self:close_preview()
+      end,
+    })
+  )
+end
+
+function Sidebar:_clear_follow_preview()
+  for _, autocmd in ipairs(self._follow_autocmds or {}) do
+    pcall(vim.api.nvim_del_autocmd, autocmd)
+  end
+  self._follow_autocmds = nil
+end
+
 function Sidebar:_open(opts, envelope)
   self._envelope = envelope
   local fitted = M.fit(self._config, envelope, self._content)
   if not self._popup then
     self:_create_popup(fitted)
     self._popup:mount()
+    self:_bind_follow_preview()
   else
     self._popup:update_layout(popup_layout(self._config, fitted))
     self._popup:show()
@@ -576,6 +703,7 @@ end
 function Sidebar:unmount(opts)
   opts = opts or {}
   self:close_preview()
+  self:_clear_follow_preview()
   if not self._popup then
     self._mounted = false
     return
@@ -619,10 +747,20 @@ function Sidebar:render(flow, status)
 
   local previous = self:selected_row()
   local cap = assert(self._envelope).max_width - border_cells(self._config)
-  local rows, header = M.project(flow, cap, status, { icons = self._config.icons, path = self._config.path })
-  local hidden_action_id = previous and hidden_by_action(flow, previous.owner_id) or nil
+  local rows, header = M.project(flow, cap, status, {
+    icons = self._config.icons,
+    path = self._config.path,
+    test_paths = self._config.test_paths,
+  })
+  local hidden_under = previous
+      and flow
+      and hidden_under_row(flow, previous.owner_id, {
+        test_paths = self._config.test_paths,
+        expanded_test_groups = (status or {}).expanded_test_groups or {},
+      })
+    or nil
   local selected_index =
-    M.selection_index(rows, previous and previous.kind or nil, previous and previous.owner_id or nil, hidden_action_id)
+    M.selection_index(rows, previous and previous.kind or nil, previous and previous.owner_id or nil, hidden_under)
 
   local lines = { header.text }
   local annotated = { header.segments }
@@ -684,6 +822,16 @@ function Sidebar:close_preview()
 end
 
 function Sidebar:show_preview(opts)
+  if
+    self._preview
+    and type(opts) == "table"
+    and opts.key ~= nil
+    and self._preview.key == opts.key
+    and self._preview.winid
+    and vim.api.nvim_win_is_valid(self._preview.winid)
+  then
+    return true
+  end
   self:close_preview()
   if not self:is_mounted() or type(opts) ~= "table" or type(opts.lines) ~= "table" or #opts.lines == 0 then
     return false
@@ -731,8 +879,11 @@ function Sidebar:show_preview(opts)
     pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
     return false
   end
-  self._preview = { winid = winid, bufnr = bufnr }
-  self._preview_autocmd = vim.api.nvim_create_autocmd({ "CursorMoved", "BufLeave" }, {
+  self._preview = { winid = winid, bufnr = bufnr, key = opts.key }
+  -- In follow mode the persistent BufLeave autocmd owns closing; the peek
+  -- mode of a disabled follow preview still closes on the next cursor move.
+  local close_events = self._config.preview == false and { "CursorMoved", "BufLeave" } or { "BufLeave" }
+  self._preview_autocmd = vim.api.nvim_create_autocmd(close_events, {
     buffer = self._popup.bufnr,
     once = true,
     callback = function()

@@ -35,10 +35,17 @@ end
 function Flow:_reindex()
   self._index = {}
   self._parents = {}
+  self._identity_index = {}
   local function visit(node, parent_id)
     assert(not self._index[node.id], "duplicate Voyager node ID: " .. node.id)
     self._index[node.id] = node
     self._parents[node.id] = parent_id
+    if node.kind == "location" then
+      local identity = Locator.location_key(node.location)
+      if not self._identity_index[identity] then
+        self._identity_index[identity] = node.id
+      end
+    end
     local children = node.kind == "location" and node.actions or node.results
     for _, child in ipairs(children) do
       visit(child, node.id)
@@ -57,6 +64,7 @@ function M.new(opts)
   assert(type(opts.next_id) == "function", "Voyager flow ID factory is required")
   local timestamp = opts.now()
   local root = location_node(opts.next_id("location"), clean_location(opts.root))
+  root.visited = true
   local self = setmetatable({
     schema_version = 1,
     position_encoding = "utf-8",
@@ -117,6 +125,10 @@ function M.from_document(document, opts)
   }
   setmetatable(self, Flow)
   self:_reindex()
+  local current = self._index[self.current_node_id]
+  if current and current.kind == "location" then
+    current.visited = true
+  end
   return self
 end
 
@@ -151,10 +163,37 @@ function Flow:set_current(node_id)
   if self.current_node_id == node_id then
     return false
   end
+  node.visited = true
   self.current_node_id = node_id
   self._journal.current_node_id = true
   self._dirty = true
   return true
+end
+
+function Flow:apply_symbol(node_id, symbol, symbol_kind)
+  local node = self:location(node_id)
+  if not node then
+    return false
+  end
+  local changed = false
+  local touched = self._journal.metadata[node_id] or {}
+  -- The root's symbol participates in the flow identity (root_key, name,
+  -- flow_id), so enrichment may only refine its kind, never rename it.
+  if node.id ~= self.root.id and type(symbol) == "string" and symbol ~= "" and node.location.symbol ~= symbol then
+    node.location.symbol = symbol
+    touched.symbol = true
+    changed = true
+  end
+  if type(symbol_kind) == "string" and symbol_kind ~= "" and node.location.symbol_kind ~= symbol_kind then
+    node.location.symbol_kind = symbol_kind
+    touched.symbol = true
+    changed = true
+  end
+  if changed then
+    self._journal.metadata[node_id] = touched
+    self._dirty = true
+  end
+  return changed
 end
 
 function Flow:set_note(node_id, note)
@@ -326,26 +365,6 @@ function Flow:_commit_direct(input)
   assert(type(input.method) == "string" and input.method ~= "", "Voyager navigation method is required")
   assert(type(input.label) == "string" and input.label ~= "", "Voyager navigation label is required")
 
-  -- A destination that is already on the origin's own path is the same route
-  -- travelled backwards; it maps to the existing node instead of a new branch.
-  local ancestor_by_identity = {}
-  for _, ancestor in ipairs(self:_location_path(origin.id)) do
-    ancestor_by_identity[Locator.location_key(ancestor.location)] = ancestor.id
-  end
-
-  local node_id_by_identity = {}
-  local fresh = {}
-  for _, location in ipairs(input.locations or {}) do
-    local identity = location.identity or Locator.location_key(location)
-    local ancestor_id = ancestor_by_identity[identity]
-    if ancestor_id then
-      node_id_by_identity[identity] = ancestor_id
-    else
-      table.insert(fresh, location)
-    end
-  end
-
-  local changed = false
   local action
   for _, candidate in ipairs(origin.actions) do
     if candidate.method == input.method then
@@ -353,6 +372,31 @@ function Flow:_commit_direct(input)
       break
     end
   end
+
+  local results_by_identity = {}
+  if action then
+    for _, result in ipairs(action.results) do
+      results_by_identity[Locator.location_key(result.location)] = result
+    end
+  end
+
+  -- A destination that is already recorded anywhere in the flow is the same
+  -- place reached along another route; it maps to the existing node instead
+  -- of growing a duplicate branch. The action's own results stay in the
+  -- fresh list so their display metadata still refreshes below.
+  local node_id_by_identity = {}
+  local fresh = {}
+  for _, location in ipairs(input.locations or {}) do
+    local identity = location.identity or Locator.location_key(location)
+    local existing_id = self._identity_index[identity]
+    if existing_id and not results_by_identity[identity] then
+      node_id_by_identity[identity] = existing_id
+    else
+      table.insert(fresh, location)
+    end
+  end
+
+  local changed = false
   if not action and #fresh == 0 and #(input.locations or {}) > 0 then
     return {
       effective_origin_id = origin.id,
@@ -369,11 +413,6 @@ function Flow:_commit_direct(input)
     changed = true
   end
 
-  local results_by_identity = {}
-  for _, result in ipairs(action.results) do
-    results_by_identity[Locator.location_key(result.location)] = result
-  end
-
   for _, location in ipairs(fresh) do
     local identity = location.identity or Locator.location_key(location)
     local result = results_by_identity[identity]
@@ -382,6 +421,7 @@ function Flow:_commit_direct(input)
       table.insert(action.results, result)
       self._index[result.id] = result
       self._parents[result.id] = action.id
+      self._identity_index[identity] = self._identity_index[identity] or result.id
       results_by_identity[identity] = result
       self._journal.metadata[result.id] = { symbol = true }
       if location.context ~= nil and location.context ~= "" then
@@ -572,10 +612,13 @@ function M.merge(latest_document, active_flow, active_journal, next_id)
     local metadata_touch = active_journal.metadata[active.id] or {}
     if metadata_touch.symbol ~= true then
       merged.location.symbol = latest.location.symbol
+      merged.location.symbol_kind = latest.location.symbol_kind
     end
     if metadata_touch.context ~= true then
       merged.location.context = latest.location.context
     end
+    -- A node visited in either revision stays visited.
+    merged.visited = (active.visited or latest.visited) and true or nil
     merged.actions = merge_action_children(latest.actions, active.actions, active.id)
     return merged
   end
