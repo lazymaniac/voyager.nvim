@@ -414,11 +414,3 @@ The toolchain is pinned by the Makefile. Useful targets are:
 
 Documentation generation uses Docker by default. Set `CONTAINER=podman` when
 using Podman, for example `make help-check CONTAINER=podman`.
-
-## Release status
-
-Voyager is implementation-ready work in progress, not a publicly released
-package. Tag publishing remains gated until the source repository is accessible
-to the selected publisher (or a private-compatible source path is adopted) and
-the repository explicitly enables the release workflow. Do not treat an untagged
-checkout as a supported public release.
