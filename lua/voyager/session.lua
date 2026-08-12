@@ -209,9 +209,6 @@ function Session:_notify_outcome(outcome)
   if status == "partial" then
     local count = type(outcome.failures) == "table" and #outcome.failures or 0
     message = string.format("Voyager: %s completed with %d issue%s", label, count, count == 1 and "" or "s")
-  elseif status == "empty" then
-    message = "Voyager: " .. label .. " returned no results"
-    level = vim.log.levels.INFO
   elseif status == "error" then
     message = "Voyager: " .. label .. " failed: " .. (first_failure_message(outcome) or "request failed")
     level = vim.log.levels.ERROR
@@ -695,6 +692,8 @@ function Session:_arm_destination_claim(state, context, tagged_items)
         filename = list_item.filename,
         lnum = list_item.lnum,
         col = list_item.col,
+        end_lnum = list_item.end_lnum,
+        end_col = list_item.end_col,
       })
     end
   end
@@ -730,20 +729,40 @@ function Session:_check_destination_claim(state, winid)
   local bufnr = runtime.win_buf(winid)
   local cursor = runtime.cursor(winid)
   local buffer_path
+  local function target_in_buffer(target)
+    if type(target.bufnr) == "number" then
+      return target.bufnr == bufnr
+    end
+    if type(target.filename) ~= "string" then
+      return false
+    end
+    buffer_path = buffer_path or realpath(runtime, runtime.buffer_name(bufnr))
+    return buffer_path == realpath(runtime, target.filename)
+  end
+
+  -- Pickers do not all land on the exact column (some jump to the line
+  -- start), so accept a containment or unique same-line match as well.
+  local exact
+  local contained
+  local on_line = {}
   for _, target in ipairs(claim.targets) do
-    if cursor.line == target.lnum - 1 and cursor.character == target.col - 1 then
-      local matches = false
-      if type(target.bufnr) == "number" then
-        matches = target.bufnr == bufnr
-      elseif type(target.filename) == "string" then
-        buffer_path = buffer_path or realpath(runtime, runtime.buffer_name(bufnr))
-        matches = buffer_path == realpath(runtime, target.filename)
-      end
-      if matches then
-        self:_make_current(state, target.node_id)
-        return
+    if cursor.line == target.lnum - 1 and target_in_buffer(target) then
+      table.insert(on_line, target)
+      if cursor.character == target.col - 1 then
+        exact = exact or target
+      elseif
+        target.end_lnum == target.lnum
+        and type(target.end_col) == "number"
+        and cursor.character >= target.col - 1
+        and cursor.character < target.end_col - 1
+      then
+        contained = contained or target
       end
     end
+  end
+  local chosen = exact or contained or (#on_line == 1 and on_line[1] or nil)
+  if chosen then
+    self:_make_current(state, chosen.node_id)
   end
 end
 
@@ -821,6 +840,7 @@ function Session:_jump_to_location(state, node_id, mark_current)
   self._runtime.set_win_buf(winid, target.bufnr)
   self._runtime.set_win_cursor(winid, { target.row, target.col })
   self._runtime.open_folds(winid)
+  self._runtime.flash_line(target.bufnr, target.row)
   self:_record_source_window(state, winid)
   if mark_current == false then
     if was_stale then
@@ -834,7 +854,7 @@ function Session:_jump_to_location(state, node_id, mark_current)
   return true
 end
 
-function Session:activate_row(row)
+function Session:activate_row(row, opts)
   if not self:is_active() then
     return false
   end
@@ -849,7 +869,12 @@ function Session:activate_row(row)
     self:_notify_inapplicable("activate", row)
     return false
   end
-  return self:_jump_to_location(self._state, row.owner_id, true)
+  local state = self._state
+  local jumped = self:_jump_to_location(state, row.owner_id, true)
+  if jumped and type(opts) == "table" and opts.stay then
+    state.sidebar:focus()
+  end
+  return jumped
 end
 
 function Session:toggle_row(row)
@@ -866,6 +891,194 @@ function Session:toggle_row(row)
     self:_render(self._state)
   end
   return changed
+end
+
+function Session:_row_location_id(row)
+  if type(row) ~= "table" or type(row.owner_id) ~= "string" then
+    return nil
+  end
+  if row.kind == "location" or row.kind == "note" then
+    return row.owner_id
+  end
+  if row.kind == "action" then
+    return self._state.flow:parent_id(row.owner_id)
+  end
+end
+
+function Session:delete_row(row)
+  if not self:is_active() then
+    return false
+  end
+  local state = self._state
+  if type(row) ~= "table" or type(row.owner_id) ~= "string" then
+    self:_notify_inapplicable("delete", row)
+    return false
+  end
+  if row.kind == "note" then
+    if state.flow:set_note(row.owner_id, nil) then
+      self:_render(state)
+      return true
+    end
+    return false
+  end
+  if row.kind ~= "location" and row.kind ~= "action" then
+    self:_notify_inapplicable("delete", row)
+    return false
+  end
+  if row.owner_id == state.flow.root.id then
+    self._ui.notify("Voyager: the flow root cannot be deleted", vim.log.levels.INFO)
+    return false
+  end
+  if not state.flow:delete(row.owner_id) then
+    return false
+  end
+  state.destination_claim = nil
+  self:_render(state)
+  return true
+end
+
+function Session:run_action_for_row(row)
+  if not self:is_active() then
+    return nil
+  end
+  local state = self._state
+  local node_id = self:_row_location_id(row)
+  if not node_id then
+    self:_notify_inapplicable("run an action", row)
+    return nil
+  end
+  if not self:_jump_to_location(state, node_id, true) then
+    return nil
+  end
+  local token = self:_replace_interaction_token("action_picker")
+  local names = Actions.names()
+  local opened, select_error = pcall(self._ui.select, names, {
+    prompt = "Voyager action",
+    format_item = function(name)
+      return Actions.get(name).label
+    end,
+  }, function(choice)
+    if not self:_consume_interaction(token) or type(choice) ~= "string" then
+      return
+    end
+    self:run_action(choice)
+  end)
+  if not opened then
+    self:_consume_interaction(token)
+    self._ui.notify("Voyager: action picker failed: " .. tostring(select_error), vim.log.levels.ERROR)
+    return nil
+  end
+  return true
+end
+
+function Session:preview_row(row)
+  if not self:is_active() then
+    return nil
+  end
+  local state = self._state
+  if type(row) ~= "table" or (row.kind ~= "location" and row.kind ~= "note") then
+    self:_notify_inapplicable("preview", row)
+    return nil
+  end
+  local node = state.flow:location(row.owner_id)
+  if not node then
+    self._ui.notify("Voyager: location is no longer available", vim.log.levels.WARN)
+    return nil
+  end
+  local lines = state.locator:source(node.location.locator)
+  if not lines then
+    self._ui.notify("Voyager: source for " .. tostring(node.location.symbol) .. " is unavailable", vim.log.levels.WARN)
+    return nil
+  end
+  local start_line = node.location.range.start.line + 1
+  local first = math.max(1, start_line - 3)
+  local last = math.min(#lines, start_line + 6)
+  local slice = {}
+  for index = first, last do
+    table.insert(slice, lines[index])
+  end
+  local filetype = ""
+  local name = node.location.locator.path or node.location.locator.uri
+  if type(name) == "string" then
+    filetype = self._runtime.filetype_match(name) or ""
+  end
+  return state.sidebar:show_preview({
+    lines = slice,
+    title = " " .. tostring(node.location.symbol) .. " ",
+    focus_line = start_line - first + 1,
+    filetype = filetype,
+  })
+end
+
+function Session:set_all_collapsed(collapsed)
+  if not self:is_active() then
+    return false
+  end
+  local changed = self._state.flow:set_all_collapsed(collapsed)
+  if changed then
+    self:_render(self._state)
+  end
+  return changed
+end
+
+function Session:export(row)
+  if not self:is_active() then
+    self._ui.notify("Voyager: no active flow to export", vim.log.levels.INFO)
+    return nil
+  end
+  local state = self._state
+  local start_node = state.flow.root
+  if row ~= nil then
+    if type(row) ~= "table" or type(row.owner_id) ~= "string" then
+      self:_notify_inapplicable("export", row)
+      return nil
+    end
+    start_node = row.kind == "note" and state.flow:location(row.owner_id) or state.flow:find(row.owner_id)
+    if not start_node then
+      self._ui.notify("Voyager: export target is no longer available", vim.log.levels.WARN)
+      return nil
+    end
+  end
+
+  local items = {}
+  local skipped = 0
+  local function visit(node)
+    if node.kind == "location" then
+      local target = state.locator:list_target(node.location.locator)
+      if target then
+        table.insert(
+          items,
+          vim.tbl_extend("force", target, {
+            lnum = node.location.range.start.line + 1,
+            col = node.location.range.start.character + 1,
+            text = node.location.context or node.location.symbol,
+          })
+        )
+      else
+        skipped = skipped + 1
+      end
+      for _, action in ipairs(node.actions) do
+        visit(action)
+      end
+    else
+      for _, result in ipairs(node.results) do
+        visit(result)
+      end
+    end
+  end
+  visit(start_node)
+
+  if #items == 0 then
+    self._ui.notify("Voyager: nothing exportable in this flow", vim.log.levels.INFO)
+    return nil
+  end
+  self._runtime.set_quickfix({ title = "Voyager: " .. state.flow.name, items = items })
+  local message = string.format("Voyager: exported %d location%s to quickfix", #items, #items == 1 and "" or "s")
+  if skipped > 0 then
+    message = message .. string.format(" (%d unresolvable skipped)", skipped)
+  end
+  self._ui.notify(message, vim.log.levels.INFO)
+  return #items
 end
 
 local function normalize_note(value)
@@ -941,6 +1154,14 @@ function Session:_remount_after_interaction(state)
   return true
 end
 
+function Session:_resolve_dirty(intent, continuation)
+  local state = self._state
+  if state and state.config.storage.autosave == true and self:save(continuation) then
+    return true
+  end
+  return self:_decide_dirty(intent, continuation)
+end
+
 function Session:_decide_dirty(intent, continuation)
   local state = self._state
   if not state or state.phase ~= "active" then
@@ -950,6 +1171,7 @@ function Session:_decide_dirty(intent, continuation)
   state.phase = "deciding"
   self._interaction_tokens.note_input = nil
   self._interaction_tokens.flow_picker = nil
+  self._interaction_tokens.action_picker = nil
   local token = self:_replace_interaction_token("dirty_decision")
   local selected, select_error = pcall(self._ui.select, { "Save", "Discard", "Cancel" }, {
     prompt = "Save changes to Voyager flow?",
@@ -1177,7 +1399,7 @@ function Session:load()
       return self:_install_loaded_flow(candidate, project_root_value, config, locator, store, load_context)
     end
     if self:is_active() and self._state.flow:is_dirty() then
-      self:_decide_dirty("load", load_and_install)
+      self:_resolve_dirty("load", load_and_install)
     else
       load_and_install()
     end
@@ -1223,7 +1445,7 @@ function Session:close(source)
   end
   source = source or "close"
   if state.flow:is_dirty() then
-    return self:_decide_dirty("close", function()
+    return self:_resolve_dirty("close", function()
       self:_teardown(source)
     end)
   end
@@ -1231,6 +1453,15 @@ function Session:close(source)
 end
 
 function Session:shutdown()
+  local state = self._state
+  if
+    self:is_active()
+    and state.phase == "active"
+    and state.config.storage.autosave == true
+    and state.flow:is_dirty()
+  then
+    pcall(self.save, self)
+  end
   return self:_teardown("shutdown")
 end
 
@@ -1300,6 +1531,24 @@ function M.native(config_provider, runtime, overrides)
         handlers = {
           activate = function(row)
             return controller:activate_row(row)
+          end,
+          activate_stay = function(row)
+            return controller:activate_row(row, { stay = true })
+          end,
+          run_action = function(row)
+            return controller:run_action_for_row(row)
+          end,
+          delete = function(row)
+            return controller:delete_row(row)
+          end,
+          preview = function(row)
+            return controller:preview_row(row)
+          end,
+          collapse_all = function()
+            return controller:set_all_collapsed(true)
+          end,
+          expand_all = function()
+            return controller:set_all_collapsed(false)
           end,
           note = function(row)
             return controller:edit_note(row)

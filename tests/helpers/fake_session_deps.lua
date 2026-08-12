@@ -93,6 +93,14 @@ local function fake_sidebar(env)
     return self.mounted
   end
 
+  function sidebar:show_preview(opts)
+    self.preview_calls = self.preview_calls or {}
+    table.insert(self.preview_calls, vim.deepcopy(opts))
+    return true
+  end
+
+  function sidebar:close_preview() end
+
   function sidebar:owns_window(winid)
     return self.mounted and winid == self.winid
   end
@@ -280,6 +288,18 @@ function M.new(overrides)
     schedule = function(callback)
       table.insert(env.scheduled, callback)
     end,
+    filetype_match = function(name)
+      env.filetype_requests = env.filetype_requests or {}
+      table.insert(env.filetype_requests, name)
+      return "lua"
+    end,
+    set_quickfix = function(list)
+      env.quickfix = vim.deepcopy(list)
+    end,
+    flash_line = function(bufnr, row)
+      env.flashes = env.flashes or {}
+      table.insert(env.flashes, { bufnr = bufnr, row = row })
+    end,
     get_clients = function(filter)
       env.last_client_filter = vim.deepcopy(filter)
       return env.clients
@@ -357,6 +377,23 @@ function M.new(overrides)
   }
   function env.locator:is_stale()
     return self.stale, self.stale and (self.stale_reason or "location is stale") or nil
+  end
+  function env.locator:source(locator)
+    self.source_calls = self.source_calls or {}
+    table.insert(self.source_calls, vim.deepcopy(locator))
+    if self.source_lines == false then
+      return nil
+    end
+    return vim.deepcopy(self.source_lines or { "line one", "line two", "line three" })
+  end
+  function env.locator:list_target(locator)
+    if self.list_target_error then
+      return nil, self.list_target_error
+    end
+    if locator.uri then
+      return nil, "non-file URI has no loaded source"
+    end
+    return { filename = "/project/" .. locator.path }
   end
   function env.locator:open_target(location)
     table.insert(self.open_target_calls, vim.deepcopy(location))

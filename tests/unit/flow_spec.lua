@@ -213,6 +213,105 @@ describe("Voyager flow", function()
     assert.same({}, flow.root.actions[1].results)
   end)
 
+  it("deletes branches, relocates current, and refuses the root", function()
+    local flow = Fixtures.branched_flow()
+    local implementations = flow.root.actions[1]
+    local mysql = implementations.results[1]
+    local nested = flow:commit_navigation({
+      origin_node_id = mysql.id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { Fixtures.location("lua/auth.lua", 8, "AuthService.login") },
+    })
+    local auth_id = nested.node_id_by_identity[Fixtures.identity("lua/auth.lua", 8)]
+    assert.is_true(flow:set_current(auth_id))
+
+    assert.is_false(flow:delete(flow.root.id))
+    assert.is_false(flow:delete("loc-unknown"))
+
+    assert.is_true(flow:delete(mysql.id))
+    assert.is_nil(flow:find(mysql.id))
+    assert.is_nil(flow:find(auth_id))
+    assert.equals(flow.root.id, flow.current_node_id)
+    assert.equals(1, #implementations.results)
+    local journal = flow:journal()
+    assert.is_true(journal.deleted[implementations.id][Fixtures.identity("lua/mysql.lua", 2)])
+
+    assert.is_true(flow:delete(implementations.id))
+    assert.same({}, flow.root.actions)
+    journal = flow:journal()
+    assert.is_true(journal.deleted[flow.root.id]["textDocument/implementation"])
+  end)
+
+  it("keeps deleted branches out of a save merge while importing new ones", function()
+    local Locator = require("voyager.locator")
+    local active = Fixtures.new_flow()
+    local site = Fixtures.location("lua/site.lua", 1, "site")
+    local extra = Fixtures.location("lua/extra.lua", 2, "extra")
+    local other = Fixtures.location("lua/other.lua", 3, "other")
+    local references = active:commit_navigation({
+      origin_node_id = active.root.id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { site, extra },
+    })
+    local definition = active:commit_navigation({
+      origin_node_id = active.root.id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { other },
+    })
+    assert.is_true(active:delete(references.node_id_by_identity[extra.identity]))
+    assert.is_true(active:delete(definition.action_id))
+
+    local latest_root = location_node(1, "lua/main.lua", 0, "main")
+    latest_root.actions = {
+      action_node(2, "textDocument/references", "references", {
+        location_node(3, "lua/site.lua", 1, "site"),
+        location_node(4, "lua/extra.lua", 2, "extra"),
+      }),
+      action_node(5, "textDocument/definition", "definition", {
+        location_node(6, "lua/other.lua", 3, "other"),
+      }),
+      action_node(7, "textDocument/implementation", "implementations", {
+        location_node(8, "lua/impl.lua", 4, "impl"),
+      }),
+    }
+    local merged = Flow.merge(document(latest_root), active, active:journal(), select(2, Fixtures.factories()))
+
+    local methods = {}
+    for _, action in ipairs(merged.root.actions) do
+      local identities = {}
+      for _, result in ipairs(action.results) do
+        table.insert(identities, Locator.location_key(result.location))
+      end
+      methods[action.method] = identities
+    end
+    assert.same({ Fixtures.identity("lua/site.lua", 1) }, methods["textDocument/references"])
+    assert.is_nil(methods["textDocument/definition"])
+    assert.same({ Fixtures.identity("lua/impl.lua", 4) }, methods["textDocument/implementation"])
+  end)
+
+  it("collapses and expands every action at once", function()
+    local flow = Fixtures.branched_flow()
+    flow:commit_navigation({
+      origin_node_id = flow.root.actions[1].results[1].id,
+      method = "textDocument/references",
+      label = "references",
+      locations = { Fixtures.location("lua/auth.lua", 8, "AuthService.login") },
+    })
+
+    assert.is_true(flow:set_all_collapsed(true))
+    for _, node in ipairs(flow:dfs()) do
+      assert.is_true(node.kind ~= "action" or node.collapsed)
+    end
+    assert.is_false(flow:set_all_collapsed(true))
+    assert.is_true(flow:set_all_collapsed(false))
+    for _, node in ipairs(flow:dfs()) do
+      assert.is_true(node.kind ~= "action" or not node.collapsed)
+    end
+  end)
+
   it("finds nested nodes and returns nil for an unknown ID", function()
     local flow = Fixtures.new_flow()
     local commit = flow:commit_navigation({
