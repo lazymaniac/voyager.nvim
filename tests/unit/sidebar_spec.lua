@@ -77,7 +77,10 @@ describe("Voyager sidebar projection", function()
     local action_row, action_index = row_for(collapsed, "action", implementation.id)
     assert.equals("descendant_current", action_row.marker)
     assert.is_nil(row_for(collapsed, "location", auth_id))
-    assert.equals(action_index, Sidebar.selection_index(collapsed, "location", auth_id, implementation.id))
+    assert.equals(
+      action_index,
+      Sidebar.selection_index(collapsed, "location", auth_id, { kind = "action", owner_id = implementation.id })
+    )
   end)
 
   it("renders project, absolute, and URI locations with one-based lines", function()
@@ -115,6 +118,84 @@ describe("Voyager sidebar projection", function()
       nil,
       true
     )
+  end)
+
+  it("separates test-file results under a collapsed tests group", function()
+    local flow = Fixtures.new_flow()
+    local site = Fixtures.location("src/main/java/Service.java", 4, "Service.accept")
+    local test_a = Fixtures.location("src/test/java/ServiceTest.java", 9, "ServiceTest.accepts")
+    local test_b = Fixtures.location("tests/unit/service_spec.lua", 2, "spec")
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { site, test_a, test_b },
+    })
+    local display = { icons = text_icons, test_paths = { "/src/test/", "^tests/" } }
+    local site_id = commit.node_id_by_identity[site.identity]
+    local test_a_id = commit.node_id_by_identity[test_a.identity]
+
+    local rows = Sidebar.project(flow, 80, {}, display)
+    assert.is_table(row_for(rows, "location", site_id))
+    assert.is_nil(row_for(rows, "location", test_a_id))
+    local group = row_for(rows, "group", commit.action_id)
+    assert.matches("tests %(2%)", group.text)
+    assert.matches("▸", group.text)
+
+    local expanded = Sidebar.project(flow, 80, { expanded_test_groups = { [commit.action_id] = true } }, display)
+    local shown = row_for(expanded, "location", test_a_id)
+    assert.is_table(shown)
+    assert.equals(row_for(expanded, "group", commit.action_id).depth + 1, shown.depth)
+
+    -- current node folded inside the group surfaces the descendant marker
+    assert.is_true(flow:set_current(test_a_id))
+    local folded = Sidebar.project(flow, 80, {}, display)
+    assert.equals("descendant_current", row_for(folded, "group", commit.action_id).marker)
+  end)
+
+  it("dims visited locations and prefixes known symbol kinds", function()
+    local flow = Fixtures.new_flow()
+    local site = Fixtures.location("lua/service.lua", 4, "Service.accept")
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { site },
+    })
+    local site_id = commit.node_id_by_identity[site.identity]
+    flow:apply_symbol(site_id, "Service.accept", "method")
+    local icons = vim.deepcopy(text_icons)
+
+    local rows = Sidebar.project(flow, 80, {}, { icons = icons })
+    local site_row = row_for(rows, "location", site_id)
+    assert.is_false(site_row.visited)
+    assert.matches("[m] Service.accept", site_row.text, nil, true)
+    local symbol_segment
+    for _, segment in ipairs(site_row.segments) do
+      if segment.text == "Service.accept" then
+        symbol_segment = segment
+      end
+    end
+    assert.equals("VoyagerSymbol", symbol_segment.hl)
+
+    assert.is_true(flow:set_current(site_id))
+    assert.is_true(flow:set_current(flow.root.id))
+    local revisited = Sidebar.project(flow, 80, {}, { icons = icons })
+    local visited_row = row_for(revisited, "location", site_id)
+    assert.is_true(visited_row.visited)
+    for _, segment in ipairs(visited_row.segments) do
+      if segment.text == "Service.accept" then
+        assert.equals("VoyagerVisited", segment.hl)
+      end
+    end
+  end)
+
+  it("projects a waiting placeholder when no flow exists yet", function()
+    local rows, header = Sidebar.project(nil, 42, {}, { icons = text_icons })
+    assert.equals("Voyager · (waiting)", header.text)
+    assert.equals(1, #rows)
+    assert.equals("hint", rows[1].kind)
+    assert.matches("navigate to start recording", rows[1].text)
   end)
 
   it("indents and display-width truncates notes", function()
@@ -610,13 +691,18 @@ describe("Voyager sidebar popup", function()
     sidebar:unmount({ owned = true })
   end)
 
-  it("opens and closes preview and help floats beside the popup", function()
+  it("keeps the follow preview open across cursor moves and closes it on focus loss", function()
     local fake = FakePopup.new()
     local config = Config.resolve({ sidebar = { icons = false } })
+    local cursor_rows = {}
     local sidebar = Sidebar.new({
       sidebar = config.sidebar,
       keymaps = config.sidebar_keymaps,
-      handlers = noop_handlers(),
+      handlers = noop_handlers({
+        cursor_row = function(row)
+          table.insert(cursor_rows, row or false)
+        end,
+      }),
       popup_factory = fake.factory,
       ui_state = ui_state,
       notify = function() end,
@@ -630,16 +716,49 @@ describe("Voyager sidebar popup", function()
       title = " save ",
       focus_line = 1,
       filetype = "lua",
+      key = "loc-save",
     }))
     assert.equals(windows_before + 1, #vim.api.nvim_list_wins())
 
+    -- moving the cursor keeps the float and re-dispatches the row handler
     vim.api.nvim_exec_autocmds("CursorMoved", { buffer = fake.bufnr })
+    assert.equals(windows_before + 1, #vim.api.nvim_list_wins())
+    assert.is_true(#cursor_rows > 0)
+
+    -- an unchanged key is a no-op render
+    local preview_win = sidebar._preview.winid
+    assert.is_true(sidebar:show_preview({ lines = { "other" }, key = "loc-save" }))
+    assert.equals(preview_win, sidebar._preview.winid)
+
+    vim.api.nvim_exec_autocmds("BufLeave", { buffer = fake.bufnr })
     assert.equals(windows_before, #vim.api.nvim_list_wins())
 
     assert.is_true(sidebar:show_help())
     assert.equals(windows_before + 1, #vim.api.nvim_list_wins())
     sidebar:unmount({ owned = true })
     assert.equals(windows_before, #vim.api.nvim_list_wins())
+  end)
+
+  it("closes a peek preview on cursor move when follow mode is disabled", function()
+    local fake = FakePopup.new()
+    local config = Config.resolve({ sidebar = { icons = false, preview = false } })
+    local sidebar = Sidebar.new({
+      sidebar = config.sidebar,
+      keymaps = config.sidebar_keymaps,
+      handlers = noop_handlers(),
+      popup_factory = fake.factory,
+      ui_state = ui_state,
+      notify = function() end,
+    })
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+    sidebar:render(Fixtures.branched_flow(), { dirty = false, request_count = 0 })
+    local windows_before = #vim.api.nvim_list_wins()
+
+    assert.is_true(sidebar:show_preview({ lines = { "peek" }, title = " peek " }))
+    assert.equals(windows_before + 1, #vim.api.nvim_list_wins())
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = fake.bufnr })
+    assert.equals(windows_before, #vim.api.nvim_list_wins())
+    sidebar:unmount({ owned = true })
   end)
 
   it("mounts only a scratch popup and preserves the source window", function()

@@ -56,6 +56,14 @@ function M.status()
     return nil
   end
   local state = active_session:state()
+  if not state.flow then
+    return {
+      name = "(waiting)",
+      dirty = false,
+      locations = 0,
+      requests = state.request_count,
+    }
+  end
   local locations = 0
   for _, node in ipairs(state.flow:dfs()) do
     if node.kind == "location" then

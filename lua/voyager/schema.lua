@@ -109,10 +109,13 @@ end
 
 local function validate_location(value, path)
   require_object(value, path)
-  reject_unknown(value, path, { locator = true, range = true, symbol = true, context = true })
+  reject_unknown(value, path, { locator = true, range = true, symbol = true, symbol_kind = true, context = true })
   validate_locator(value.locator, path .. ".locator")
   validate_range(value.range, path .. ".range")
   require_string(value.symbol, path .. ".symbol")
+  if value.symbol_kind ~= nil then
+    require_string(value.symbol_kind, path .. ".symbol_kind")
+  end
   if value.context ~= nil then
     require_string(value.context, path .. ".context")
   end
@@ -178,10 +181,17 @@ function M.validate(document)
     ids[node.id] = expected_kind
 
     if expected_kind == "location" then
-      reject_unknown(node, path, { id = true, kind = true, location = true, note = true, actions = true })
+      reject_unknown(
+        node,
+        path,
+        { id = true, kind = true, location = true, note = true, visited = true, actions = true }
+      )
       validate_location(node.location, path .. ".location")
       if node.note ~= nil then
         require_string(node.note, path .. ".note")
+      end
+      if node.visited ~= nil and type(node.visited) ~= "boolean" then
+        fail(path .. ".visited must be a boolean")
       end
       require_array(node.actions, path .. ".actions")
       local methods = {}
@@ -308,6 +318,9 @@ local function encode_location(value, level)
     { "range", value.range, encode_range },
     { "symbol", value.symbol },
   }
+  if value.symbol_kind ~= nil then
+    table.insert(fields, { "symbol_kind", value.symbol_kind })
+  end
   if value.context ~= nil then
     table.insert(fields, { "context", value.context })
   end
@@ -329,6 +342,9 @@ encode_node = function(value, level)
     }
     if value.note ~= nil then
       table.insert(fields, { "note", value.note })
+    end
+    if value.visited == true then
+      table.insert(fields, { "visited", value.visited })
     end
     table.insert(fields, { "actions", value.actions, encode_nodes })
     return object(fields, level)

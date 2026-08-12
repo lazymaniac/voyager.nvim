@@ -51,6 +51,32 @@ describe("Voyager schema", function()
     end)
   end)
 
+  it("round-trips visited and symbol_kind and rejects wrong types", function()
+    local document = Fixtures.document()
+    document.root.visited = true
+    document.root.location.symbol_kind = "function"
+    local encoded = Schema.encode(document)
+    assert.matches('"visited": true', encoded)
+    assert.matches('"symbol_kind": "function"', encoded)
+    local decoded = Schema.decode(encoded)
+    assert.is_true(decoded.root.visited)
+    assert.equals("function", decoded.root.location.symbol_kind)
+
+    local unvisited = Fixtures.document()
+    assert.is_nil(Schema.encode(unvisited):match('"visited"'))
+
+    assert.has_error(function()
+      local bad = Fixtures.document()
+      bad.root.visited = "yes"
+      Schema.encode(bad)
+    end, "schema v1: $.root.visited must be a boolean")
+    assert.has_error(function()
+      local bad = Fixtures.document()
+      bad.root.location.symbol_kind = ""
+      Schema.encode(bad)
+    end, "schema v1: $.root.location.symbol_kind must be a non-empty string")
+  end)
+
   it("rejects unknown keys and semantic identity mismatches", function()
     local encoded = Schema.encode(Fixtures.document())
     assert.has_error(function()

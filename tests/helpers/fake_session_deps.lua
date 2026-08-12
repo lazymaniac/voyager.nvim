@@ -293,6 +293,9 @@ function M.new(overrides)
       table.insert(env.filetype_requests, name)
       return "lua"
     end,
+    uri_from_fname = function(path)
+      return "file://" .. path
+    end,
     set_quickfix = function(list)
       env.quickfix = vim.deepcopy(list)
     end,
@@ -370,6 +373,14 @@ function M.new(overrides)
   env.config = Config.resolve()
   env.sidebar = fake_sidebar(env)
   env.lsp = fake_lsp()
+  env.symbols = { resolve_calls = {} }
+  function env.symbols:resolve(requests, opts, on_done)
+    table.insert(self.resolve_calls, { requests = vim.deepcopy(requests), opts = vim.deepcopy(opts) })
+    self.on_done = on_done
+    if self.auto_results then
+      on_done(vim.deepcopy(self.auto_results))
+    end
+  end
   env.locator = {
     _project_root = env.project_root,
     stale = false,
@@ -536,6 +547,9 @@ function M.new(overrides)
         local value = env.next_lsp or env.lsp
         env.next_lsp = nil
         return value
+      end,
+      symbols_factory = function()
+        return env.symbols
       end,
       ui = { input = env.runtime.input, select = env.runtime.select, notify = env.runtime.notify },
     }

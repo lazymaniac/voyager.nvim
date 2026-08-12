@@ -162,6 +162,9 @@ function M.native()
     filetype_match = function(name)
       return vim.filetype.match({ filename = name })
     end,
+    uri_from_fname = vim.uri_from_fname,
+    ts_string_parser = vim.treesitter.get_string_parser,
+    ts_node_text = vim.treesitter.get_node_text,
     set_quickfix = function(list)
       vim.fn.setqflist({}, " ", list)
     end,

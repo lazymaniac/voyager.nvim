@@ -91,7 +91,7 @@ describe("Voyager flow", function()
     assert.equals(2, #flow.root.actions[1].results)
   end)
 
-  it("keeps the same destination distinct beneath different ancestors", function()
+  it("maps a destination recorded under another branch to the existing node", function()
     local flow = Fixtures.new_flow()
     local branches = flow:commit_navigation({
       origin_node_id = flow.root.id,
@@ -106,17 +106,49 @@ describe("Voyager flow", function()
     local mysql = flow:commit_navigation({
       origin_node_id = branches.node_id_by_identity[Fixtures.identity("lua/mysql.lua", 2)],
       method = "textDocument/references",
-      label = "references",
+      label = "usages",
       locations = { auth },
     })
     local memory = flow:commit_navigation({
       origin_node_id = branches.node_id_by_identity[Fixtures.identity("lua/memory.lua", 3)],
       method = "textDocument/references",
-      label = "references",
+      label = "usages",
       locations = { auth },
     })
 
-    assert.not_equals(mysql.node_id_by_identity[auth.identity], memory.node_id_by_identity[auth.identity])
+    assert.equals(mysql.node_id_by_identity[auth.identity], memory.node_id_by_identity[auth.identity])
+    assert.is_nil(memory.action_id)
+    assert.is_false(memory.changed)
+    local memory_node = flow:location(branches.node_id_by_identity[Fixtures.identity("lua/memory.lua", 3)])
+    assert.same({}, memory_node.actions)
+  end)
+
+  it("adds only unrecorded destinations when reference sets overlap across the tree", function()
+    local flow = Fixtures.new_flow()
+    local site_a = Fixtures.location("lua/service.lua", 4, "Service.accept")
+    local site_b = Fixtures.location("lua/handler.lua", 9, "Handler.on_event")
+    local first = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { site_a, site_b },
+    })
+    local a_id = first.node_id_by_identity[site_a.identity]
+
+    -- Re-running references one level deeper returns the overlapping set plus
+    -- one genuinely new site; only the new site may grow the tree.
+    local site_c = Fixtures.location("lua/worker.lua", 12, "Worker.run")
+    local second = flow:commit_navigation({
+      origin_node_id = a_id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { site_b, site_c },
+    })
+
+    assert.equals(first.node_id_by_identity[site_b.identity], second.node_id_by_identity[site_b.identity])
+    local nested = flow:location(a_id).actions[1]
+    assert.equals(1, #nested.results)
+    assert.equals(second.node_id_by_identity[site_c.identity], nested.results[1].id)
   end)
 
   it("maps a reverse-route result to its ancestor instead of a new branch", function()
@@ -403,6 +435,80 @@ describe("Voyager flow", function()
     assert.same({ symbol = true, context = true }, flow:journal().metadata[result_id])
   end)
 
+  it("marks visited on creation, navigation, and load", function()
+    local flow = Fixtures.new_flow()
+    assert.is_true(flow.root.visited)
+    local location = Fixtures.location("lua/auth.lua", 8, "AuthService.login")
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { location },
+    })
+    local result_id = commit.node_id_by_identity[location.identity]
+    assert.is_nil(flow:location(result_id).visited)
+    assert.is_true(flow:set_current(result_id))
+    assert.is_true(flow:location(result_id).visited)
+
+    local loaded_result = location_node(3, "lua/auth.lua", 8, "AuthService.login")
+    local loaded_root = location_node(1, "lua/main.lua", 0, "main")
+    loaded_root.actions = { action_node(2, "textDocument/definition", "definition", { loaded_result }) }
+    local loaded = load(document(loaded_root, loaded_result.id))
+    assert.is_true(loaded:location(loaded_result.id).visited)
+    assert.is_nil(loaded:location(loaded_root.id).visited)
+  end)
+
+  it("applies enrichment to symbol and kind but never renames the root", function()
+    local flow = Fixtures.new_flow()
+    local location = Fixtures.location("lua/auth.lua", 8, "login")
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { location },
+    })
+    local result_id = commit.node_id_by_identity[location.identity]
+
+    assert.is_true(flow:apply_symbol(result_id, "AuthService.login", "method"))
+    local node = flow:location(result_id)
+    assert.equals("AuthService.login", node.location.symbol)
+    assert.equals("method", node.location.symbol_kind)
+    assert.is_true(flow:journal().metadata[result_id].symbol)
+    assert.is_false(flow:apply_symbol(result_id, "AuthService.login", "method"))
+
+    assert.is_true(flow:apply_symbol(flow.root.id, "Renamed.main", "function"))
+    assert.equals("main", flow.root.location.symbol)
+    assert.equals("function", flow.root.location.symbol_kind)
+    assert.is_false(flow:apply_symbol("loc-ffffffffffffffffffffffffffffffff", "x", "y"))
+  end)
+
+  it("keeps visited sticky and follows the symbol touch for kind in a merge", function()
+    local latest_result = location_node(3, "lua/auth.lua", 8, "disk.symbol")
+    latest_result.visited = true
+    latest_result.location.symbol_kind = "method"
+    local latest_root = location_node(1, "lua/main.lua", 0, "main")
+    latest_root.actions = { action_node(2, "textDocument/definition", "definition", { latest_result }) }
+    local latest = document(latest_root)
+
+    local active_result = location_node(13, "lua/auth.lua", 8, "active.symbol")
+    local active_root = location_node(11, "lua/main.lua", 0, "main")
+    active_root.actions = { action_node(12, "textDocument/definition", "definition", { active_result }) }
+    local active = load(document(active_root))
+
+    local untouched = Flow.merge(latest, active, active:journal(), active._next_id)
+    local merged_result = untouched.root.actions[1].results[1]
+    assert.is_true(merged_result.visited)
+    assert.equals("disk.symbol", merged_result.location.symbol)
+    assert.equals("method", merged_result.location.symbol_kind)
+
+    assert.is_true(active:apply_symbol(active_result.id, "enriched.symbol", "function"))
+    local touched = Flow.merge(latest, active, active:journal(), active._next_id)
+    local touched_result = touched.root.actions[1].results[1]
+    assert.equals("enriched.symbol", touched_result.location.symbol)
+    assert.equals("function", touched_result.location.symbol_kind)
+    assert.is_true(touched_result.visited)
+  end)
+
   it("keeps disk order, retains active IDs on matches, and appends active-only children", function()
     local latest_root = location_node(1, "lua/main.lua", 0, "main")
     local latest_mysql = location_node(12, "lua/mysql.lua", 2, "MysqlStore.save")
@@ -438,7 +544,7 @@ describe("Voyager flow", function()
     assert.equals(node_id("loc", 22), merged.root.actions[2].results[1].id)
     assert.equals(node_id("action", 23), merged.root.actions[3].id)
     assert.same(
-      { "references", "implementations", "definition" },
+      { "usages", "implementations", "definition" },
       vim.tbl_map(function(action)
         return action.label
       end, merged.root.actions)

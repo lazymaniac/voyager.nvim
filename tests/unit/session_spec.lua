@@ -7,6 +7,14 @@ local function new_session(overrides)
   return Session.new(deps:session_options()), deps
 end
 
+-- Most lifecycle tests want the pre-lazy-root behavior: an open session whose
+-- flow is already rooted at the origin cursor.
+local function open_with_flow(session)
+  assert.is_true(session:open())
+  assert.is_true(session:ensure_flow())
+  return true
+end
+
 describe("Voyager session lifecycle", function()
   it("rejects unnamed and special origin buffers without side effects", function()
     for _, overrides in ipairs({
@@ -23,15 +31,49 @@ describe("Voyager session lifecycle", function()
 
   it("atomically opens a clean flow from a normal named buffer", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:is_active())
     assert.equals("active", session:state().phase)
     assert.equals(deps.origin_win, session:state().source_windows[1])
     assert.equals(deps.root_id, session:state().flow.current_node_id)
     assert.is_false(session:state().flow:is_dirty())
     assert.is_false(deps.sidebar.mount_calls[1].focus)
-    assert.equals(1, deps.sidebar.render_count)
+    -- one placeholder render at open, one once the flow exists
+    assert.equals(2, deps.sidebar.render_count)
     assert.equals(7, #deps.autocmd_calls)
+  end)
+
+  it("opens without a flow and roots it at the first navigation origin", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    assert.is_true(session:is_active())
+    assert.is_nil(session:state().flow)
+    local placeholder = deps.sidebar.render_calls[1]
+    assert.is_nil(placeholder.flow)
+    assert.is_false(placeholder.status.dirty)
+
+    assert.is_nil(session:save())
+    assert.matches("nothing recorded yet", deps.notifications[#deps.notifications].message, nil, true)
+
+    deps:lsp_request("textDocument/references")
+    local flow = session:state().flow
+    assert.is_table(flow)
+    assert.equals("main", flow.root.location.symbol)
+    assert.equals(flow.root.id, flow.current_node_id)
+    assert.equals(1, #deps.lsp.starts)
+    assert.equals(flow.root.id, deps.lsp.starts[1].context.origin_node_id)
+
+    -- the freshly created root is offered for symbol enrichment
+    assert.equals(1, #deps.symbols.resolve_calls)
+    assert.equals(flow.root.id, deps.symbols.resolve_calls[1].requests[1].node_id)
+  end)
+
+  it("closes a rootless session without prompting and toggles cleanly", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    assert.is_true(session:close("command"))
+    assert.is_false(session:is_active())
+    assert.is_nil(deps.select_callback)
   end)
 
   it("keeps environment syntax literal in editor-derived project roots", function()
@@ -41,7 +83,7 @@ describe("Voyager session lifecycle", function()
       return "/project/$HOME"
     end
 
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.equals("/project/$HOME", session:state().project_root)
     assert.equals("lua/main.lua", session:state().flow.root.location.locator.path)
   end)
@@ -59,23 +101,23 @@ describe("Voyager session lifecycle", function()
 
   it("accepts a named unsaved buffer and rejects entropy failure before mounting", function()
     local session, deps = new_session({ buffer_name = "/project/lua/new.lua" })
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.equals("new.lua", session:state().flow.root.location.locator.path:match("([^/]+)$"))
 
     session, deps = new_session()
     deps.random_error = "entropy unavailable"
-    assert.is_nil(session:open())
-    assert.is_false(session:is_active())
-    assert.equals(0, #deps.sidebar.mount_calls)
-    assert.same({}, deps.autocmd_calls)
+    assert.is_true(session:open())
+    assert.is_nil(session:ensure_flow())
+    assert.is_true(session:is_active())
+    assert.is_nil(session:state().flow)
     assert.matches("entropy unavailable", deps.notifications[1].message, nil, true)
   end)
 
   it("keeps an existing session and focuses or remounts its popup", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local flow = session:state().flow
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.equals(flow, session:state().flow)
     assert.equals(1, #deps.sidebar.mount_calls)
     assert.equals(1, deps.sidebar.focus_count)
@@ -94,7 +136,7 @@ describe("Voyager session lifecycle", function()
 
   it("remounts without focus across tabs and resize validity changes", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     deps:trigger("TabEnter")
     assert.is_false(deps.sidebar.remount_calls[#deps.sidebar.remount_calls].focus)
 
@@ -112,7 +154,7 @@ describe("Voyager session lifecycle", function()
 
   it("tracks recent source windows, evicts closed candidates, and never creates a split", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     deps:add_buffer(12, "/project/lua/other.lua")
     deps:add_window(22, 12)
     deps.current_win_id = 22
@@ -138,7 +180,7 @@ describe("Voyager session lifecycle", function()
 
   it("records an observed navigation request without touching any mapping", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
 
     deps:lsp_request("textDocument/references")
     assert.equals(1, #deps.lsp.starts)
@@ -152,7 +194,7 @@ describe("Voyager session lifecycle", function()
 
   it("coalesces same-tick duplicates and ignores foreign or ineligible requests", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
 
     deps:lsp_request("textDocument/references", { client_id = 7 })
     deps:lsp_request("textDocument/references", { client_id = 8 })
@@ -187,7 +229,7 @@ describe("Voyager session lifecycle", function()
 
   it("deletes rows, clears notes through delete, and refuses the root", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local site = Fixtures.location("lua/site.lua", 1, "site")
     local commit = session:state().flow:commit_navigation({
       origin_node_id = deps.root_id,
@@ -213,7 +255,7 @@ describe("Voyager session lifecycle", function()
 
   it("jumps and records a picked action from a sidebar row", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local site = Fixtures.location("lua/site.lua", 0, "site")
     local commit = session:state().flow:commit_navigation({
       origin_node_id = deps.root_id,
@@ -239,7 +281,7 @@ describe("Voyager session lifecycle", function()
 
   it("previews a location beside the sidebar and rejects other rows", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local site = Fixtures.location("lua/site.lua", 1, "site")
     local commit = session:state().flow:commit_navigation({
       origin_node_id = deps.root_id,
@@ -265,9 +307,46 @@ describe("Voyager session lifecycle", function()
     assert.matches("unavailable", deps.notifications[#deps.notifications].message, nil, true)
   end)
 
+  it("follows the cursor with the preview and hides it on non-location rows", function()
+    local session, deps = new_session()
+    open_with_flow(session)
+    local site = Fixtures.location("lua/site.lua", 1, "site")
+    local commit = session:state().flow:commit_navigation({
+      origin_node_id = deps.root_id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { site },
+    })
+    local site_id = commit.node_id_by_identity[site.identity]
+    deps.locator.source_lines = { "l1", "l2", "l3" }
+
+    local closes = 0
+    deps.sidebar.close_preview = function()
+      closes = closes + 1
+    end
+
+    assert.is_true(session:follow_preview({ kind = "location", owner_id = site_id }))
+    local preview = deps.sidebar.preview_calls[#deps.sidebar.preview_calls]
+    assert.equals(site_id, preview.key)
+    assert.equals(2, preview.focus_line)
+
+    session:follow_preview({ kind = "action", owner_id = commit.action_id })
+    assert.equals(1, closes)
+    session:follow_preview(nil)
+    assert.equals(2, closes)
+
+    -- unavailable source renders a message float instead of a warning
+    deps.locator.source_lines = false
+    local notifications = #deps.notifications
+    assert.is_true(session:follow_preview({ kind = "location", owner_id = site_id }))
+    local unavailable = deps.sidebar.preview_calls[#deps.sidebar.preview_calls]
+    assert.matches("unavailable", unavailable.lines[1], nil, true)
+    assert.equals(notifications, #deps.notifications)
+  end)
+
   it("exports resolvable locations to the quickfix list", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local site = Fixtures.location("lua/site.lua", 1, "site", "local site = 1")
     local virtual = Fixtures.location("unused", 2, "virtual")
     virtual.locator = { kind = "uri", uri = "jdt://contents/Virtual.class" }
@@ -291,7 +370,7 @@ describe("Voyager session lifecycle", function()
 
   it("collapses and expands every action and keeps focus on stay-jumps", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local site = Fixtures.location("lua/site.lua", 1, "site")
     local commit = session:state().flow:commit_navigation({
       origin_node_id = deps.root_id,
@@ -316,7 +395,7 @@ describe("Voyager session lifecycle", function()
   it("autosaves dirty flows on close and shutdown when enabled", function()
     local session, deps = new_session()
     deps.config.storage.autosave = true
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
     assert.is_true(session:close("command"))
     assert.equals(1, #deps.store.save_calls)
@@ -325,7 +404,7 @@ describe("Voyager session lifecycle", function()
 
     session, deps = new_session()
     deps.config.storage.autosave = true
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
     deps.store.save_error = "disk full"
     session:close("command")
@@ -335,7 +414,7 @@ describe("Voyager session lifecycle", function()
 
     session, deps = new_session()
     deps.config.storage.autosave = true
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
     session:shutdown()
     assert.equals(1, #deps.store.save_calls)
@@ -344,7 +423,7 @@ describe("Voyager session lifecycle", function()
 
   it("dispatches typed rows without confusing locations, actions, and notes", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local result = Fixtures.location("lua/result.lua", 3, "result")
     local commit = session:state().flow:commit_navigation({
       origin_node_id = deps.root_id,
@@ -382,7 +461,7 @@ describe("Voyager session lifecycle", function()
 
   it("warns and preserves logical current when a sidebar target cannot open", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local result = Fixtures.location("lua/stale.lua", 0)
     local commit = session:state().flow:commit_navigation({
       origin_node_id = deps.root_id,
@@ -407,7 +486,7 @@ describe("Voyager session lifecycle", function()
 
   it("normalizes note input and rejects cancelled, duplicate, stale, and superseded callbacks", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
 
     assert.is_true(session:edit_note({ kind = "note", owner_id = deps.root_id }))
     assert.is_nil(deps.input_opts.default)
@@ -441,7 +520,7 @@ describe("Voyager session lifecycle", function()
 
   it("serializes dirty close decisions and remounts after cancel", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
     deps.sidebar:unmount({ owned = false })
 
@@ -464,7 +543,7 @@ describe("Voyager session lifecycle", function()
 
   it("recovers when the dirty-decision UI provider throws", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
     deps.sidebar:unmount({ owned = false })
     deps.select_error = "picker exploded"
@@ -481,7 +560,7 @@ describe("Voyager session lifecycle", function()
 
   it("saves synchronously and resumes the winning dirty-close intent", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:state().flow:set_note(deps.root_id, "persist me"))
 
     assert.is_true(session:close("command"))
@@ -493,7 +572,7 @@ describe("Voyager session lifecycle", function()
 
   it("keeps a dirty session open and remounts when save fails", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:state().flow:set_note(deps.root_id, "persist me"))
     deps.store.save_error = "disk full"
     deps.sidebar:unmount({ owned = false })
@@ -508,7 +587,7 @@ describe("Voyager session lifecycle", function()
 
   it("lets a completion after explicit save begin a new dirty epoch", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     session:run_action("definition")
     local context = deps.lsp.starts[1].context
 
@@ -565,7 +644,7 @@ describe("Voyager session lifecycle", function()
 
   it("retires an active flow only after the loaded sidebar mounts", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     session:run_action("definition")
     local original = session:state().flow
     local generation = session:state().generation
@@ -601,7 +680,7 @@ describe("Voyager session lifecycle", function()
 
   it("re-reads a selected flow after saving the dirty active flow", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:state().flow:set_note(deps.root_id, "important for auth"))
     local stale = Fixtures.new_flow()
     local updated = Fixtures.new_flow()
@@ -629,7 +708,7 @@ describe("Voyager session lifecycle", function()
 
   it("rolls back the old popup when a loaded flow cannot mount", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local original = session:state().flow
     local generation = session:state().generation
     assert.is_true(original:set_note(deps.root_id, "dirty"))
@@ -705,7 +784,7 @@ describe("Voyager session lifecycle", function()
 
     assert.is_true(session:load())
     local stale_picker = deps.select_callback
-    assert.is_true(session:open())
+    open_with_flow(session)
     stale_picker(entry, 1)
     assert.equals(0, #deps.store.load_calls)
     assert.equals(deps.root_id, session:state().flow.root.id)
@@ -768,7 +847,7 @@ describe("Voyager session lifecycle", function()
 
   it("rejects note and dirty-decision callbacks after loaded-flow replacement or shutdown", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:edit_note({ kind = "location", owner_id = deps.root_id }))
     local late_note = deps.input_callback
     local entry =
@@ -793,7 +872,7 @@ describe("Voyager session lifecycle", function()
 
   it("closes cleanly once and restores focus only from Voyager UI", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     local generation = session:state().generation
     local request = { cancel_calls = {} }
     function request:cancel(reason)
@@ -815,7 +894,7 @@ describe("Voyager session lifecycle", function()
     assert.equals(1, #deps.sidebar.unmount_calls)
 
     session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     deps.sidebar:focus()
     assert.equals(deps.sidebar.winid, deps.current_win_id)
     session:close("sidebar")
@@ -824,7 +903,7 @@ describe("Voyager session lifecycle", function()
 
   it("shutdown never asks about a dirty flow", function()
     local session, deps = new_session()
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.is_true(session:state().flow:set_note(deps.root_id, "dirty"))
     session:shutdown()
     assert.is_false(session:is_active())
@@ -856,7 +935,7 @@ describe("Voyager session lifecycle", function()
     local session = Session.native(function()
       return vim.deepcopy(deps.config)
     end, deps.runtime, factories)
-    assert.is_true(session:open())
+    open_with_flow(session)
     assert.same({
       project_root = deps.project_root,
       resolve_uri = deps.config.storage.resolve_uri,
