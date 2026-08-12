@@ -194,11 +194,12 @@ describe("Voyager sidebar projection", function()
     local flow = Fixtures.branched_flow()
     local mysql_id = flow.root.actions[1].results[1].id
 
+    -- depth 1 result: 1 indent column + the two-column marker gutter
     local narrow = Sidebar.project(flow, 80, {}, { icons = text_icons })
-    assert.matches("^  ", row_for(narrow, "location", mysql_id).text)
+    assert.matches("^   MysqlStore", row_for(narrow, "location", mysql_id).text)
 
     local wide = Sidebar.project(flow, 80, {}, { icons = text_icons, indent = 3 })
-    assert.matches("^      ", row_for(wide, "location", mysql_id).text)
+    assert.matches("^     MysqlStore", row_for(wide, "location", mysql_id).text)
   end)
 
   it("projects a waiting placeholder when no flow exists yet", function()
@@ -216,7 +217,7 @@ describe("Voyager sidebar projection", function()
     local rows = Sidebar.project(flow, 20, { dirty = true, request_count = 0 }, { icons = text_icons })
     local note = row_for(rows, "note", owner.id)
 
-    assert.equals(3, note.depth)
+    assert.equals(2, note.depth)
     assert.matches("^%s+✎", note.text)
     assert.is_true(vim.fn.strdisplaywidth(note.text) <= 20)
     assert.matches("…$", note.text)
@@ -471,8 +472,8 @@ describe("Voyager sidebar popup", function()
     sidebar:render(flow, { dirty = false, request_count = 0 })
     assert.same({
       relative = "editor",
-      position = { row = 1, col = 78 },
-      size = { width = 40, height = 6 },
+      position = { row = 1, col = 79 },
+      size = { width = 39, height = 6 },
     }, fake.update_layout_calls[#fake.update_layout_calls])
     assert.equals(flow.root.id, sidebar:selected_row().owner_id)
     assert.is_true(sidebar:owns_window(fake.winid))
@@ -653,13 +654,13 @@ describe("Voyager sidebar popup", function()
     local flow = Fixtures.branched_flow()
     sidebar:render(flow, { dirty = false, request_count = 0 })
     local grown = fake.update_layout_calls[#fake.update_layout_calls]
-    assert.same({ width = 40, height = 6 }, grown.size)
+    assert.same({ width = 39, height = 6 }, grown.size)
 
     assert.is_true(flow:toggle(flow.root.actions[1].id))
     sidebar:render(flow, { dirty = true, request_count = 0 })
     local collapsed = fake.update_layout_calls[#fake.update_layout_calls]
-    assert.same({ width = 25, height = 3 }, collapsed.size)
-    assert.same({ row = 1, col = 93 }, collapsed.position)
+    assert.same({ width = 24, height = 3 }, collapsed.size)
+    assert.same({ row = 1, col = 94 }, collapsed.position)
 
     sidebar:render(flow, { dirty = true, request_count = 0 })
     assert.same(collapsed, fake.update_layout_calls[#fake.update_layout_calls])

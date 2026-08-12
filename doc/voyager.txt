@@ -27,14 +27,14 @@ earlier symbol, explore a different path, annotate useful locations, and save
 the whole flow for later.
 
 >text
-      ▾ ▲ usages (2)
-        [m] AuthService.authorize — lua/auth.lua:5
-        ▸ tests (3)
+    ▾ ▲ usages (2)
+       [m] AuthService.authorize — lua/auth.lua:5
+      ▸ tests (3)
     ● [f] MysqlStore.save — lua/mysql_store.lua:2
-      ▾ ▼ calls (2)
-        [f] Db.exec — lua/db.lua:14
-          ✎ important for auth
-        [f] Log.audit — lua/log.lua:9
+    ▾ ▼ calls (2)
+       [f] Db.exec — lua/db.lua:14
+        ✎ important for auth
+       [f] Log.audit — lua/log.lua:9
 <
 
 The tree reads in call-flow order: callers of a symbol sit above it and the
@@ -512,6 +512,10 @@ override the glyphs through `sidebar.icons.kinds`.
 `sidebar.path` trims location paths when the card gets crowded: `"relative"`
 (default) shows the project-relative path, `"filename"` only the file name, and
 `"shortened"` a `l/a/store.lua`-style abbreviation.
+
+Indentation is kept flat so deep explorations stay inside the card: action rows
+share the indent of the symbol they belong to, and each destination steps only
+`sidebar.indent` columns (default 1) deeper.
 
 
 EXPLORING AND BRANCHING         *voyager-voyager.nvim-exploring-and-branching*

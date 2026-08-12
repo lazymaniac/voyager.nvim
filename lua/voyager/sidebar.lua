@@ -201,10 +201,12 @@ function M.project(flow, width, status, display)
   visit_location = function(node, depth)
     -- Caller-producing actions render above their symbol so the projected
     -- rows read top-down along the call flow: entry points first, then the
-    -- symbol, then everything it leads to.
+    -- symbol, then everything it leads to. Action rows share their symbol's
+    -- indent; only destinations step one level deeper, which keeps long
+    -- exploration chains inside the card width.
     for _, action in ipairs(node.actions) do
       if renders_above(action) then
-        visit_action(action, depth + 1)
+        visit_action(action, depth)
       end
     end
     local marker
@@ -245,7 +247,7 @@ function M.project(flow, width, status, display)
     end
     for _, action in ipairs(node.actions) do
       if not renders_above(action) then
-        visit_action(action, depth + 1)
+        visit_action(action, depth)
       end
     end
   end
