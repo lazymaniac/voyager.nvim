@@ -25,6 +25,7 @@ jobs:
       - name: Check Lua formatting with StyleLua 2.5.2
         uses: JohnnyMorganz/stylua-action@479972f01e665acfcba96ada452c36608bdbbb5e
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           version: v2.5.2
           args: --check lua plugin tests
 
