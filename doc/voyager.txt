@@ -279,6 +279,11 @@ apply to the next session.
                                                                         cursor and closes
                                                                         on focus loss
 
+  sidebar.indent                   integer           1                  Columns of
+                                                                        indentation per
+                                                                        tree depth, from 0
+                                                                        through 8
+
   sidebar.test_paths               string list       common test        Lua patterns that
                                                      layouts            classify a location
                                                                         as test code
@@ -369,6 +374,12 @@ sidebar.path                           Location path display: `relative`, `filen
 
 
 sidebar.preview                        Preview float follows the sidebar cursor and closes on focus loss.
+
+
+                                                    *voyager-sidebar.indent*
+
+
+sidebar.indent                         Columns of indentation per tree depth, from 0 through 8.
 
 
                                                 *voyager-sidebar.test_paths*

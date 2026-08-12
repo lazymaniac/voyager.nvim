@@ -190,6 +190,17 @@ describe("Voyager sidebar projection", function()
     end
   end)
 
+  it("indents one narrow column per depth by default and honors overrides", function()
+    local flow = Fixtures.branched_flow()
+    local mysql_id = flow.root.actions[1].results[1].id
+
+    local narrow = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    assert.matches("^  ", row_for(narrow, "location", mysql_id).text)
+
+    local wide = Sidebar.project(flow, 80, {}, { icons = text_icons, indent = 3 })
+    assert.matches("^      ", row_for(wide, "location", mysql_id).text)
+  end)
+
   it("projects a waiting placeholder when no flow exists yet", function()
     local rows, header = Sidebar.project(nil, 42, {}, { icons = text_icons })
     assert.equals("Voyager · (waiting)", header.text)
@@ -647,8 +658,8 @@ describe("Voyager sidebar popup", function()
     assert.is_true(flow:toggle(flow.root.actions[1].id))
     sidebar:render(flow, { dirty = true, request_count = 0 })
     local collapsed = fake.update_layout_calls[#fake.update_layout_calls]
-    assert.same({ width = 26, height = 3 }, collapsed.size)
-    assert.same({ row = 1, col = 92 }, collapsed.position)
+    assert.same({ width = 25, height = 3 }, collapsed.size)
+    assert.same({ row = 1, col = 93 }, collapsed.position)
 
     sidebar:render(flow, { dirty = true, request_count = 0 })
     assert.same(collapsed, fake.update_layout_calls[#fake.update_layout_calls])

@@ -170,6 +170,10 @@ function M.project(flow, width, status, display)
   assert(type(display) == "table", "Voyager sidebar display options are required")
   local icons = display.icons
   assert(type(icons) == "table", "Voyager sidebar icons are required")
+  local indent_unit = string.rep(" ", display.indent or 1)
+  local function indent(depth)
+    return segment(string.rep(indent_unit, depth))
+  end
   local rows = {}
 
   if flow == nil then
@@ -221,7 +225,7 @@ function M.project(flow, width, status, display)
     end
     local kind_icon = location.symbol_kind and icons.kinds and icons.kinds[location.symbol_kind] or nil
     local segments = {
-      segment(string.rep("  ", depth)),
+      indent(depth),
       glyph,
       segment(badge(kind_icon), "VoyagerIcon"),
       segment(location.symbol, symbol_hl),
@@ -234,7 +238,7 @@ function M.project(flow, width, status, display)
     if node.note then
       local note_depth = depth + 1
       local note_segments = {
-        segment(string.rep("  ", note_depth)),
+        indent(note_depth),
         segment(badge(icons.note) .. node.note, "VoyagerNote"),
       }
       table.insert(rows, row("note", node.id, note_segments, note_depth, "note", width))
@@ -256,7 +260,7 @@ function M.project(flow, width, status, display)
     local above = renders_above(node)
     local action_name = Actions.by_method(node.method)
     local segments = {
-      segment(string.rep("  ", depth)),
+      indent(depth),
       current_glyph,
       segment(badge(node.collapsed and icons.collapsed or icons.expanded), "VoyagerDisclosure"),
       segment(badge(above and icons.caller or icons.callee), above and "VoyagerDirectionUp" or "VoyagerDirectionDown"),
@@ -292,7 +296,7 @@ function M.project(flow, width, status, display)
         group_glyph = segment(badge(icons.current), "VoyagerCurrent")
       end
       local group_segments = {
-        segment(string.rep("  ", depth + 1)),
+        indent(depth + 1),
         group_glyph,
         segment(badge(expanded and icons.expanded or icons.collapsed), "VoyagerDisclosure"),
         segment("tests", "VoyagerActionLabel"),
@@ -750,6 +754,7 @@ function Sidebar:render(flow, status)
   local rows, header = M.project(flow, cap, status, {
     icons = self._config.icons,
     path = self._config.path,
+    indent = self._config.indent,
     test_paths = self._config.test_paths,
   })
   local hidden_under = previous

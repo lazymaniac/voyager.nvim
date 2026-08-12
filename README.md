@@ -176,6 +176,7 @@ apply to the next session.
 | `sidebar.icons` | boolean or table | `true` | `true` for Nerd Font icons, `false` for plain text, or per-icon overrides (including `icons.kinds`) |
 | `sidebar.path` | string | `"relative"` | Location paths: `relative`, `filename`, or `shortened` |
 | `sidebar.preview` | boolean | `true` | Preview float follows the sidebar cursor and closes on focus loss |
+| `sidebar.indent` | integer | `1` | Columns of indentation per tree depth, from 0 through 8 |
 | `sidebar.test_paths` | string list | common test layouts | Lua patterns that classify a location as test code |
 | `navigation.timeout_ms` | integer | `10000` | Per-network-stage timeout from 100 through 120000 milliseconds |
 | `sidebar_keymaps.jump_or_toggle` | keymap or false | `"<CR>"` | Activate a location/note or toggle an action |
@@ -213,6 +214,9 @@ sidebar.path
 
 sidebar.preview
 : Preview float follows the sidebar cursor and closes on focus loss.
+
+sidebar.indent
+: Columns of indentation per tree depth, from 0 through 8.
 
 sidebar.test_paths
 : Lua patterns that classify a location as test code.
