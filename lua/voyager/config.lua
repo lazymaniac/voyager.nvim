@@ -130,6 +130,7 @@ local defaults = {
     icons = true,
     path = "relative",
     preview = true,
+    indent = 1,
     test_paths = default_test_paths,
   },
   navigation = { timeout_ms = 10000 },
@@ -159,6 +160,7 @@ local known = {
     icons = true,
     path = true,
     preview = true,
+    indent = true,
     test_paths = true,
   },
   navigation = { timeout_ms = true },
@@ -283,6 +285,10 @@ function M.resolve(opts)
   end
   if type(result.sidebar.preview) ~= "boolean" then
     fail("sidebar.preview", "must be a boolean")
+  end
+  local indent = result.sidebar.indent
+  if type(indent) ~= "number" or indent % 1 ~= 0 or indent < 0 or indent > 8 then
+    fail("sidebar.indent", "must be an integer from 0 through 8")
   end
   local test_paths = result.sidebar.test_paths
   if type(test_paths) ~= "table" or not vim.islist(test_paths) then

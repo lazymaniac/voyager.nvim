@@ -8,6 +8,7 @@ voyager-:VoyagerToggle	voyager.txt	/*voyager-:VoyagerToggle*
 voyager-navigation.timeout_ms	voyager.txt	/*voyager-navigation.timeout_ms*
 voyager-sidebar.border	voyager.txt	/*voyager-sidebar.border*
 voyager-sidebar.icons	voyager.txt	/*voyager-sidebar.icons*
+voyager-sidebar.indent	voyager.txt	/*voyager-sidebar.indent*
 voyager-sidebar.path	voyager.txt	/*voyager-sidebar.path*
 voyager-sidebar.preview	voyager.txt	/*voyager-sidebar.preview*
 voyager-sidebar.side	voyager.txt	/*voyager-sidebar.side*

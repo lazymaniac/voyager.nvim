@@ -6,14 +6,14 @@ earlier symbol, explore a different path, annotate useful locations, and save th
 whole flow for later.
 
 ```text
-  ▾ ▲ usages (2)
-    [m] AuthService.authorize — lua/auth.lua:5
-    ▸ tests (3)
+▾ ▲ usages (2)
+   [m] AuthService.authorize — lua/auth.lua:5
+  ▸ tests (3)
 ● [f] MysqlStore.save — lua/mysql_store.lua:2
-  ▾ ▼ calls (2)
-    [f] Db.exec — lua/db.lua:14
-      ✎ important for auth
-    [f] Log.audit — lua/log.lua:9
+▾ ▼ calls (2)
+   [f] Db.exec — lua/db.lua:14
+    ✎ important for auth
+   [f] Log.audit — lua/log.lua:9
 ```
 
 The tree reads in call-flow order: callers of a symbol sit above it and the
@@ -176,6 +176,7 @@ apply to the next session.
 | `sidebar.icons` | boolean or table | `true` | `true` for Nerd Font icons, `false` for plain text, or per-icon overrides (including `icons.kinds`) |
 | `sidebar.path` | string | `"relative"` | Location paths: `relative`, `filename`, or `shortened` |
 | `sidebar.preview` | boolean | `true` | Preview float follows the sidebar cursor and closes on focus loss |
+| `sidebar.indent` | integer | `1` | Columns of indentation per tree depth, from 0 through 8 |
 | `sidebar.test_paths` | string list | common test layouts | Lua patterns that classify a location as test code |
 | `navigation.timeout_ms` | integer | `10000` | Per-network-stage timeout from 100 through 120000 milliseconds |
 | `sidebar_keymaps.jump_or_toggle` | keymap or false | `"<CR>"` | Activate a location/note or toggle an action |
@@ -213,6 +214,9 @@ sidebar.path
 
 sidebar.preview
 : Preview float follows the sidebar cursor and closes on focus loss.
+
+sidebar.indent
+: Columns of indentation per tree depth, from 0 through 8.
 
 sidebar.test_paths
 : Lua patterns that classify a location as test code.
@@ -293,6 +297,10 @@ override the glyphs through `sidebar.icons.kinds`.
 `sidebar.path` trims location paths when the card gets crowded:
 `"relative"` (default) shows the project-relative path, `"filename"` only the
 file name, and `"shortened"` a `l/a/store.lua`-style abbreviation.
+
+Indentation is kept flat so deep explorations stay inside the card: action
+rows share the indent of the symbol they belong to, and each destination
+steps only `sidebar.indent` columns (default 1) deeper.
 
 ## Exploring and branching
 
