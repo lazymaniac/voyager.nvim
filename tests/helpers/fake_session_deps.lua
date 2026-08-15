@@ -8,6 +8,7 @@ local function fake_sidebar(env)
     winid = 9001,
     bufnr = 9002,
     focus_count = 0,
+    focus_relation_calls = {},
     mount_calls = {},
     remount_calls = {},
     render_calls = {},
@@ -87,6 +88,17 @@ local function fake_sidebar(env)
     self.focus_count = self.focus_count + 1
     env.current_win_id = self.winid
     return true
+  end
+
+  function sidebar:focus_relation(origin_id, method)
+    local key = "relation:" .. origin_id .. ":" .. method
+    table.insert(self.focus_relation_calls, { origin_id = origin_id, method = method, key = key })
+    self.selected_key_value = key
+    return true
+  end
+
+  function sidebar:selected_key()
+    return self.selected_key_value
   end
 
   function sidebar:is_mounted()
@@ -385,6 +397,7 @@ function M.new(overrides)
     _project_root = env.project_root,
     stale = false,
     open_target_calls = {},
+    open_target_opts_calls = {},
   }
   function env.locator:is_stale()
     return self.stale, self.stale and (self.stale_reason or "location is stale") or nil
@@ -406,8 +419,9 @@ function M.new(overrides)
     end
     return { filename = "/project/" .. locator.path }
   end
-  function env.locator:open_target(location)
+  function env.locator:open_target(location, opts)
     table.insert(self.open_target_calls, vim.deepcopy(location))
+    table.insert(self.open_target_opts_calls, vim.deepcopy(opts))
     local stale, reason = self:is_stale(location)
     if stale then
       return nil, reason

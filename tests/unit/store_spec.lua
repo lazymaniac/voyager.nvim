@@ -43,6 +43,27 @@ local function encoded_entry(path, symbol, updated_at)
   return "/project/.voyager/flows/" .. document.flow_id .. ".json", Schema.encode(document)
 end
 
+local function released_v1_json(document)
+  local legacy = vim.deepcopy(document)
+  legacy.schema_version = 1
+  local function visit(node)
+    if node.kind == "action" then
+      node.target_ids = nil
+      node.query_status = nil
+      for _, result in ipairs(node.results) do
+        visit(result)
+      end
+      return
+    end
+    node.location.query_anchor = nil
+    for _, action in ipairs(node.actions) do
+      visit(action)
+    end
+  end
+  visit(legacy.root)
+  return vim.json.encode(legacy)
+end
+
 describe("Voyager storage", function()
   it("atomically replaces an existing document", function()
     local existing = Fixtures.document()
@@ -151,7 +172,7 @@ describe("Voyager storage", function()
     local path = "/project/.voyager/flows/" .. flow.flow_id .. ".json"
     for _, content in ipairs({
       "{not-json}\n",
-      (Schema.encode(Fixtures.document()):gsub('"schema_version": 1', '"schema_version": 2', 1)),
+      (Schema.encode(Fixtures.document()):gsub('"schema_version": 2', '"schema_version": 3', 1)),
     }) do
       local fs = FakeFS.new({
         directories = { "/project/.voyager/flows" },
@@ -161,10 +182,10 @@ describe("Voyager storage", function()
 
       local resolved, path_error = store:path_for(flow)
       assert.is_nil(resolved)
-      assert.matches("schema v1", path_error, nil, true)
+      assert.matches("schema v2", path_error, nil, true)
       local saved, save_error = store:save(flow)
       assert.is_nil(saved)
-      assert.matches("schema v1", save_error, nil, true)
+      assert.matches("schema v2", save_error, nil, true)
       assert.same({ [path] = content }, fs.files)
       assert.same({}, fs:operation_names())
     end
@@ -256,6 +277,66 @@ describe("Voyager storage", function()
       assert.same(before, active:journal())
       assert.is_true(active:is_dirty())
     end
+  end)
+
+  it("loads a released v1 flow and rewrites its canonical graph as v2 on save", function()
+    local document = Fixtures.document()
+    local shared = Fixtures.location("lua/shared.lua", 4, "shared")
+    shared.identity = nil
+    local first = {
+      id = "loc-00000000000000000000000000000003",
+      kind = "location",
+      location = vim.deepcopy(shared),
+      actions = {},
+    }
+    local duplicate = vim.deepcopy(first)
+    duplicate.id = "loc-00000000000000000000000000000005"
+    document.root.actions = {
+      {
+        id = "action-00000000000000000000000000000002",
+        kind = "action",
+        method = "textDocument/definition",
+        label = "definition",
+        collapsed = false,
+        target_ids = { first.id },
+        query_status = "complete",
+        results = { first },
+      },
+      {
+        id = "action-00000000000000000000000000000004",
+        kind = "action",
+        method = "textDocument/references",
+        label = "usages",
+        collapsed = false,
+        target_ids = { duplicate.id },
+        query_status = "complete",
+        results = { duplicate },
+      },
+    }
+    document.current_node_id = duplicate.id
+
+    local path = "/project/.voyager/flows/" .. document.flow_id .. ".json"
+    local fs = FakeFS.new({
+      directories = { "/project/.voyager/flows" },
+      files = { [path] = released_v1_json(document) },
+    })
+    local store = new_store(fs)
+    local flow, load_error = store:load(path, "/project")
+
+    assert.is_nil(load_error)
+    assert.equals(2, flow.schema_version)
+    assert.equals(first.id, flow.current_node_id)
+    assert.same({ first.id }, flow.root.actions[1].target_ids)
+    assert.same({ first.id }, flow.root.actions[2].target_ids)
+    assert.same({}, flow.root.actions[2].results)
+    assert.equals(path, store:path_for(flow))
+
+    local saved, save_error = store:save(flow)
+    assert.is_nil(save_error)
+    assert.equals(2, saved.schema_version)
+    assert.equals(4, saved.revision)
+    assert.is_truthy(fs.files[path]:find('"schema_version": 2', 1, true))
+    assert.same(saved, Schema.decode(fs.files[path]))
   end)
 
   it("loads a fresh clean flow and recalculates transient stale state", function()

@@ -44,7 +44,13 @@ local records = {
 }
 
 local internal = {
-  manual = { method = "voyager/manual", label = "manual jump" },
+  manual = { method = "voyager/manual", label = "manual jump", internal = true },
+  archive = {
+    method = "voyager/archive",
+    label = "archived records",
+    internal = true,
+    storage = true,
+  },
 }
 
 local M = {}
@@ -64,8 +70,10 @@ function M.by_method(method)
       return name, vim.deepcopy(records[name])
     end
   end
-  if internal.manual.method == method then
-    return "manual", vim.deepcopy(internal.manual)
+  for name, record in pairs(internal) do
+    if record.method == method then
+      return name, vim.deepcopy(record)
+    end
   end
 end
 

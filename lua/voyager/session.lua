@@ -17,6 +17,10 @@ local committing_statuses = {
   empty = true,
 }
 
+local function relation_key(origin_id, method)
+  return "relation:" .. origin_id .. ":" .. method
+end
+
 local function normalize(path)
   local value = path:gsub("\\", "/")
   return vim.fs.normalize(value, { expand_env = false })
@@ -171,6 +175,12 @@ function Session:_stage_state(opts)
     project_root = opts.project_root,
     request_count = 0,
     request_handles = {},
+    relation_requests = {},
+    ordinary_relation_requests = {},
+    relation_versions = {},
+    directional_request_tokens = {},
+    invalidated_request_tokens = {},
+    relations = {},
     request_token = 0,
     interaction_token = 0,
     interaction_tokens = {},
@@ -214,7 +224,7 @@ function Session:_enrich_nodes(state, generation, flow_id, items)
   for _, item in ipairs(items) do
     local node_id = type(item) == "table" and item.node_id or item
     local node = type(node_id) == "string" and state.flow:location(node_id) or nil
-    if node and not seen[node.id] then
+    if node and node.location.query_anchor == nil and not seen[node.id] then
       seen[node.id] = true
       local uri = self:_uri_for_locator(state, node.location.locator)
       if uri then
@@ -233,7 +243,26 @@ function Session:_enrich_nodes(state, generation, flow_id, items)
     end
     local changed = false
     for node_id, value in pairs(results or {}) do
-      if state.flow:apply_symbol(node_id, value.symbol, value.kind) then
+      local node = state.flow:location(node_id)
+      local relation_active = false
+      for _, action_name in ipairs({ "incoming_calls", "outgoing_calls" }) do
+        local method = Actions.get(action_name).method
+        local key = relation_key(node_id, method)
+        if state.relation_requests[key] or state.relations[key] or state.flow:action_for(node_id, method) then
+          relation_active = true
+          break
+        end
+      end
+      -- Keep the displayed token and its query subject aligned once the user
+      -- has asked about either call direction. A late enclosing-symbol result
+      -- must not relabel an in-flight or cached relationship after the query
+      -- was issued from the provisional token.
+      if
+        node
+        and node.location.query_anchor == nil
+        and not relation_active
+        and state.flow:apply_symbol(node_id, value.symbol, value.kind, value.query_anchor)
+      then
         changed = true
       end
     end
@@ -248,6 +277,7 @@ function Session:_render(state)
     dirty = state.flow ~= nil and state.flow:is_dirty() or false,
     request_count = state.request_count,
     expanded_test_groups = state.expanded_test_groups,
+    relations = state.relations,
   })
 end
 
@@ -293,8 +323,8 @@ function Session:_observe_lsp_request(state, args)
   if not request or request.type ~= "pending" then
     return
   end
-  local action_name = Actions.by_method(request.method)
-  if not action_name or action_name == "manual" then
+  local action_name, action = Actions.by_method(request.method)
+  if not action_name or action.internal == true then
     return
   end
   local runtime = self._runtime
@@ -526,6 +556,13 @@ function Session:_commit_outcome(state, context, request_token, outcome)
   assert(type(outcome.method) == "string" and outcome.method ~= "", "navigation method is missing")
   assert(type(outcome.label) == "string" and outcome.label ~= "", "navigation label is missing")
 
+  if context.replace_targets == true and type(context.relation_version) == "number" then
+    local key = relation_key(outcome.origin_node_id, outcome.method)
+    if (state.relation_versions[key] or 0) ~= context.relation_version then
+      return { commit = nil, tagged_items = {}, stale_relation = true }
+    end
+  end
+
   local identities = {}
   for _, location in ipairs(outcome.locations or {}) do
     local identity = location.identity or Locator.location_key(location)
@@ -541,7 +578,11 @@ function Session:_commit_outcome(state, context, request_token, outcome)
     method = outcome.method,
     label = outcome.label,
     locations = outcome.locations or {},
+    query_status = outcome.status == "partial" and "partial" or "complete",
+    replace_targets = context.replace_targets == true and outcome.status ~= "partial",
   })
+  local committed_key = relation_key(commit.effective_origin_id, outcome.method)
+  state.relation_versions[committed_key] = (state.relation_versions[committed_key] or 0) + 1
   local tagged_items = {}
   for _, item in ipairs(outcome.items or {}) do
     local node_id = assert(commit.node_id_by_identity[item.identity], "committed result identity is missing")
@@ -557,7 +598,7 @@ function Session:_commit_outcome(state, context, request_token, outcome)
   then
     state.flow:set_current(commit.effective_origin_id)
   end
-  return tagged_items
+  return { commit = commit, tagged_items = tagged_items }
 end
 
 -- The starting record is captured from the origin of the first navigation,
@@ -636,6 +677,24 @@ function Session:run_action(action_name)
     return nil
   end
 
+  local ordinary_relation_key
+  if action_name == "incoming_calls" or action_name == "outgoing_calls" then
+    local relation_origin_id = context.origin_node_id
+    if context.manual_location then
+      relation_origin_id = nil
+      local identity = context.manual_location.identity or Locator.location_key(context.manual_location)
+      for _, node in ipairs(state.flow:dfs()) do
+        if node.kind == "location" and Locator.location_key(node.location) == identity then
+          relation_origin_id = node.id
+          break
+        end
+      end
+    end
+    if relation_origin_id then
+      ordinary_relation_key = relation_key(relation_origin_id, action.method)
+    end
+  end
+
   state.request_token = state.request_token + 1
   local request_token = state.request_token
   context.request_token = request_token
@@ -643,10 +702,17 @@ function Session:run_action(action_name)
   state.destination_claim = nil
   state.current_claim_token = request_token
   state.manual_claim_token = context.manual_location and request_token or 0
+  if ordinary_relation_key then
+    local requests = state.ordinary_relation_requests[ordinary_relation_key] or {}
+    requests[request_token] = true
+    state.ordinary_relation_requests[ordinary_relation_key] = requests
+  end
 
   local older_handles = {}
-  for _, handle in pairs(state.request_handles) do
-    table.insert(older_handles, handle)
+  for token, handle in pairs(state.request_handles) do
+    if not state.directional_request_tokens[token] then
+      table.insert(older_handles, handle)
+    end
   end
   for _, handle in ipairs(older_handles) do
     if type(handle.supersede_interactive) == "function" then
@@ -667,6 +733,20 @@ function Session:run_action(action_name)
       return
     end
 
+    if state.invalidated_request_tokens[request_token] then
+      state.invalidated_request_tokens[request_token] = nil
+      return
+    end
+    if ordinary_relation_key then
+      local requests = state.ordinary_relation_requests[ordinary_relation_key]
+      if requests then
+        requests[request_token] = nil
+        if next(requests) == nil then
+          state.ordinary_relation_requests[ordinary_relation_key] = nil
+        end
+      end
+    end
+
     state.request_handles[request_token] = nil
     assert(state.request_count > 0, "Voyager request counter underflow")
     state.request_count = state.request_count - 1
@@ -675,7 +755,7 @@ function Session:run_action(action_name)
     if type(outcome) == "table" and committing_statuses[outcome.status] then
       local commit_ok, commit_result = pcall(self._commit_outcome, self, state, context, request_token, outcome)
       if commit_ok then
-        tagged_items = commit_result
+        tagged_items = commit_result.tagged_items
         self:_notify_outcome(outcome)
       else
         self._ui.notify("Voyager: " .. action.label .. " failed: " .. tostring(commit_result), vim.log.levels.ERROR)
@@ -1002,15 +1082,409 @@ function Session:toggle_test_group(row)
 end
 
 function Session:_row_location_id(row)
-  if type(row) ~= "table" or type(row.owner_id) ~= "string" then
+  if type(row) ~= "table" then
+    return nil
+  end
+  if type(row.context_location_id) == "string" then
+    return row.context_location_id
+  end
+  if type(row.owner_id) ~= "string" then
     return nil
   end
   if row.kind == "location" or row.kind == "note" then
     return row.owner_id
   end
-  if row.kind == "action" then
+  if row.kind == "action" or row.kind == "group" then
     return self._state.flow and self._state.flow:parent_id(row.owner_id) or nil
   end
+end
+
+function Session:_stored_action_context(state, origin_id)
+  local node = state.flow and state.flow:location(origin_id) or nil
+  if not node then
+    return nil, "location is no longer available"
+  end
+
+  -- A row can jump to a recorded occurrence while representing its enclosing
+  -- symbol or a call-hierarchy caller/callee. Newer records persist that
+  -- subject's selection range separately; legacy documents have no anchor and
+  -- continue to query from the display location.
+  local anchor = type(node.location.query_anchor) == "table" and node.location.query_anchor or node.location
+  local query_location = anchor == node.location and node.location
+    or { locator = vim.deepcopy(anchor.locator), range = vim.deepcopy(anchor.range) }
+
+  -- Resolving/loading a target is intentionally separate from displaying it:
+  -- this gives LSP a real buffer without changing any source window, cursor,
+  -- or Voyager's logical current node.
+  local opened, target, target_error = pcall(state.locator.open_target, state.locator, query_location, { list = false })
+  if not opened then
+    return nil, target
+  end
+  if not target then
+    return nil, target_error or "source is unavailable"
+  end
+  local uri = self:_uri_for_locator(state, anchor.locator)
+  if not uri then
+    return nil, "location URI is unavailable"
+  end
+
+  local read, lines = pcall(self._runtime.get_buffer_lines, target.bufnr)
+  if not read or type(lines) ~= "table" then
+    return nil, read and "source lines are unavailable" or lines
+  end
+  local start = anchor.range and anchor.range.start or nil
+  if type(start) ~= "table" or type(start.line) ~= "number" or type(start.character) ~= "number" then
+    return nil, "stored location position is invalid"
+  end
+  local line_text = lines[start.line + 1]
+  if type(line_text) ~= "string" then
+    return nil, "stored location line is unavailable"
+  end
+  if anchor ~= node.location and line_text ~= anchor.line_text then
+    return nil, "stored symbol query anchor changed"
+  end
+
+  return {
+    generation = state.generation,
+    flow_id = state.flow.flow_id,
+    origin_node_id = origin_id,
+    bufnr = target.bufnr,
+    project_root = state.project_root,
+    timeout_ms = state.config.navigation.timeout_ms,
+    directional = true,
+    stored_position = {
+      uri = uri,
+      line = start.line,
+      character = start.character,
+      line_text = line_text,
+      encoding = "utf-8",
+    },
+  }
+end
+
+local function relation_error_message(outcome)
+  local failure = first_failure_message(outcome)
+  if failure then
+    return failure
+  end
+  if outcome.status == "timeout" then
+    return "timed out"
+  end
+  if outcome.status == "unsupported" then
+    return "not supported"
+  end
+  if outcome.status == "cancelled" then
+    return "cancelled"
+  end
+  if outcome.status == "superseded" then
+    return "superseded"
+  end
+  return "request failed"
+end
+
+function Session:show_relation(row, action_name, opts)
+  if not self:is_active() then
+    return nil
+  end
+  local state = self._state
+  if not state.flow then
+    self:_notify_inapplicable("show a call relation", row)
+    return nil
+  end
+
+  local origin_id = self:_row_location_id(row)
+  local origin = origin_id and state.flow:location(origin_id) or nil
+  if not origin then
+    self:_notify_inapplicable("show a call relation", row)
+    return nil
+  end
+
+  local action_ok, action = pcall(Actions.get, action_name)
+  if not action_ok or (action_name ~= "incoming_calls" and action_name ~= "outgoing_calls") then
+    self._ui.notify("Voyager: invalid call relation", vim.log.levels.ERROR)
+    return nil
+  end
+
+  local key = relation_key(origin_id, action.method)
+  local transient = state.relations[key]
+  local force = type(opts) == "table" and opts.refresh == true
+  if transient and transient.state == "error" and transient.replace_targets == true then
+    force = true
+  end
+  local cached = state.flow:action_for(origin_id, action.method)
+
+  -- Repeated lowercase/uppercase commands coalesce on the same logical
+  -- relation while still bringing its stable row back into view.
+  local pending = state.relation_requests[key]
+  if pending then
+    if force then
+      if (state.relation_versions[key] or 0) ~= pending.relation_version then
+        self:_invalidate_relation(state, origin_id, action.method, "refresh")
+        return self:show_relation(row, action_name, { refresh = true })
+      end
+      pending.replace_targets = true
+      if state.relations[key] then
+        state.relations[key].replace_targets = true
+      end
+    end
+    state.sidebar:focus_relation(origin_id, action.method)
+    return true
+  end
+
+  if cached and not force and not (transient and transient.state == "error") then
+    local had_transient = state.relations[key] ~= nil
+    state.relations[key] = nil
+    local expanded = state.flow:set_collapsed(cached.id, false)
+    if expanded or had_transient then
+      self:_render(state)
+    end
+    state.sidebar:focus_relation(origin_id, action.method)
+    return true
+  end
+
+  if cached then
+    state.flow:set_collapsed(cached.id, false)
+  end
+
+  state.request_token = state.request_token + 1
+  local request_token = state.request_token
+  state.relations[key] = {
+    key = key,
+    origin_id = origin_id,
+    method = action.method,
+    label = action.label,
+    state = "loading",
+    replace_targets = force,
+  }
+  state.relation_requests[key] = {
+    request_token = request_token,
+    origin_id = origin_id,
+    method = action.method,
+    replace_targets = force,
+    relation_version = state.relation_versions[key] or 0,
+  }
+  state.directional_request_tokens[request_token] = true
+  state.request_count = state.request_count + 1
+  self:_render(state)
+  state.sidebar:focus_relation(origin_id, action.method)
+
+  local context, context_error = self:_stored_action_context(state, origin_id)
+  if not context then
+    state.relation_requests[key] = nil
+    state.directional_request_tokens[request_token] = nil
+    assert(state.request_count > 0, "Voyager request counter underflow")
+    state.request_count = state.request_count - 1
+    state.relations[key] = {
+      key = key,
+      origin_id = origin_id,
+      method = action.method,
+      label = action.label,
+      state = "error",
+      message = tostring(context_error),
+      replace_targets = force,
+    }
+    self:_render(state)
+    self._ui.notify("Voyager: " .. action.label .. " failed: " .. tostring(context_error), vim.log.levels.ERROR)
+    return nil
+  end
+  context.request_token = request_token
+  context.replace_targets = force
+  context.relation_version = state.relation_requests[key].relation_version
+
+  local generation = state.generation
+  local flow_id = state.flow.flow_id
+  local settled = false
+  local function settle(outcome)
+    if settled then
+      return
+    end
+    settled = true
+    if not self:_valid_state(state, generation) or not state.flow or state.flow.flow_id ~= flow_id then
+      return
+    end
+
+    local pending = state.relation_requests[key]
+    if not pending or pending.request_token ~= request_token then
+      return
+    end
+    local replacement_intent = pending.replace_targets == true
+    local stale_relation = replacement_intent and (state.relation_versions[key] or 0) ~= pending.relation_version
+    context.replace_targets = replacement_intent
+    context.relation_version = pending.relation_version
+    state.relation_requests[key] = nil
+    state.directional_request_tokens[request_token] = nil
+    state.request_handles[request_token] = nil
+    assert(state.request_count > 0, "Voyager request counter underflow")
+    state.request_count = state.request_count - 1
+
+    if stale_relation then
+      state.relations[key] = nil
+      self:_render(state)
+      return
+    end
+
+    outcome = type(outcome) == "table" and outcome
+      or {
+        status = "error",
+        label = action.label,
+        method = action.method,
+        origin_node_id = origin_id,
+        failures = { { kind = "setup", message = "invalid LSP completion" } },
+      }
+
+    local commit_result
+    if committing_statuses[outcome.status] then
+      local commit_ok, value = pcall(self._commit_outcome, self, state, context, request_token, outcome)
+      if commit_ok then
+        state.relations[key] = nil
+        if not value.stale_relation then
+          commit_result = value
+          state.flow:set_collapsed(value.commit.action_id, false)
+          self:_notify_outcome(outcome)
+        end
+      else
+        state.relations[key] = {
+          key = key,
+          origin_id = origin_id,
+          method = action.method,
+          label = action.label,
+          state = "error",
+          message = tostring(value),
+          replace_targets = replacement_intent,
+        }
+        self._ui.notify("Voyager: " .. action.label .. " failed: " .. tostring(value), vim.log.levels.ERROR)
+      end
+    elseif outcome.status == "cancelled" or outcome.status == "superseded" then
+      state.relations[key] = nil
+      self:_notify_outcome(outcome)
+    else
+      state.relations[key] = {
+        key = key,
+        origin_id = origin_id,
+        method = action.method,
+        label = action.label,
+        state = "error",
+        message = relation_error_message(outcome),
+        replace_targets = replacement_intent,
+      }
+      self:_notify_outcome(outcome)
+    end
+
+    -- Rendering preserves the user's current stable row. Only the immediate
+    -- key command above focuses the relation; asynchronous completion never
+    -- moves the cursor or steals a window.
+    self:_render(state)
+    if commit_result and #commit_result.tagged_items > 0 then
+      self:_enrich_nodes(state, generation, flow_id, commit_result.tagged_items)
+    end
+  end
+
+  local started, handle = pcall(state.lsp.start, state.lsp, action_name, vim.deepcopy(context), settle)
+  if not started then
+    settle({
+      status = "error",
+      action = action,
+      method = action.method,
+      label = action.label,
+      origin_node_id = origin_id,
+      items = {},
+      locations = {},
+      failures = { { kind = "setup", message = tostring(handle) } },
+    })
+    return nil
+  end
+  if type(handle) ~= "table" then
+    settle({
+      status = "error",
+      action = action,
+      method = action.method,
+      label = action.label,
+      origin_node_id = origin_id,
+      items = {},
+      locations = {},
+      failures = { { kind = "setup", message = "LSP request did not return a handle" } },
+    })
+    return nil
+  end
+
+  local done = false
+  if type(handle.is_done) == "function" then
+    local done_ok, result = pcall(handle.is_done, handle)
+    done = done_ok and result == true
+  end
+  if not settled and done then
+    settle({
+      status = "error",
+      action = action,
+      method = action.method,
+      label = action.label,
+      origin_node_id = origin_id,
+      items = {},
+      locations = {},
+      failures = { { kind = "setup", message = "LSP request completed without an outcome" } },
+    })
+  end
+  if
+    not settled
+    and self:_valid_state(state, generation)
+    and state.flow.flow_id == flow_id
+    and state.relation_requests[key]
+    and not done
+  then
+    state.relation_requests[key].handle = handle
+    state.request_handles[request_token] = handle
+  end
+  return handle
+end
+
+function Session:show_callers(row, refresh)
+  return self:show_relation(row, "incoming_calls", { refresh = refresh == true })
+end
+
+function Session:show_callees(row, refresh)
+  return self:show_relation(row, "outgoing_calls", { refresh = refresh == true })
+end
+
+function Session:_invalidate_relation(state, origin_id, method, reason)
+  local key = relation_key(origin_id, method)
+  local pending = state.relation_requests[key]
+  local had_state = pending ~= nil or state.relations[key] ~= nil
+  local handles = {}
+  if pending then
+    local request_token = pending.request_token
+    local handle = pending.handle or state.request_handles[request_token]
+    if handle then
+      table.insert(handles, handle)
+    end
+    state.relation_requests[key] = nil
+    state.directional_request_tokens[request_token] = nil
+    state.request_handles[request_token] = nil
+    assert(state.request_count > 0, "Voyager request counter underflow")
+    state.request_count = state.request_count - 1
+  end
+  local ordinary = state.ordinary_relation_requests[key]
+  if ordinary then
+    had_state = true
+    state.ordinary_relation_requests[key] = nil
+    for request_token in pairs(ordinary) do
+      state.invalidated_request_tokens[request_token] = true
+      local handle = state.request_handles[request_token]
+      if handle then
+        table.insert(handles, handle)
+      end
+      state.request_handles[request_token] = nil
+      assert(state.request_count > 0, "Voyager request counter underflow")
+      state.request_count = state.request_count - 1
+    end
+  end
+  state.relations[key] = nil
+  state.relation_versions[key] = (state.relation_versions[key] or 0) + 1
+  for _, handle in ipairs(handles) do
+    if type(handle) == "table" and type(handle.cancel) == "function" then
+      pcall(handle.cancel, handle, reason or "invalidate")
+    end
+  end
+  return had_state
 end
 
 function Session:delete_row(row)
@@ -1032,6 +1506,31 @@ function Session:delete_row(row)
     end
     return false
   end
+  if row.kind == "relation" then
+    local origin_id = self:_row_location_id(row)
+    if not origin_id or type(row.method) ~= "string" or row.method == "" then
+      self:_notify_inapplicable("delete", row)
+      return false
+    end
+    if not self:_invalidate_relation(state, origin_id, row.method, "delete") then
+      return false
+    end
+    self:_render(state)
+    return true
+  end
+  if row.kind == "location" and type(row.action_id) == "string" then
+    local action = state.flow:find(row.action_id)
+    if not action or action.kind ~= "action" or not state.flow:unlink_target(action.id, row.owner_id) then
+      return false
+    end
+    local origin_id = state.flow:parent_id(action.id)
+    if origin_id then
+      self:_invalidate_relation(state, origin_id, action.method, "delete")
+    end
+    state.destination_claim = nil
+    self:_render(state)
+    return true
+  end
   if row.kind ~= "location" and row.kind ~= "action" then
     self:_notify_inapplicable("delete", row)
     return false
@@ -1040,8 +1539,26 @@ function Session:delete_row(row)
     self._ui.notify("Voyager: the flow root cannot be deleted", vim.log.levels.INFO)
     return false
   end
-  if not state.flow:delete(row.owner_id) then
+  local relation_origin_id
+  local relation_method
+  if row.kind == "action" then
+    local action = state.flow:find(row.owner_id)
+    if action and action.kind == "action" then
+      relation_origin_id = state.flow:parent_id(action.id)
+      relation_method = action.method
+    end
+  end
+  local deleted
+  if row.kind == "action" and type(state.flow.delete_action_relation) == "function" then
+    deleted = state.flow:delete_action_relation(row.owner_id)
+  else
+    deleted = state.flow:delete(row.owner_id)
+  end
+  if not deleted then
     return false
+  end
+  if relation_origin_id and relation_method then
+    self:_invalidate_relation(state, relation_origin_id, relation_method, "delete")
   end
   state.destination_claim = nil
   self:_render(state)
@@ -1469,6 +1986,12 @@ function Session:_install_loaded_flow(candidate, project_root_value, config, loc
       pcall(handle.cancel, handle, "load")
     end
     old.request_handles = {}
+    old.relation_requests = {}
+    old.ordinary_relation_requests = {}
+    old.relation_versions = {}
+    old.directional_request_tokens = {}
+    old.invalidated_request_tokens = {}
+    old.relations = {}
     old.request_count = 0
     self:_delete_autocmds(old)
   else
@@ -1570,6 +2093,12 @@ function Session:_teardown(source)
     handle:cancel(source)
   end
   state.request_handles = {}
+  state.relation_requests = {}
+  state.ordinary_relation_requests = {}
+  state.relation_versions = {}
+  state.directional_request_tokens = {}
+  state.invalidated_request_tokens = {}
+  state.relations = {}
   state.request_count = 0
   self:_delete_autocmds(state)
   state.sidebar:unmount({ owned = true })
@@ -1696,6 +2225,18 @@ function M.native(config_provider, runtime, overrides)
           end,
           run_action = function(row)
             return controller:run_action_for_row(row)
+          end,
+          show_callers = function(row)
+            return controller:show_callers(row, false)
+          end,
+          show_callees = function(row)
+            return controller:show_callees(row, false)
+          end,
+          refresh_callers = function(row)
+            return controller:show_callers(row, true)
+          end,
+          refresh_callees = function(row)
+            return controller:show_callees(row, true)
           end,
           delete = function(row)
             return controller:delete_row(row)

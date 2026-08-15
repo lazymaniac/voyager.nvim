@@ -52,6 +52,12 @@ function M.new(spec)
       end
       return vim.deepcopy(lines)
     end,
+    list_buffers = function()
+      call("list_buffers")
+      return vim.tbl_map(function(buffer)
+        return buffer.id
+      end, env.buffers)
+    end,
     find_buffer = function(name)
       call("find_buffer:" .. name)
       for _, buffer in ipairs(env.buffers) do
@@ -78,6 +84,11 @@ function M.new(spec)
     end,
     add_buffer = function(name)
       call("add_buffer:" .. name)
+      for _, buffer in ipairs(env.buffers) do
+        if buffer.name == name and buffer.valid ~= false then
+          return buffer.id
+        end
+      end
       local id = next_buffer_id()
       table.insert(env.buffers, { id = id, name = name, valid = true, loaded = false, listed = false, lines = {} })
       return id

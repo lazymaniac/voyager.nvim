@@ -106,15 +106,28 @@ describe("Voyager asynchronous navigation orchestration", function()
     assert.equals("file:///project/lua/auth.lua", call.requests[1].uri)
     assert.equals(deps.config.navigation.timeout_ms, call.opts.timeout_ms)
     local node_id = call.requests[1].node_id
+    local anchor = {
+      locator = { kind = "project", path = "lua/auth.lua" },
+      range = {
+        start = { line = 0, character = 9 },
+        ["end"] = { line = 0, character = 18 },
+      },
+      line_text = "function authorize()",
+    }
 
     local renders = deps.sidebar.render_count
-    deps.symbols.on_done({ [node_id] = { symbol = "AuthService.authorize", kind = "method" } })
+    deps.symbols.on_done({
+      [node_id] = { symbol = "AuthService.authorize", kind = "method", query_anchor = anchor },
+    })
     local node = session:state().flow:location(node_id)
     assert.equals("AuthService.authorize", node.location.symbol)
     assert.equals("method", node.location.symbol_kind)
+    assert.same(anchor, node.location.query_anchor)
     assert.equals(renders + 1, deps.sidebar.render_count)
 
-    deps.symbols.on_done({ [node_id] = { symbol = "AuthService.authorize", kind = "method" } })
+    deps.symbols.on_done({
+      [node_id] = { symbol = "AuthService.authorize", kind = "method", query_anchor = anchor },
+    })
     assert.equals(renders + 1, deps.sidebar.render_count)
   end)
 
@@ -154,7 +167,10 @@ describe("Voyager asynchronous navigation orchestration", function()
     deps.lsp.auto_outcome = outcome("definition", site_id, { back })
     session:run_action("definition")
 
-    assert.same({}, session:state().flow:location(site_id).actions)
+    local reverse = session:state().flow:action_for(site_id, "textDocument/definition")
+    assert.is_table(reverse)
+    assert.same({}, reverse.results)
+    assert.same({ root_id }, session:state().flow:action_target_ids(reverse))
     local claim = session:state().destination_claim
     assert.is_table(claim)
     assert.equals(root_id, claim.targets[1].node_id)

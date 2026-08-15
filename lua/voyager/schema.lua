@@ -2,9 +2,22 @@ local Actions = require("voyager.lsp.actions")
 local Locator = require("voyager.locator")
 
 local M = {}
+local current_version = 2
+local error_version = current_version
 
 local function fail(message)
-  error("schema v1: " .. message, 0)
+  error("schema v" .. error_version .. ": " .. message, 0)
+end
+
+local function with_error_version(version, callback)
+  local previous = error_version
+  error_version = version
+  local ok, result = pcall(callback)
+  error_version = previous
+  if not ok then
+    error(result, 0)
+  end
+  return result
 end
 
 local function require_object(value, path)
@@ -107,11 +120,32 @@ local function validate_locator(value, path)
   end
 end
 
-local function validate_location(value, path)
+local function validate_query_anchor(value, path)
   require_object(value, path)
-  reject_unknown(value, path, { locator = true, range = true, symbol = true, symbol_kind = true, context = true })
+  reject_unknown(value, path, { locator = true, range = true, line_text = true })
   validate_locator(value.locator, path .. ".locator")
   validate_range(value.range, path .. ".range")
+  require_string(value.line_text, path .. ".line_text")
+end
+
+local function validate_location(value, path, version)
+  require_object(value, path)
+  local allowed = {
+    locator = true,
+    range = true,
+    symbol = true,
+    symbol_kind = true,
+    context = true,
+  }
+  if version >= 2 then
+    allowed.query_anchor = true
+  end
+  reject_unknown(value, path, allowed)
+  validate_locator(value.locator, path .. ".locator")
+  validate_range(value.range, path .. ".range")
+  if value.query_anchor ~= nil then
+    validate_query_anchor(value.query_anchor, path .. ".query_anchor")
+  end
   require_string(value.symbol, path .. ".symbol")
   if value.symbol_kind ~= nil then
     require_string(value.symbol_kind, path .. ".symbol_kind")
@@ -137,8 +171,9 @@ local function validate_timestamp(value, path)
   end
 end
 
-function M.validate(document)
+local function validate_document(document, version)
   require_object(document, "$")
+  document = vim.deepcopy(document)
   reject_unknown(document, "$", {
     schema_version = true,
     position_encoding = true,
@@ -151,8 +186,8 @@ function M.validate(document)
     current_node_id = true,
     root = true,
   })
-  if document.schema_version ~= 1 then
-    fail("$.schema_version must equal 1")
+  if document.schema_version ~= version then
+    fail("$.schema_version must equal " .. version)
   end
   if document.position_encoding ~= "utf-8" then
     fail("$.position_encoding must equal utf-8")
@@ -169,6 +204,8 @@ function M.validate(document)
   require_string(document.current_node_id, "$.current_node_id")
 
   local ids = {}
+  local location_identities = {}
+  local action_targets = {}
   local function validate_node(node, expected_kind, path)
     require_object(node, path)
     if node.kind ~= expected_kind then
@@ -186,7 +223,14 @@ function M.validate(document)
         path,
         { id = true, kind = true, location = true, note = true, visited = true, actions = true }
       )
-      validate_location(node.location, path .. ".location")
+      validate_location(node.location, path .. ".location", version)
+      local identity = Locator.location_key(node.location)
+      if version >= 2 and location_identities[identity] then
+        fail(path .. ".location duplicates location identity at " .. location_identities[identity])
+      end
+      if version >= 2 then
+        location_identities[identity] = path .. ".location"
+      end
       if node.note ~= nil then
         require_string(node.note, path .. ".note")
       end
@@ -204,16 +248,22 @@ function M.validate(document)
         methods[action.method] = true
       end
     else
-      reject_unknown(node, path, {
+      local allowed = {
         id = true,
         kind = true,
         method = true,
         label = true,
         collapsed = true,
         results = true,
-      })
+      }
+      if version >= 2 then
+        allowed.target_ids = true
+        allowed.query_status = true
+      end
+      reject_unknown(node, path, allowed)
       require_string(node.method, path .. ".method")
-      if not select(2, Actions.by_method(node.method)) then
+      local _, action_record = Actions.by_method(node.method)
+      if not action_record or (version == 1 and action_record.storage == true) then
         fail(path .. ".method is not supported")
       end
       require_string(node.label, path .. ".label")
@@ -221,20 +271,50 @@ function M.validate(document)
         fail(path .. ".collapsed must be a boolean")
       end
       require_array(node.results, path .. ".results")
-      local identities = {}
+      local sibling_identities = {}
       for index, location in ipairs(node.results) do
         local child_path = string.format("%s.results[%d]", path, index)
         validate_node(location, "location", child_path)
-        local identity = Locator.location_key(location.location)
-        if identities[identity] then
-          fail(child_path .. ".location duplicates a sibling location identity")
+        if version == 1 then
+          local identity = Locator.location_key(location.location)
+          if sibling_identities[identity] then
+            fail(child_path .. ".location duplicates a sibling location identity")
+          end
+          sibling_identities[identity] = true
         end
-        identities[identity] = true
+      end
+      if version >= 2 then
+        require_array(node.target_ids, path .. ".target_ids")
+        if node.query_status ~= "complete" and node.query_status ~= "partial" then
+          fail(path .. ".query_status must equal complete or partial")
+        end
+        local targets = {}
+        local seen_targets = {}
+        for index, target_id in ipairs(node.target_ids) do
+          local target_path = string.format("%s.target_ids[%d]", path, index)
+          validate_id(target_id, "location", target_path)
+          if seen_targets[target_id] then
+            fail(target_path .. " duplicates an earlier target ID")
+          end
+          seen_targets[target_id] = true
+          table.insert(targets, { id = target_id, path = target_path })
+        end
+        table.insert(action_targets, targets)
       end
     end
   end
 
   validate_node(document.root, "location", "$.root")
+  for _, targets in ipairs(action_targets) do
+    for _, target in ipairs(targets) do
+      if ids[target.id] == nil then
+        fail(target.path .. " references a missing location")
+      end
+      if ids[target.id] ~= "location" then
+        fail(target.path .. " must reference a location node")
+      end
+    end
+  end
   if ids[document.current_node_id] ~= "location" then
     fail("$.current_node_id must reference a location node")
   end
@@ -257,7 +337,123 @@ function M.validate(document)
   if not valid_flow_id then
     fail("$.flow_id does not match root identity")
   end
-  return vim.deepcopy(document)
+  return document
+end
+
+local function append_unique(values, value)
+  for _, candidate in ipairs(values) do
+    if candidate == value then
+      return
+    end
+  end
+  table.insert(values, value)
+end
+
+local function migrate_v1(document)
+  local migrated = vim.deepcopy(document)
+  local canonical_by_identity = {}
+  local id_remap = {}
+  local register_location
+  local merge_action_into
+
+  local function merge_location_metadata(existing, incoming)
+    if existing.note == nil and incoming.note ~= nil then
+      existing.note = incoming.note
+    end
+    if existing.location.symbol_kind == nil and incoming.location.symbol_kind ~= nil then
+      existing.location.symbol_kind = incoming.location.symbol_kind
+    end
+    if existing.location.context == nil and incoming.location.context ~= nil then
+      existing.location.context = incoming.location.context
+    end
+    if incoming.visited == true then
+      existing.visited = true
+    end
+  end
+
+  merge_action_into = function(owner, incoming)
+    local action
+    for _, candidate in ipairs(owner.actions) do
+      if candidate.method == incoming.method then
+        action = candidate
+        break
+      end
+    end
+    if not action then
+      action = {
+        id = incoming.id,
+        kind = "action",
+        method = incoming.method,
+        label = incoming.label,
+        collapsed = incoming.collapsed,
+        target_ids = {},
+        query_status = "complete",
+        results = {},
+      }
+      table.insert(owner.actions, action)
+    end
+
+    for _, result in ipairs(incoming.results) do
+      local canonical, is_new = register_location(result)
+      append_unique(action.target_ids, canonical.id)
+      if is_new then
+        table.insert(action.results, canonical)
+      end
+    end
+  end
+
+  register_location = function(incoming)
+    local identity = Locator.location_key(incoming.location)
+    local existing = canonical_by_identity[identity]
+    if existing then
+      id_remap[incoming.id] = existing.id
+      merge_location_metadata(existing, incoming)
+      for _, action in ipairs(incoming.actions) do
+        merge_action_into(existing, action)
+      end
+      return existing, false
+    end
+
+    local canonical = {
+      id = incoming.id,
+      kind = "location",
+      location = vim.deepcopy(incoming.location),
+      actions = {},
+    }
+    if incoming.note ~= nil then
+      canonical.note = incoming.note
+    end
+    if incoming.visited == true then
+      canonical.visited = true
+    end
+    canonical_by_identity[identity] = canonical
+    id_remap[incoming.id] = canonical.id
+    for _, action in ipairs(incoming.actions) do
+      merge_action_into(canonical, action)
+    end
+    return canonical, true
+  end
+
+  migrated.root = register_location(document.root)
+  migrated.current_node_id = id_remap[document.current_node_id]
+  migrated.schema_version = current_version
+  return migrated
+end
+
+function M.validate(document)
+  local version = type(document) == "table" and document.schema_version or current_version
+  if version == 1 then
+    local legacy = with_error_version(1, function()
+      return validate_document(document, 1)
+    end)
+    local migrated = migrate_v1(legacy)
+    return with_error_version(current_version, function()
+      return validate_document(migrated, current_version)
+    end)
+  end
+  return with_error_version(current_version, function()
+    return validate_document(document, current_version)
+  end)
 end
 
 local function indent(level)
@@ -312,12 +508,23 @@ local function encode_locator(value, level)
   return object({ { "kind", value.kind }, { "path", value.path } }, level)
 end
 
+local function encode_query_anchor(value, level)
+  return object({
+    { "locator", value.locator, encode_locator },
+    { "range", value.range, encode_range },
+    { "line_text", value.line_text },
+  }, level)
+end
+
 local function encode_location(value, level)
   local fields = {
     { "locator", value.locator, encode_locator },
     { "range", value.range, encode_range },
-    { "symbol", value.symbol },
   }
+  if value.query_anchor ~= nil then
+    table.insert(fields, { "query_anchor", value.query_anchor, encode_query_anchor })
+  end
+  table.insert(fields, { "symbol", value.symbol })
   if value.symbol_kind ~= nil then
     table.insert(fields, { "symbol_kind", value.symbol_kind })
   end
@@ -355,6 +562,8 @@ encode_node = function(value, level)
     { "method", value.method },
     { "label", value.label },
     { "collapsed", value.collapsed },
+    { "target_ids", value.target_ids },
+    { "query_status", value.query_status },
     { "results", value.results, encode_nodes },
   }, level)
 end

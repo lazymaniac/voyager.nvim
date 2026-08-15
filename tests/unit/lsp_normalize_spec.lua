@@ -207,16 +207,18 @@ describe("Voyager LSP location normalization", function()
   it("normalizes incoming and outgoing call sites with direction-specific locations", function()
     local _, locator, normalizer = setup({
       files = {
-        ["/project/lua/caller.lua"] = { "caller()" },
-        ["/project/lua/origin.lua"] = { "callee()" },
+        ["/project/lua/caller.lua"] = { "caller target" },
+        ["/project/lua/origin.lua"] = { "origin target" },
+        ["/project/lua/callee.lua"] = { "callee body" },
       },
     })
     local snapshot = client(5, "calls", "utf-8")
     local caller = {
       name = "caller",
+      kind = 12,
       uri = "file:///project/lua/caller.lua",
       selectionRange = protocol_range(0, 6),
-      range = protocol_range(0, 8),
+      range = protocol_range(0, 13),
     }
     local prepared = {
       item = {
@@ -228,18 +230,38 @@ describe("Voyager LSP location normalization", function()
     }
 
     local incoming = normalizer:call_sites("incoming", snapshot, prepared, {
-      { from = caller, fromRanges = { caller.selectionRange, caller.range } },
+      { from = caller, fromRanges = { protocol_range(7, 13), caller.range } },
     })
     assert.same(locator:from_uri(caller.uri), incoming[1].location.locator)
+    assert.same(protocol_range(7, 13), incoming[1].location.range)
     assert.equals(caller.name, incoming[1].location.symbol)
+    assert.equals("function", incoming[1].location.symbol_kind)
+    assert.same({
+      locator = locator:from_uri(caller.uri),
+      range = protocol_range(0, 6),
+      line_text = "caller target",
+    }, incoming[1].location.query_anchor)
     assert.same({ 1, 2 }, { incoming[1].range_index, incoming[2].range_index })
 
-    local callee = { name = "callee", uri = "file:///project/lua/callee.lua" }
+    local callee = {
+      name = "callee",
+      kind = 6,
+      uri = "file:///project/lua/callee.lua",
+      selectionRange = protocol_range(0, 6),
+      range = protocol_range(0, 11),
+    }
     local outgoing = normalizer:call_sites("outgoing", snapshot, prepared, {
-      { to = callee, fromRanges = { prepared.item.selectionRange } },
+      { to = callee, fromRanges = { protocol_range(7, 13) } },
     })
     assert.same(locator:from_uri(prepared.item.uri), outgoing[1].location.locator)
+    assert.same(protocol_range(7, 13), outgoing[1].location.range)
     assert.equals(callee.name, outgoing[1].location.symbol)
+    assert.equals("method", outgoing[1].location.symbol_kind)
+    assert.same({
+      locator = locator:from_uri(callee.uri),
+      range = protocol_range(0, 6),
+      line_text = "callee body",
+    }, outgoing[1].location.query_anchor)
   end)
 
   it("summarizes one call-hierarchy result as one usable response", function()
@@ -247,7 +269,11 @@ describe("Voyager LSP location normalization", function()
       files = { ["/project/lua/caller.lua"] = { "caller()" } },
     })
     local snapshot = client(5, "calls", "utf-8")
-    local caller = { name = "caller", uri = "file:///project/lua/caller.lua" }
+    local caller = {
+      name = "caller",
+      uri = "file:///project/lua/caller.lua",
+      selectionRange = protocol_range(0, 6),
+    }
     local presentation, unique, failures, summary = normalizer:call_sites("incoming", snapshot, {}, {
       { from = caller, fromRanges = { protocol_range(0, 6) } },
       { from = caller, fromRanges = { protocol_range(20, 21) } },

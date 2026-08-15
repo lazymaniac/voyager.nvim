@@ -4,8 +4,8 @@ source = {
   url = "git+https://github.com/lazymaniac/voyager.nvim.git",
 }
 description = {
-  summary = "Persistent branching LSP navigation flows for Neovim",
-  detailed = "Explore LSP destinations as a branching tree, annotate nodes, and save project-local flows.",
+  summary = "Persistent flat LSP relationship flows for Neovim",
+  detailed = "Explore LSP relationships in a flat ledger, annotate locations, and save project-local flows.",
   homepage = "https://github.com/lazymaniac/voyager.nvim",
   license = "MIT",
 }

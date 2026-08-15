@@ -255,7 +255,8 @@ function Locator:is_stale(location)
   return false
 end
 
-function Locator:open_target(location)
+function Locator:open_target(location, opts)
+  opts = opts or {}
   local stale, stale_reason = self:is_stale(location)
   if stale then
     return nil, stale_reason
@@ -263,6 +264,7 @@ function Locator:open_target(location)
 
   local runtime = self._runtime
   local bufnr
+  local created = false
   if location.locator.kind == "uri" then
     bufnr = self:_uri_buffer(location.locator)
     if not bufnr then
@@ -275,14 +277,31 @@ function Locator:open_target(location)
     end
     bufnr = runtime.find_buffer(path)
     if not bufnr then
+      local existing = {}
+      for _, candidate in ipairs(runtime.list_buffers()) do
+        existing[candidate] = true
+      end
       bufnr = runtime.add_buffer(path)
+      -- bufadd() reuses an existing unloaded buffer with the same name. Track
+      -- ownership before calling it so a background query never changes a
+      -- user's listed buffer merely because Voyager had to load it.
+      created = not existing[bufnr]
       local loaded, load_error = runtime.load_buffer(bufnr)
       if not loaded then
         return nil, load_error
       end
     end
   end
-  runtime.set_buffer_listed(bufnr, true)
+  -- Background LSP queries may need to load a file, but should not make that
+  -- hidden implementation detail appear in :ls. Existing buffers retain their
+  -- current listed state; normal jumps continue to list their target.
+  if opts.list == false then
+    if created then
+      runtime.set_buffer_listed(bufnr, false)
+    end
+  else
+    runtime.set_buffer_listed(bufnr, true)
+  end
   return {
     bufnr = bufnr,
     row = location.range.start.line + 1,

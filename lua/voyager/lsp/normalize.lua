@@ -1,4 +1,5 @@
 local Locator = require("voyager.locator")
+local Symbols = require("voyager.symbols")
 
 local M = {}
 local Normalize = {}
@@ -124,6 +125,38 @@ function Normalize:_safe_item(...)
   return ok and item or nil
 end
 
+-- Call-hierarchy results are presented and jumped to at their call sites, but
+-- future hierarchy requests must prepare the caller/callee symbol represented
+-- by the row. Keep that protocol selection range as a separate canonical
+-- UTF-8 anchor so the two positions do not get conflated.
+function Normalize:_query_anchor(client, item)
+  if type(item) ~= "table" or type(item.uri) ~= "string" or item.uri == "" or type(item.selectionRange) ~= "table" then
+    return nil
+  end
+  local locator = self._locator:from_uri(item.uri)
+  if not locator then
+    return nil
+  end
+  local lines = self._locator:source(locator)
+  if not lines then
+    return nil
+  end
+  local range = Locator.canonical_range(lines, item.selectionRange, client.offset_encoding)
+  if not range then
+    return nil
+  end
+  local line_text = lines[range.start.line + 1]
+  if type(line_text) ~= "string" or line_text == "" then
+    return nil
+  end
+  return { locator = locator, range = range, line_text = line_text }
+end
+
+function Normalize:_safe_query_anchor(...)
+  local ok, anchor = pcall(self._query_anchor, self, ...)
+  return ok and anchor or nil
+end
+
 function Normalize:locations(responses)
   local sorted = {}
   for _, response in ipairs(responses or {}) do
@@ -204,15 +237,20 @@ function Normalize:call_sites(direction, client, prepared_item, calls)
       uri = type(prepared_item) == "table" and type(prepared_item.item) == "table" and prepared_item.item.uri or nil
     end
     local preferred_symbol = type(owner) == "table" and owner.name or nil
+    local query_anchor = self:_safe_query_anchor(client, owner)
     local valid_count = 0
     local invalid_count = 0
 
     if type(ranges) ~= "table" or #ranges == 0 then
       invalid_count = 1
+    elseif not query_anchor then
+      invalid_count = #ranges
     else
       for range_index, range in ipairs(ranges) do
         local item = self:_safe_item(client, call, uri, range, preferred_symbol, call_index, range_index)
         if item then
+          item.location.query_anchor = vim.deepcopy(query_anchor)
+          item.location.symbol_kind = Symbols.kind_name(owner.kind)
           valid_count = valid_count + 1
           table.insert(presentation, item)
           add_unique(unique, seen, item.location)

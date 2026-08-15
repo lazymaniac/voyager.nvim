@@ -50,6 +50,50 @@ local function fake_group(stage, calls)
 end
 
 describe("Voyager standard LSP facade", function()
+  it("builds per-client params from a stored UTF-8 byte position", function()
+    local timers = FakeTimer.new()
+    local client16 = FakeClient.new({ id = 2, name = "alpha", offset_encoding = "utf-16" })
+    local client8 = FakeClient.new({ id = 3, name = "beta", offset_encoding = "utf-8" })
+    local service = Lsp.new({
+      actions = Actions,
+      normalizer = {
+        locations = function()
+          return {}, {}, {}, {
+            usable_response_count = 1,
+            empty_response_count = 1,
+            invalid_response_count = 0,
+          }
+        end,
+      },
+      request_group = RequestGroup,
+      get_clients = function()
+        return { client16, client8 }
+      end,
+      make_position_params = function()
+        error("stored queries must not inspect a window")
+      end,
+      timer = timers.factory,
+      select = function() end,
+    })
+    local stored = context()
+    stored.directional = true
+    stored.winid = nil
+    stored.stored_position = {
+      uri = "file:///project/stored.lua",
+      line = 7,
+      character = 5,
+      line_text = "a😀z",
+      encoding = "utf-8",
+    }
+
+    service:start("definition", stored, function() end)
+
+    assert.same({ uri = "file:///project/stored.lua" }, client16.requests[1].params.textDocument)
+    assert.same({ line = 7, character = 3 }, client16.requests[1].params.position)
+    assert.same({ uri = "file:///project/stored.lua" }, client8.requests[1].params.textDocument)
+    assert.same({ line = 7, character = 5 }, client8.requests[1].params.position)
+  end)
+
   it("discovers supporting clients and builds encoding-specific reference params", function()
     local timers = FakeTimer.new()
     local alpha = FakeClient.new({ id = 2, name = "alpha", offset_encoding = "utf-16" })
@@ -343,6 +387,13 @@ describe("Voyager standard LSP facade", function()
     })
 
     local first_context = context()
+    first_context.stored_position = {
+      uri = "file:///project/stored.lua",
+      line = 2,
+      character = 5,
+      line_text = "a😀z",
+      encoding = "utf-8",
+    }
     local handle = service:start("incoming_calls", first_context, function(outcome)
       table.insert(completed, outcome)
     end)
@@ -351,6 +402,10 @@ describe("Voyager standard LSP facade", function()
     assert.equals(1, captures[1].clients[1].id)
     assert.equals("alpha", captures[1].clients[1].name)
     assert.is_true(captures[1].owns_presentation(12))
+    assert.same({
+      textDocument = { uri = "file:///project/stored.lua" },
+      position = { line = 2, character = 3 },
+    }, captures[1].position_params(captures[1].clients[1]))
     handle:supersede_interactive()
     assert.equals(1, underlying.supersede_count)
 
@@ -359,6 +414,13 @@ describe("Voyager standard LSP facade", function()
     service:start("incoming_calls", second_context, function() end)
     assert.is_false(captures[1].owns_presentation(12))
     assert.is_true(captures[2].owns_presentation(13))
+
+    local directional_context = context()
+    directional_context.request_token = 14
+    directional_context.directional = true
+    service:start("incoming_calls", directional_context, function() end)
+    assert.is_true(captures[2].owns_presentation(13))
+    assert.is_true(captures[3].owns_presentation(14))
 
     captures[1].on_complete({ status = "empty", items = {}, locations = {}, failures = {} })
     captures[1].on_complete({ status = "error", items = {}, locations = {}, failures = {} })

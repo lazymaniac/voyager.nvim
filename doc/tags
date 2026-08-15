@@ -24,8 +24,12 @@ voyager-sidebar_keymaps.jump_stay	voyager.txt	/*voyager-sidebar_keymaps.jump_sta
 voyager-sidebar_keymaps.load	voyager.txt	/*voyager-sidebar_keymaps.load*
 voyager-sidebar_keymaps.note	voyager.txt	/*voyager-sidebar_keymaps.note*
 voyager-sidebar_keymaps.preview	voyager.txt	/*voyager-sidebar_keymaps.preview*
+voyager-sidebar_keymaps.refresh_callees	voyager.txt	/*voyager-sidebar_keymaps.refresh_callees*
+voyager-sidebar_keymaps.refresh_callers	voyager.txt	/*voyager-sidebar_keymaps.refresh_callers*
 voyager-sidebar_keymaps.run_action	voyager.txt	/*voyager-sidebar_keymaps.run_action*
 voyager-sidebar_keymaps.save	voyager.txt	/*voyager-sidebar_keymaps.save*
+voyager-sidebar_keymaps.show_callees	voyager.txt	/*voyager-sidebar_keymaps.show_callees*
+voyager-sidebar_keymaps.show_callers	voyager.txt	/*voyager-sidebar_keymaps.show_callers*
 voyager-sidebar_keymaps.toggle	voyager.txt	/*voyager-sidebar_keymaps.toggle*
 voyager-storage.autosave	voyager.txt	/*voyager-storage.autosave*
 voyager-storage.resolve_uri	voyager.txt	/*voyager-storage.resolve_uri*

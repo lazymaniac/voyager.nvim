@@ -67,6 +67,30 @@ local function snapshots(clients)
   return result
 end
 
+-- Sidebar-driven relationship queries originate from a stored flow location,
+-- not from a displayed window. Build position params directly from that
+-- immutable UTF-8 byte position and translate the character offset for each
+-- client's negotiated encoding. Ordinary observed/editor navigation keeps
+-- using Neovim's window-aware helper.
+local function position_params(make_position_params, context, snapshot)
+  local stored = context.stored_position
+  if type(stored) ~= "table" then
+    return make_position_params(context.winid, snapshot.offset_encoding)
+  end
+
+  assert(type(stored.uri) == "string" and stored.uri ~= "", "stored LSP position URI is missing")
+  assert(type(stored.line) == "number", "stored LSP position line is missing")
+  assert(type(stored.character) == "number", "stored LSP position character is missing")
+  assert(type(stored.line_text) == "string", "stored LSP position line text is missing")
+
+  local encoding = snapshot.offset_encoding or "utf-16"
+  local character = vim.str_utfindex(stored.line_text, encoding, stored.character, false)
+  return {
+    textDocument = { uri = stored.uri },
+    position = { line = stored.line, character = character },
+  }
+end
+
 function M.new(deps)
   assert(type(deps) == "table", "Voyager LSP dependencies are required")
   return setmetatable({
@@ -115,7 +139,12 @@ function Lsp:start(action_name, context, on_complete)
     return state.done
   end
 
-  self._presentation_token = context.request_token
+  -- Directional sidebar requests are independent cache fills. They neither
+  -- invalidate another relationship request nor take ownership away from an
+  -- interactive action already awaiting a prepared-item choice.
+  if context.directional ~= true then
+    self._presentation_token = context.request_token
+  end
   local discovery_method = action.prepare_method or action.method
   local clients = snapshots(self._get_clients({ bufnr = context.bufnr, method = discovery_method }))
   if #clients == 0 then
@@ -132,9 +161,12 @@ function Lsp:start(action_name, context, on_complete)
       normalizer = self._normalizer,
       timer = self._timer,
       make_position_params = self._make_position_params,
+      position_params = function(snapshot)
+        return position_params(self._make_position_params, context, snapshot)
+      end,
       select = self._select,
       owns_presentation = function(token)
-        return self._presentation_token == token
+        return context.directional == true or self._presentation_token == token
       end,
       on_complete = function(call_outcome)
         finish(call_outcome.status, call_outcome.items, call_outcome.locations, call_outcome.failures)
@@ -149,7 +181,7 @@ function Lsp:start(action_name, context, on_complete)
   end
 
   local function make_params(snapshot)
-    local params = self._make_position_params(context.winid, snapshot.offset_encoding)
+    local params = position_params(self._make_position_params, context, snapshot)
     if action.context then
       params.context = vim.deepcopy(action.context)
     end

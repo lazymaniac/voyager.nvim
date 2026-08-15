@@ -139,6 +139,50 @@ describe("Voyager locators", function()
     assert.is_true(locator:is_stale(location))
   end)
 
+  it("keeps files loaded only for a background query out of the buffer list", function()
+    local env = Buffer.new({ files = { ["/project/lua/auth.lua"] = { "abc" } } })
+    local locator = Locator.new(env.runtime, "/project", nil)
+    local location = {
+      locator = { kind = "project", path = "lua/auth.lua" },
+      range = { start = { line = 0, character = 1 }, ["end"] = { line = 0, character = 3 } },
+      symbol = "bc",
+    }
+
+    assert.same({ bufnr = 1, row = 1, col = 1 }, locator:open_target(location, { list = false }))
+    assert.is_false(env.buffers[1].listed)
+
+    -- Once the buffer already exists, querying it must preserve its state.
+    env.buffers[1].listed = true
+    assert.same({ bufnr = 1, row = 1, col = 1 }, locator:open_target(location, { list = false }))
+    assert.is_true(env.buffers[1].listed)
+  end)
+
+  it("preserves a user-owned unloaded buffer's listed state for a background query", function()
+    local env = Buffer.new({
+      files = { ["/project/lua/auth.lua"] = { "abc" } },
+      buffers = {
+        {
+          id = 7,
+          name = "/project/lua/auth.lua",
+          valid = true,
+          loaded = false,
+          listed = true,
+        },
+      },
+    })
+    local locator = Locator.new(env.runtime, "/project", nil)
+    local location = {
+      locator = { kind = "project", path = "lua/auth.lua" },
+      range = { start = { line = 0, character = 1 }, ["end"] = { line = 0, character = 3 } },
+      symbol = "bc",
+    }
+
+    assert.same({ bufnr = 7, row = 1, col = 1 }, locator:open_target(location, { list = false }))
+    assert.is_true(env.buffers[1].loaded)
+    assert.is_true(env.buffers[1].listed)
+    assert.is_false(vim.tbl_contains(env.runtime.calls, "set_buffer_listed:7"))
+  end)
+
   it("uses deterministic slug and node-ID inputs", function()
     local next_id = Locator.id_factory("authorize-d70ea46c", string.rep("\1", 16), 40, function(input)
       return vim.fn.sha256(input)
