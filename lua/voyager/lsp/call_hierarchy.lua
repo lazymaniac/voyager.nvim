@@ -292,6 +292,9 @@ function M.start(opts)
     bufnr = context.bufnr,
     timeout_ms = context.timeout_ms,
     make_params = function(snapshot)
+      if opts.position_params then
+        return opts.position_params(snapshot)
+      end
       return opts.make_position_params(context.winid, snapshot.offset_encoding)
     end,
   }, function(stage)

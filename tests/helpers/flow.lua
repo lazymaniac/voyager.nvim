@@ -36,7 +36,7 @@ function M.document()
   root_location.identity = nil
   local root_key = Locator.root_key(root_location)
   return {
-    schema_version = 1,
+    schema_version = 2,
     position_encoding = "utf-8",
     revision = 3,
     flow_id = Locator.flow_id(root_location, 8),

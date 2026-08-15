@@ -76,7 +76,7 @@ format-check: check-stylua
 
 docs: check-deps
 	@$(CONTAINER) build -t voyager-panvimdoc:4.0.1 $(PANVIMDOC)
-	@$(CONTAINER) run --rm -v $(ROOT):/work -w /work voyager-panvimdoc:4.0.1 --project-name voyager --input-file README.md --vim-version "Neovim 0.12.4" --toc true --description "Persistent branching LSP navigation flows" --title-date-pattern "$(DOC_DATE)" --dedup-subheadings true --demojify true --treesitter true --ignore-rawblocks true --doc-mapping false --doc-mapping-project-name true --shift-heading-level-by 0 --increment-heading-level-by 0
+	@$(CONTAINER) run --rm -v $(ROOT):/work -w /work voyager-panvimdoc:4.0.1 --project-name voyager --input-file README.md --vim-version "Neovim 0.12.4" --toc true --description "Persistent flat LSP relationship flows" --title-date-pattern "$(DOC_DATE)" --dedup-subheadings true --demojify true --treesitter true --ignore-rawblocks true --doc-mapping false --doc-mapping-project-name true --shift-heading-level-by 0 --increment-heading-level-by 0
 
 help-check:
 	@$(MAKE) docs

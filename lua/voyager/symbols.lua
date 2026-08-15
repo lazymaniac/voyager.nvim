@@ -1,3 +1,5 @@
+local Locator = require("voyager.locator")
+
 local M = {}
 local Symbols = {}
 Symbols.__index = Symbols
@@ -78,18 +80,20 @@ end
 function M.from_document_symbols(symbols, position)
   local names = {}
   local kind
+  local anchor_range
   local function descend(list)
     for _, symbol in ipairs(type(list) == "table" and list or {}) do
       if type(symbol) == "table" and type(symbol.name) == "string" and position_in_range(position, symbol.range) then
         table.insert(names, symbol.name)
         kind = M.kind_name(symbol.kind) or kind
+        anchor_range = symbol.selectionRange or symbol.range
         descend(symbol.children)
         return
       end
     end
   end
   descend(symbols)
-  return qualified(names), kind
+  return qualified(names), kind, anchor_range
 end
 
 -- Flat SymbolInformation[]: pick the smallest range containing the position
@@ -115,7 +119,7 @@ function M.from_symbol_information(symbols, position)
     table.insert(names, best.containerName)
   end
   table.insert(names, best.name)
-  return qualified(names), M.kind_name(best.kind)
+  return qualified(names), M.kind_name(best.kind), best.location.range
 end
 
 local function symbols_shape(result)
@@ -188,6 +192,7 @@ function Symbols:_treesitter(location)
   local node = root:named_descendant_for_range(position.line, position.character, position.line, position.character)
   local names = {}
   local kind
+  local anchor_range
   while node do
     local name_field = node:field("name")
     local name_node = name_field and name_field[1]
@@ -196,19 +201,73 @@ function Symbols:_treesitter(location)
       if text_ok and type(text) == "string" and text ~= "" then
         table.insert(names, 1, text)
         kind = kind or treesitter_kind(node:type())
+        if not anchor_range then
+          local start_line, start_character, end_line, end_character = name_node:range()
+          anchor_range = {
+            start = { line = start_line, character = start_character },
+            ["end"] = { line = end_line, character = end_character },
+          }
+        end
       end
     end
     node = node:parent()
   end
-  return qualified(names), kind
+  local symbol = qualified(names)
+  local line_text = anchor_range and lines[anchor_range.start.line + 1] or nil
+  local query_anchor
+  if symbol and type(line_text) == "string" and line_text ~= "" then
+    query_anchor = {
+      locator = vim.deepcopy(location.locator),
+      range = anchor_range,
+      line_text = line_text,
+    }
+  end
+  return symbol, kind, query_anchor
 end
 
 function Symbols:_safe_treesitter(location)
-  local ok, symbol, kind = pcall(self._treesitter, self, location)
+  local ok, symbol, kind, query_anchor = pcall(self._treesitter, self, location)
   if ok then
-    return symbol, kind
+    return symbol, kind, query_anchor
   end
-  return nil, nil
+  return nil, nil, nil
+end
+
+function Symbols:_lsp_query_anchor(request, protocol_range, encoding)
+  if type(protocol_range) ~= "table" then
+    return nil
+  end
+  local lines = self._locator:source(request.location.locator)
+  if not lines then
+    return nil
+  end
+  local range = Locator.canonical_range(lines, protocol_range, encoding)
+  if not range then
+    return nil
+  end
+  local line_text = lines[range.start.line + 1]
+  if type(line_text) ~= "string" or line_text == "" then
+    return nil
+  end
+  return {
+    locator = vim.deepcopy(request.location.locator),
+    range = range,
+    line_text = line_text,
+  }
+end
+
+local function encoded_position(locator, location, encoding)
+  local lines = locator:source(location.locator)
+  local position = location.range and location.range.start or nil
+  local line = position and lines and lines[position.line + 1] or nil
+  if type(line) ~= "string" then
+    return nil
+  end
+  local ok, character = pcall(vim.str_utfindex, line, encoding, position.character, false)
+  if not ok then
+    return nil
+  end
+  return { line = position.line, character = character }
 end
 
 local function group_requests(requests)
@@ -229,7 +288,8 @@ end
 -- Resolve enclosing symbols for `requests`, each { node_id, uri, location }.
 -- Files whose buffer is open with a documentSymbol-capable client are asked
 -- via LSP; everything else falls back to treesitter. `on_done` receives
--- { [node_id] = { symbol = ?, kind = ? } } containing only resolved entries.
+-- { [node_id] = { symbol = ?, kind = ?, query_anchor = ? } } containing only
+-- resolved entries.
 function Symbols:resolve(requests, opts, on_done)
   assert(type(opts) == "table" and type(opts.timeout_ms) == "number", "Voyager symbols timeout is required")
   local groups = group_requests(requests or {})
@@ -247,9 +307,9 @@ function Symbols:resolve(requests, opts, on_done)
   local function apply(group, resolver)
     local resolved = 0
     for _, request in ipairs(group.requests) do
-      local symbol, kind = resolver(request)
+      local symbol, kind, query_anchor = resolver(request)
       if symbol or kind then
-        results[request.node_id] = { symbol = symbol, kind = kind }
+        results[request.node_id] = { symbol = symbol, kind = kind, query_anchor = query_anchor }
         resolved = resolved + 1
       end
     end
@@ -294,7 +354,14 @@ function Symbols:resolve(requests, opts, on_done)
           local response = (stage.responses or {})[1]
           if response then
             resolved = apply(group, function(request)
-              return M.from_response(response.result, request.location.range.start)
+              local encoding = response.client.offset_encoding or "utf-16"
+              local position = encoded_position(self._locator, request.location, encoding)
+              if not position then
+                return nil, nil, nil
+              end
+              local symbol, kind, protocol_range = M.from_response(response.result, position)
+              local query_anchor = symbol and self:_lsp_query_anchor(request, protocol_range, encoding) or nil
+              return symbol, kind, query_anchor
             end)
           end
           if resolved == 0 then

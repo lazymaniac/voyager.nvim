@@ -12,6 +12,49 @@ local function row_for(rows, kind, owner_id)
   end
 end
 
+local function rows_for(rows, kind, owner_id)
+  local result = {}
+  for index, row in ipairs(rows) do
+    if row.kind == kind and row.owner_id == owner_id then
+      table.insert(result, { row = row, index = index })
+    end
+  end
+  return result
+end
+
+local function crosslinked_flow()
+  local flow = Fixtures.new_flow()
+  local alpha = Fixtures.location("lua/alpha.lua", 1, "alpha")
+  local beta = Fixtures.location("lua/beta.lua", 2, "beta")
+  local owned = flow:commit_navigation({
+    origin_node_id = flow.root.id,
+    method = "textDocument/implementation",
+    label = "implementations",
+    locations = { alpha, beta },
+  })
+  local alpha_id = owned.node_id_by_identity[alpha.identity]
+  local beta_id = owned.node_id_by_identity[beta.identity]
+  local alpha_calls = flow:commit_navigation({
+    origin_node_id = alpha_id,
+    method = "callHierarchy/outgoingCalls",
+    label = "calls",
+    locations = { beta },
+  })
+  local beta_calls = flow:commit_navigation({
+    origin_node_id = beta_id,
+    method = "callHierarchy/outgoingCalls",
+    label = "calls",
+    locations = { alpha },
+  })
+  return flow,
+    {
+      alpha_id = alpha_id,
+      beta_id = beta_id,
+      alpha_action_id = alpha_calls.action_id,
+      beta_action_id = beta_calls.action_id,
+    }
+end
+
 describe("Voyager sidebar projection", function()
   local text_icons = Config.resolve({ sidebar = { icons = false } }).sidebar.icons
 
@@ -44,7 +87,8 @@ describe("Voyager sidebar projection", function()
     local second_row, second_index = row_for(rows, "location", second.id)
 
     assert.equals(first_row.text, second_row.text)
-    assert.equals(second_index, Sidebar.selection_index(rows, "location", second.id))
+    assert.is_true(first_row.key ~= second_row.key)
+    assert.equals(second_index, Sidebar.selection_index(rows, second_row.key))
   end)
 
   it("marks current, stale, empty, and collapsed descendant states", function()
@@ -70,7 +114,7 @@ describe("Voyager sidebar projection", function()
     local expanded = Sidebar.project(flow, 42, { dirty = true, request_count = 0 }, { icons = text_icons })
     assert.equals("current", row_for(expanded, "location", auth_id).marker)
     assert.equals("stale", row_for(expanded, "location", implementation.results[2].id).marker)
-    assert.matches("references %(0%)", row_for(expanded, "action", empty.action_id).text)
+    assert.matches("usages of main %(0%)", row_for(expanded, "action", empty.action_id).text)
 
     assert.is_true(flow:toggle(implementation.id))
     local collapsed = Sidebar.project(flow, 42, { dirty = true, request_count = 0 }, { icons = text_icons })
@@ -79,8 +123,113 @@ describe("Voyager sidebar projection", function()
     assert.is_nil(row_for(collapsed, "location", auth_id))
     assert.equals(
       action_index,
-      Sidebar.selection_index(collapsed, "location", auth_id, { kind = "action", owner_id = implementation.id })
+      Sidebar.selection_index(collapsed, row_for(expanded, "location", auth_id).key, action_row.key)
     )
+  end)
+
+  it("marks a collapsed cross-link when current is below its canonical target", function()
+    local flow, ids = crosslinked_flow()
+    local current = Fixtures.location("lua/current.lua", 3, "current")
+    local nested = flow:commit_navigation({
+      origin_node_id = ids.beta_id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { current },
+    })
+    local current_id = nested.node_id_by_identity[current.identity]
+    assert.is_true(flow:set_current(current_id))
+    assert.is_true(flow:set_collapsed(ids.alpha_action_id, true))
+
+    local rows = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    assert.equals("descendant_current", row_for(rows, "action", ids.alpha_action_id).marker)
+  end)
+
+  it("keeps unlinked storage records reachable without counting them as targets", function()
+    local flow = Fixtures.branched_flow()
+    local action = flow.root.actions[1]
+    local retained = action.results[1]
+    local orphaned = action.results[2]
+    action.target_ids = { retained.id }
+    assert.is_true(flow:set_current(orphaned.id))
+
+    local expanded = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    assert.is_table(row_for(expanded, "location", retained.id))
+    local history = assert(row_for(expanded, "history", flow.root.id))
+    local orphaned_row = assert(row_for(expanded, "location", orphaned.id))
+    assert.matches("unlinked history %(1%)", history.text)
+    assert.same({ orphaned.id }, history.target_ids)
+    assert.is_true(orphaned_row.detached)
+    assert.equals("current", orphaned_row.marker)
+    assert.matches("implementations of main %(1%)", row_for(expanded, "action", action.id).text)
+
+    assert.is_true(flow:set_collapsed(action.id, true))
+    local collapsed = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    assert.is_nil(row_for(collapsed, "action", action.id).marker)
+    assert.equals("current", row_for(collapsed, "location", orphaned.id).marker)
+  end)
+
+  it("hides storage-only archive actions while exposing their history", function()
+    local flow = Fixtures.new_flow()
+    local archived = Fixtures.location("lua/archived.lua", 3, "archived")
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { archived },
+    })
+    local archived_id = commit.node_id_by_identity[archived.identity]
+    assert.is_true(flow:delete_action_relation(commit.action_id))
+
+    local rows = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    local archive = assert(flow:action_for(flow.root.id, "voyager/archive"))
+
+    assert.is_nil(row_for(rows, "action", archive.id))
+    assert.matches("unlinked history %(1%)", row_for(rows, "history", flow.root.id).text)
+    assert.is_true(row_for(rows, "location", archived_id).detached)
+
+    assert.is_true(flow:delete(archived_id))
+    assert.is_nil(flow:action_for(flow.root.id, "voyager/archive"))
+    local emptied = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    assert.is_nil(row_for(emptied, "history", flow.root.id))
+    for _, projected in ipairs(emptied) do
+      assert.not_equals("voyager/archive", projected.method)
+    end
+  end)
+
+  it("preserves selection by semantic location when an occurrence disappears", function()
+    local flow = Fixtures.branched_flow()
+    local action = flow.root.actions[1]
+    local removed = action.results[1]
+    local before = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    local selected = assert(row_for(before, "location", removed.id))
+
+    action.target_ids = { action.results[2].id }
+    local after = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    local detached, detached_index = row_for(after, "location", removed.id)
+
+    assert.is_true(detached.detached)
+    assert.equals(detached_index, Sidebar.selection_index(after, selected.key, nil, selected))
+  end)
+
+  it("falls back from a removed transient relation to its origin", function()
+    local flow = Fixtures.new_flow()
+    local method = "callHierarchy/incomingCalls"
+    local key = "relation:" .. flow.root.id .. ":" .. method
+    local loading = Sidebar.project(flow, 80, {
+      relations = {
+        [key] = {
+          origin_id = flow.root.id,
+          method = method,
+          label = "callers",
+          state = "loading",
+        },
+      },
+    }, { icons = text_icons })
+    local transient = assert(row_for(loading, "relation", flow.root.id))
+    local settled = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    local _, origin_index = row_for(settled, "location", flow.root.id)
+
+    assert.equals(origin_index, Sidebar.selection_index(settled, transient.key, nil, transient))
   end)
 
   it("renders project, absolute, and URI locations with one-based lines", function()
@@ -145,12 +294,51 @@ describe("Voyager sidebar projection", function()
     local expanded = Sidebar.project(flow, 80, { expanded_test_groups = { [commit.action_id] = true } }, display)
     local shown = row_for(expanded, "location", test_a_id)
     assert.is_table(shown)
-    assert.equals(row_for(expanded, "group", commit.action_id).depth + 1, shown.depth)
+    assert.equals(0, row_for(expanded, "group", commit.action_id).depth)
+    assert.equals(0, shown.depth)
 
     -- current node folded inside the group surfaces the descendant marker
     assert.is_true(flow:set_current(test_a_id))
     local folded = Sidebar.project(flow, 80, {}, display)
     assert.equals("descendant_current", row_for(folded, "group", commit.action_id).marker)
+  end)
+
+  it("marks a folded test cross-link when current is below its canonical target", function()
+    local flow = Fixtures.new_flow()
+    local test = Fixtures.location("tests/unit/service_spec.lua", 2, "service spec")
+    local storage = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { test },
+    })
+    local test_id = storage.node_id_by_identity[test.identity]
+    flow:commit_navigation({
+      origin_node_id = test_id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { vim.deepcopy(flow.root.location) },
+    })
+    local current = Fixtures.location("lua/current.lua", 3, "current")
+    local nested = flow:commit_navigation({
+      origin_node_id = test_id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { current },
+    })
+    local cross_link = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { vim.deepcopy(test) },
+    })
+    assert.is_true(flow:set_current(nested.node_id_by_identity[current.identity]))
+
+    local rows = Sidebar.project(flow, 80, {}, {
+      icons = text_icons,
+      test_paths = { "^tests/" },
+    })
+    assert.equals("descendant_current", row_for(rows, "group", cross_link.action_id).marker)
   end)
 
   it("dims visited locations and prefixes known symbol kinds", function()
@@ -190,16 +378,18 @@ describe("Voyager sidebar projection", function()
     end
   end)
 
-  it("indents one narrow column per depth by default and honors overrides", function()
+  it("keeps every semantic row on the same fixed left edge", function()
     local flow = Fixtures.branched_flow()
     local mysql_id = flow.root.actions[1].results[1].id
 
-    -- depth 1 result: 1 indent column + the two-column marker gutter
     local narrow = Sidebar.project(flow, 80, {}, { icons = text_icons })
-    assert.matches("^   MysqlStore", row_for(narrow, "location", mysql_id).text)
+    assert.matches("^  MysqlStore", row_for(narrow, "location", mysql_id).text)
 
-    local wide = Sidebar.project(flow, 80, {}, { icons = text_icons, indent = 3 })
-    assert.matches("^     MysqlStore", row_for(wide, "location", mysql_id).text)
+    local wide = Sidebar.project(flow, 80, {}, { icons = text_icons, indent = 99 })
+    assert.matches("^  MysqlStore", row_for(wide, "location", mysql_id).text)
+    for _, projected in ipairs(vim.list_extend(vim.deepcopy(narrow), wide)) do
+      assert.equals(0, projected.depth)
+    end
   end)
 
   it("projects a waiting placeholder when no flow exists yet", function()
@@ -210,15 +400,15 @@ describe("Voyager sidebar projection", function()
     assert.matches("navigate to start recording", rows[1].text)
   end)
 
-  it("indents and display-width truncates notes", function()
+  it("uses a fixed gutter and display-width truncates notes", function()
     local flow = Fixtures.branched_flow()
     local owner = flow.root.actions[1].results[1]
     flow:set_note(owner.id, "important 😀 authentication path that is deliberately long")
     local rows = Sidebar.project(flow, 20, { dirty = true, request_count = 0 }, { icons = text_icons })
     local note = row_for(rows, "note", owner.id)
 
-    assert.equals(2, note.depth)
-    assert.matches("^%s+✎", note.text)
+    assert.equals(0, note.depth)
+    assert.matches("^  ✎", note.text)
     assert.is_true(vim.fn.strdisplaywidth(note.text) <= 20)
     assert.matches("…$", note.text)
   end)
@@ -265,6 +455,176 @@ describe("Voyager sidebar projection", function()
         return { kind = row.kind, owner_id = row.owner_id }
       end, rows)
     )
+
+    local incoming = row_for(rows, "action", nested.action_id)
+    assert.matches("▲ callers of service.persist %(1%)", incoming.text)
+    assert.equals("relation:" .. caller_id .. ":callHierarchy/incomingCalls", incoming.key)
+    assert.equals(caller_id, incoming.context_location_id)
+    assert.equals(caller_id, incoming.origin_id)
+    assert.equals(nested.action_id, incoming.action_id)
+    assert.same({ top_id }, incoming.target_ids)
+
+    local outgoing = row_for(rows, "action", out.action_id)
+    assert.matches("▼ calls from main %(1%)", outgoing.text)
+    assert.equals("relation:" .. flow.root.id .. ":callHierarchy/outgoingCalls", outgoing.key)
+    assert.same({ callee_id }, outgoing.target_ids)
+  end)
+
+  it("projects transient relations in place and decorates a committed replacement", function()
+    local flow = Fixtures.new_flow()
+    local method = "callHierarchy/incomingCalls"
+    local key = "relation:" .. flow.root.id .. ":" .. method
+    local status = {
+      relations = {
+        arbitrary_map_key = {
+          key = key,
+          origin_id = flow.root.id,
+          method = method,
+          label = "callers",
+          state = "loading",
+        },
+      },
+    }
+    local loading = Sidebar.project(flow, 80, status, { icons = text_icons })
+    local transient, transient_index = row_for(loading, "relation", flow.root.id)
+    assert.equals(key, transient.key)
+    assert.equals(flow.root.id, transient.context_location_id)
+    assert.equals(method, transient.method)
+    assert.same({}, transient.target_ids)
+    assert.matches("▲ callers of main · loading", transient.text)
+    assert.is_true(transient_index < select(2, row_for(loading, "location", flow.root.id)))
+
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = method,
+      label = "callers",
+      locations = {},
+    })
+    local committed = Sidebar.project(flow, 80, status, { icons = text_icons })
+    assert.is_nil(row_for(committed, "relation", flow.root.id))
+    local action, action_index = row_for(committed, "action", commit.action_id)
+    assert.equals(key, action.key)
+    assert.matches("callers of main %(0%) · loading", action.text)
+    assert.equals(action_index, Sidebar.selection_index(committed, transient.key))
+
+    local error_key = "relation:" .. flow.root.id .. ":callHierarchy/outgoingCalls"
+    local failed = Sidebar.project(flow, 80, {
+      relations = {
+        [error_key] = {
+          key = error_key,
+          origin_id = flow.root.id,
+          method = "callHierarchy/outgoingCalls",
+          label = "calls",
+          state = "error",
+          message = "timed out",
+        },
+      },
+    }, { icons = text_icons })
+    local error_row = assert(row_for(failed, "relation", flow.root.id))
+    assert.matches("▼ calls from main · timed out", error_row.text)
+  end)
+
+  it("renders relations at a visible cross-link when canonical storage is folded", function()
+    local flow = Fixtures.branched_flow()
+    local storage_action = flow.root.actions[1]
+    local mysql = storage_action.results[1]
+    assert.is_true(flow:set_collapsed(storage_action.id, true))
+    local cross_link = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { vim.deepcopy(mysql.location) },
+    })
+    local method = "callHierarchy/incomingCalls"
+    local key = "relation:" .. mysql.id .. ":" .. method
+    local rows = Sidebar.project(flow, 80, {
+      relations = {
+        [key] = {
+          key = key,
+          origin_id = mysql.id,
+          method = method,
+          label = "callers",
+          state = "loading",
+        },
+      },
+    }, { icons = text_icons })
+
+    local location, location_index = row_for(rows, "location", mysql.id)
+    local relation, relation_index = row_for(rows, "relation", mysql.id)
+    assert.equals("location:" .. cross_link.action_id .. ":" .. mysql.id, location.key)
+    assert.is_false(location.alias)
+    assert.equals(key, relation.key)
+    assert.is_true(relation_index < location_index)
+    assert.matches("callers of MysqlStore.save · loading", relation.text)
+  end)
+
+  it("renders cross-linked targets as stable aliases without recursively looping", function()
+    local flow, ids = crosslinked_flow()
+    local rows = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    local alpha_rows = rows_for(rows, "location", ids.alpha_id)
+    local beta_rows = rows_for(rows, "location", ids.beta_id)
+    assert.equals(2, #alpha_rows)
+    assert.equals(2, #beta_rows)
+
+    local aliases = 0
+    local keys = {}
+    local action_count = 0
+    for _, projected in ipairs(rows) do
+      assert.is_nil(keys[projected.key])
+      keys[projected.key] = true
+      if projected.alias then
+        aliases = aliases + 1
+      end
+      if projected.kind == "action" then
+        action_count = action_count + 1
+      end
+    end
+    assert.equals(2, aliases)
+    assert.equals(3, action_count)
+    assert.same({ ids.beta_id }, row_for(rows, "action", ids.alpha_action_id).target_ids)
+    assert.same({ ids.alpha_id }, row_for(rows, "action", ids.beta_action_id).target_ids)
+    assert.is_true(keys["location:" .. ids.alpha_action_id .. ":" .. ids.beta_id])
+    assert.is_true(keys["location:" .. ids.beta_action_id .. ":" .. ids.alpha_id])
+  end)
+
+  it("keeps a very long call chain flat, bounded, and fully addressable", function()
+    local flow = Fixtures.new_flow()
+    local origin_id = flow.root.id
+    local last_id
+    for index = 1, 75 do
+      local location = Fixtures.location("lua/hop" .. index .. ".lua", index, "hop" .. index)
+      local commit = flow:commit_navigation({
+        origin_node_id = origin_id,
+        method = "callHierarchy/outgoingCalls",
+        label = "calls",
+        locations = { location },
+      })
+      last_id = commit.node_id_by_identity[location.identity]
+      origin_id = last_id
+    end
+
+    local rows = Sidebar.project(flow, 42, {}, { icons = text_icons, indent = 500 })
+    local keys = {}
+    local locations = 0
+    local actions = 0
+    for _, projected in ipairs(rows) do
+      assert.equals(0, projected.depth)
+      assert.is_true(vim.fn.strdisplaywidth(projected.text) <= 42)
+      assert.is_nil(keys[projected.key])
+      keys[projected.key] = true
+      if projected.kind == "location" then
+        locations = locations + 1
+        if projected.marker ~= "current" then
+          assert.matches("^  %S", projected.text)
+        end
+      elseif projected.kind == "action" then
+        actions = actions + 1
+        assert.matches("^  ▾ ▼", projected.text)
+      end
+    end
+    assert.equals(76, locations)
+    assert.equals(75, actions)
+    assert.matches("hop75", row_for(rows, "location", last_id).text)
   end)
 
   it("attaches highlight segments, direction cues, and ancestor emphasis", function()
@@ -362,6 +722,12 @@ describe("Voyager sidebar popup", function()
     local noop = function() end
     return vim.tbl_extend("force", {
       activate = noop,
+      activate_stay = noop,
+      run_action = noop,
+      show_callers = noop,
+      show_callees = noop,
+      refresh_callers = noop,
+      refresh_callees = noop,
       note = noop,
       save = noop,
       load = noop,
@@ -439,6 +805,18 @@ describe("Voyager sidebar popup", function()
         activate = function(row)
           calls.activate = row
         end,
+        show_callers = function(row)
+          calls.show_callers = row
+        end,
+        show_callees = function(row)
+          calls.show_callees = row
+        end,
+        refresh_callers = function(row)
+          calls.refresh_callers = row
+        end,
+        refresh_callees = function(row)
+          calls.refresh_callees = row
+        end,
         note = function(row)
           calls.note = row
         end,
@@ -472,19 +850,26 @@ describe("Voyager sidebar popup", function()
     sidebar:render(flow, { dirty = false, request_count = 0 })
     assert.same({
       relative = "editor",
-      position = { row = 1, col = 79 },
-      size = { width = 39, height = 6 },
+      position = { row = 1, col = 80 },
+      size = { width = 38, height = 6 },
     }, fake.update_layout_calls[#fake.update_layout_calls])
     assert.equals(flow.root.id, sidebar:selected_row().owner_id)
     assert.is_true(sidebar:owns_window(fake.winid))
 
     fake.press("<CR>")
+    fake.press("u")
+    fake.press("d")
+    fake.press("U")
+    fake.press("D")
     fake.press("n")
     fake.press("za")
     fake.press("s")
     fake.press("L")
     fake.press("q")
     assert.equals("location", calls.activate.kind)
+    for _, name in ipairs({ "show_callers", "show_callees", "refresh_callers", "refresh_callees" }) do
+      assert.equals(flow.root.id, calls[name].context_location_id)
+    end
     assert.equals(flow.root.id, calls.note.owner_id)
     assert.equals(flow.root.id, calls.toggle.owner_id)
     assert.is_true(calls.save)
@@ -597,6 +982,53 @@ describe("Voyager sidebar popup", function()
     sidebar:unmount({ owned = true })
   end)
 
+  it("focuses a relation by semantic key and anchors loading-to-committed renders", function()
+    local fake = FakePopup.new()
+    local sidebar_config = Config.resolve({ sidebar = { icons = false } }).sidebar
+    local sidebar = Sidebar.new({
+      sidebar = sidebar_config,
+      keymaps = {},
+      handlers = noop_handlers(),
+      popup_factory = fake.factory,
+      ui_state = ui_state,
+      notify = function() end,
+    })
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+
+    local flow = Fixtures.new_flow()
+    local method = "callHierarchy/incomingCalls"
+    local key = "relation:" .. flow.root.id .. ":" .. method
+    sidebar:render(flow, {
+      relations = {
+        [key] = {
+          key = key,
+          origin_id = flow.root.id,
+          method = method,
+          label = "callers",
+          state = "loading",
+        },
+      },
+    })
+    assert.is_true(sidebar:focus_relation(flow.root.id, method))
+    assert.equals(key, sidebar:selected_key())
+    assert.equals("relation", sidebar:selected_row().kind)
+    assert.equals(1, fake.focus_count)
+
+    local committed = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = method,
+      label = "callers",
+      locations = {},
+    })
+    sidebar:render(flow, {})
+    assert.equals(key, sidebar:selected_key())
+    assert.equals("action", sidebar:selected_row().kind)
+    assert.equals(committed.action_id, sidebar:selected_row().owner_id)
+    assert.equals(1, fake.focus_count)
+    assert.is_false(sidebar:focus_relation(flow.root.id, "missing/method"))
+    sidebar:unmount({ owned = true })
+  end)
+
   it("hides on invalid remount and distinguishes owned from external closes", function()
     local fake = FakePopup.new()
     local state = ui_state()
@@ -654,13 +1086,13 @@ describe("Voyager sidebar popup", function()
     local flow = Fixtures.branched_flow()
     sidebar:render(flow, { dirty = false, request_count = 0 })
     local grown = fake.update_layout_calls[#fake.update_layout_calls]
-    assert.same({ width = 39, height = 6 }, grown.size)
+    assert.same({ width = 38, height = 6 }, grown.size)
 
     assert.is_true(flow:toggle(flow.root.actions[1].id))
     sidebar:render(flow, { dirty = true, request_count = 0 })
     local collapsed = fake.update_layout_calls[#fake.update_layout_calls]
-    assert.same({ width = 24, height = 3 }, collapsed.size)
-    assert.same({ row = 1, col = 94 }, collapsed.position)
+    assert.same({ width = 34, height = 3 }, collapsed.size)
+    assert.same({ row = 1, col = 84 }, collapsed.position)
 
     sidebar:render(flow, { dirty = true, request_count = 0 })
     assert.same(collapsed, fake.update_layout_calls[#fake.update_layout_calls])
@@ -700,6 +1132,70 @@ describe("Voyager sidebar popup", function()
     assert.is_true(seen["VoyagerCount"])
     assert.is_true(seen["VoyagerNote"])
     assert.is_true(seen["VoyagerCurrentLine"])
+    sidebar:unmount({ owned = true })
+  end)
+
+  it("updates a separate relationship lens for headers and every visible alias", function()
+    local fake = FakePopup.new()
+    local sidebar_config = Config.resolve({ sidebar = { icons = false } }).sidebar
+    local sidebar = Sidebar.new({
+      sidebar = sidebar_config,
+      keymaps = {},
+      handlers = noop_handlers(),
+      popup_factory = fake.factory,
+      ui_state = ui_state,
+      notify = function() end,
+    })
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+    local flow, ids = crosslinked_flow()
+    sidebar:render(flow, {})
+    local rows = Sidebar.project(flow, 80, {}, { icons = sidebar_config.icons })
+
+    local _, action_index = row_for(rows, "action", ids.alpha_action_id)
+    fake.set_cursor_line(action_index + 1)
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = fake.bufnr })
+
+    local lens_namespace = vim.api.nvim_create_namespace("voyager-sidebar-relations")
+    local function lens_groups()
+      local groups = {}
+      local marks = vim.api.nvim_buf_get_extmarks(fake.bufnr, lens_namespace, 0, -1, { details = true })
+      for _, mark in ipairs(marks) do
+        local group = mark[4].line_hl_group
+        if group then
+          groups[group] = (groups[group] or 0) + 1
+        end
+      end
+      return groups, marks
+    end
+
+    local groups = lens_groups()
+    assert.equals(1, groups.VoyagerRelationFocus)
+    assert.equals(2, groups.VoyagerRelationOrigin)
+    assert.equals(2, groups.VoyagerRelationTarget)
+
+    local beta_occurrences = rows_for(rows, "location", ids.beta_id)
+    fake.set_cursor_line(beta_occurrences[1].index + 1)
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = fake.bufnr })
+    groups = lens_groups()
+    assert.equals(2, groups.VoyagerRelationFocus)
+    assert.is_true(groups.VoyagerRelationHeader >= 2)
+
+    local static_namespace = vim.api.nvim_create_namespace("voyager-sidebar")
+    local static = vim.api.nvim_buf_get_extmarks(fake.bufnr, static_namespace, 0, -1, { details = true })
+    local current_preserved = false
+    for _, mark in ipairs(static) do
+      if mark[4].line_hl_group == "VoyagerCurrentLine" and mark[4].priority == 120 then
+        current_preserved = true
+      end
+    end
+    assert.is_true(current_preserved)
+
+    vim.api.nvim_exec_autocmds("BufLeave", { buffer = fake.bufnr })
+    local _, cleared = lens_groups()
+    assert.equals(0, #cleared)
+    sidebar:render(flow, { dirty = true })
+    _, cleared = lens_groups()
+    assert.equals(0, #cleared)
     sidebar:unmount({ owned = true })
   end)
 
@@ -747,6 +1243,11 @@ describe("Voyager sidebar popup", function()
 
     assert.is_true(sidebar:show_help())
     assert.equals(windows_before + 1, #vim.api.nvim_list_wins())
+    local help = table.concat(vim.api.nvim_buf_get_lines(sidebar._preview.bufnr, 0, -1, false), "\n")
+    assert.matches("u%s+show callers, querying LSP when missing", help)
+    assert.matches("d%s+show calls, querying LSP when missing", help)
+    assert.matches("U%s+refresh callers from LSP", help)
+    assert.matches("D%s+refresh calls from LSP", help)
     sidebar:unmount({ owned = true })
     assert.equals(windows_before, #vim.api.nvim_list_wins())
   end)

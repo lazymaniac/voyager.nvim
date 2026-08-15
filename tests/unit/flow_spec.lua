@@ -18,6 +18,17 @@ local function location_node(value, path, line, symbol, context)
   }
 end
 
+local function query_anchor(path, line, start_character, end_character, line_text)
+  return {
+    locator = { kind = "project", path = path },
+    range = {
+      start = { line = line, character = start_character },
+      ["end"] = { line = line, character = end_character },
+    },
+    line_text = line_text,
+  }
+end
+
 local function action_node(value, method, label, results, collapsed)
   return {
     id = node_id("action", value),
@@ -117,10 +128,12 @@ describe("Voyager flow", function()
     })
 
     assert.equals(mysql.node_id_by_identity[auth.identity], memory.node_id_by_identity[auth.identity])
-    assert.is_nil(memory.action_id)
-    assert.is_false(memory.changed)
+    assert.is_string(memory.action_id)
+    assert.is_true(memory.changed)
     local memory_node = flow:location(branches.node_id_by_identity[Fixtures.identity("lua/memory.lua", 3)])
-    assert.same({}, memory_node.actions)
+    assert.equals(memory.action_id, memory_node.actions[1].id)
+    assert.same({}, memory_node.actions[1].results)
+    assert.same({ mysql.node_id_by_identity[auth.identity] }, memory_node.actions[1].target_ids)
   end)
 
   it("adds only unrecorded destinations when reference sets overlap across the tree", function()
@@ -172,9 +185,10 @@ describe("Voyager flow", function()
       locations = { back },
     })
     assert.equals(flow.root.id, reverse.node_id_by_identity[back.identity])
-    assert.is_nil(reverse.action_id)
-    assert.is_false(reverse.changed)
-    assert.same({}, flow:location(site_id).actions)
+    assert.is_string(reverse.action_id)
+    assert.is_true(reverse.changed)
+    assert.same({ flow.root.id }, flow:action_target_ids(reverse.action_id))
+    assert.same({}, flow:find(reverse.action_id).results)
 
     local fresh = Fixtures.location("lua/fresh.lua", 1, "fresh")
     local mixed = flow:commit_navigation({
@@ -187,6 +201,167 @@ describe("Voyager flow", function()
     local definition = flow:location(site_id).actions[1]
     assert.equals(1, #definition.results)
     assert.equals(mixed.node_id_by_identity[fresh.identity], definition.results[1].id)
+    assert.same({ flow.root.id, definition.results[1].id }, definition.target_ids)
+  end)
+
+  it("persists complete reverse-call relationships without duplicating canonical locations", function()
+    local flow = Fixtures.new_flow()
+    local callee = Fixtures.location("lua/callee.lua", 4, "callee")
+    local outgoing = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { callee },
+    })
+    local callee_id = outgoing.node_id_by_identity[callee.identity]
+    local caller = vim.deepcopy(flow.root.location)
+    caller.identity = Fixtures.identity("lua/main.lua", 0)
+
+    local incoming = flow:commit_navigation({
+      origin_node_id = callee_id,
+      method = "callHierarchy/incomingCalls",
+      label = "callers",
+      locations = { caller },
+    })
+
+    local action = assert(flow:action_for(callee_id, "callHierarchy/incomingCalls"))
+    assert.equals(incoming.action_id, action.id)
+    assert.same({ flow.root.id }, flow:action_target_ids(action))
+    assert.same({}, action.results)
+    assert.equals("complete", action.query_status)
+    assert.equals(2, #vim.tbl_filter(function(node)
+      return node.kind == "location"
+    end, flow:dfs()))
+  end)
+
+  it("orders mixed existing and fresh targets and refreshes canonical metadata", function()
+    local flow = Fixtures.new_flow()
+    local existing = Fixtures.location("lua/existing.lua", 2, "old-name", "old context")
+    local first = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/implementation",
+      label = "implementations",
+      locations = { existing },
+    })
+    local existing_id = first.node_id_by_identity[existing.identity]
+    local other = Fixtures.location("lua/other.lua", 3, "other")
+    local branch = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/declaration",
+      label = "declaration",
+      locations = { other },
+    })
+    local other_id = branch.node_id_by_identity[other.identity]
+    local refreshed = Fixtures.location("lua/existing.lua", 2, "new-name", "new context")
+    refreshed.symbol_kind = "method"
+    local fresh = Fixtures.location("lua/fresh.lua", 5, "fresh")
+
+    local mixed = flow:commit_navigation({
+      origin_node_id = other_id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { refreshed, fresh, refreshed },
+      query_status = "partial",
+    })
+    local action = assert(flow:action_for(other_id, "callHierarchy/outgoingCalls"))
+    local fresh_id = mixed.node_id_by_identity[fresh.identity]
+
+    assert.same({ existing_id, fresh_id }, action.target_ids)
+    assert.equals(1, #action.results)
+    assert.equals(fresh_id, action.results[1].id)
+    assert.equals("partial", action.query_status)
+    assert.equals("new-name", flow:location(existing_id).location.symbol)
+    assert.equals("new context", flow:location(existing_id).location.context)
+    assert.equals("method", flow:location(existing_id).location.symbol_kind)
+  end)
+
+  it("replaces targets exactly while retaining canonical storage for reuse", function()
+    local flow = Fixtures.new_flow()
+    local first = Fixtures.location("lua/first.lua", 2, "first")
+    local second = Fixtures.location("lua/second.lua", 3, "second")
+    local initial = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { first, second },
+    })
+    local first_id = initial.node_id_by_identity[first.identity]
+    local second_id = initial.node_id_by_identity[second.identity]
+
+    local subset = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { second },
+      replace_targets = true,
+    })
+    local action = assert(flow:action_for(flow.root.id, "callHierarchy/outgoingCalls"))
+
+    assert.equals(initial.action_id, subset.action_id)
+    assert.is_true(subset.changed)
+    assert.same({ second_id }, action.target_ids)
+    assert.same(
+      { first_id, second_id },
+      vim.tbl_map(function(result)
+        return result.id
+      end, action.results)
+    )
+    assert.equals(first_id, flow:location(first_id).id)
+    assert.equals(second_id, flow:location(second_id).id)
+
+    local empty = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = {},
+      replace_targets = true,
+    })
+
+    assert.is_true(empty.changed)
+    assert.same({}, action.target_ids)
+    assert.equals(2, #action.results)
+    assert.equals(first_id, flow:location(first_id).id)
+    assert.equals(second_id, flow:location(second_id).id)
+
+    local reused = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/incomingCalls",
+      label = "callers",
+      locations = { first },
+    })
+    local incoming = assert(flow:action_for(flow.root.id, "callHierarchy/incomingCalls"))
+
+    assert.equals(first_id, reused.node_id_by_identity[first.identity])
+    assert.same({ first_id }, incoming.target_ids)
+    assert.same({}, incoming.results)
+    assert.equals(2, #action.results)
+  end)
+
+  it("treats an unchanged exact target replacement as a no-op", function()
+    local flow = Fixtures.new_flow()
+    local first = Fixtures.location("lua/first.lua", 2, "first")
+    local second = Fixtures.location("lua/second.lua", 3, "second")
+    local initial = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { first, second },
+    })
+
+    local replacement = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { first, second },
+      replace_targets = true,
+    })
+
+    assert.equals(initial.action_id, replacement.action_id)
+    assert.is_false(replacement.changed)
+    assert.same({
+      initial.node_id_by_identity[first.identity],
+      initial.node_id_by_identity[second.identity],
+    }, flow:action_target_ids(replacement.action_id))
   end)
 
   it("re-roots a manual jump onto an ancestor without a connector", function()
@@ -222,6 +397,34 @@ describe("Voyager flow", function()
       methods[action.method] = #action.results
     end
     assert.same({ ["textDocument/references"] = 1, ["textDocument/implementation"] = 1 }, methods)
+  end)
+
+  it("threads exact target replacement through staged manual navigation", function()
+    local flow = Fixtures.new_flow()
+    local manual = Fixtures.location("lua/manual.lua", 1, "manual")
+    local first = Fixtures.location("lua/first.lua", 2, "first")
+    local second = Fixtures.location("lua/second.lua", 3, "second")
+    local initial = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      manual_location = manual,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { first, second },
+    })
+
+    local replacement = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      manual_location = manual,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { second },
+      replace_targets = true,
+    })
+    local action = assert(flow:action_for(initial.effective_origin_id, "callHierarchy/outgoingCalls"))
+
+    assert.equals(initial.action_id, replacement.action_id)
+    assert.same({ replacement.node_id_by_identity[second.identity] }, action.target_ids)
+    assert.equals(2, #action.results)
   end)
 
   it("keeps an empty action visible and treats its repeat as a no-op", function()
@@ -273,6 +476,259 @@ describe("Voyager flow", function()
     assert.same({}, flow.root.actions)
     journal = flow:journal()
     assert.is_true(journal.deleted[flow.root.id]["textDocument/implementation"])
+  end)
+
+  it("prunes cross-branch targets when their canonical storage subtree is deleted", function()
+    local flow = Fixtures.new_flow()
+    local first = Fixtures.location("lua/first.lua", 1, "first")
+    local second = Fixtures.location("lua/second.lua", 2, "second")
+    local branches = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/implementation",
+      label = "implementations",
+      locations = { first, second },
+    })
+    local first_id = branches.node_id_by_identity[first.identity]
+    local second_id = branches.node_id_by_identity[second.identity]
+    local link = flow:commit_navigation({
+      origin_node_id = first_id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { second },
+    })
+    assert.same({ second_id }, flow:action_target_ids(link.action_id))
+
+    assert.is_true(flow:delete(second_id))
+    assert.same({}, flow:action_target_ids(link.action_id))
+    assert.is_nil(flow:location(second_id))
+  end)
+
+  it("unlinks one relationship occurrence without deleting canonical storage", function()
+    local flow = Fixtures.new_flow()
+    local first = Fixtures.location("lua/first.lua", 1, "first")
+    local second = Fixtures.location("lua/second.lua", 2, "second")
+    local branches = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/implementation",
+      label = "implementations",
+      locations = { first, second },
+    })
+    local first_id = branches.node_id_by_identity[first.identity]
+    local second_id = branches.node_id_by_identity[second.identity]
+    local link = flow:commit_navigation({
+      origin_node_id = first_id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { second },
+    })
+    assert.is_true(flow:set_note(second_id, "keep this node"))
+    assert.is_true(flow:set_current(second_id))
+
+    assert.is_true(flow:unlink_target(branches.action_id, second_id))
+    assert.same({ first_id }, flow:action_target_ids(branches.action_id))
+    assert.same({ second_id }, flow:action_target_ids(link.action_id))
+    assert.equals(2, #flow:find(branches.action_id).results)
+    assert.equals("keep this node", flow:location(second_id).note)
+    assert.equals(second_id, flow.current_node_id)
+    assert.is_true(flow:journal().relationships[branches.action_id].removed_target_ids[second_id])
+    assert.is_false(flow:unlink_target(branches.action_id, second_id))
+    assert.is_false(flow:unlink_target("action-missing", second_id))
+  end)
+
+  it("deletes an action relation while re-homing storage used by surviving links", function()
+    local flow = Fixtures.new_flow()
+    local first = Fixtures.location("lua/first.lua", 1, "first")
+    local second = Fixtures.location("lua/second.lua", 2, "second")
+    local ownership = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/implementation",
+      label = "implementations",
+      locations = { first, second },
+    })
+    local first_id = ownership.node_id_by_identity[first.identity]
+    local second_id = ownership.node_id_by_identity[second.identity]
+    local surviving = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { second },
+    })
+    flow:commit_navigation({
+      origin_node_id = first_id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { second },
+    })
+    assert.is_true(flow:set_note(second_id, "shared history"))
+    assert.is_true(flow:set_current(second_id))
+    local latest = document(vim.deepcopy(flow.root), flow.current_node_id)
+
+    assert.is_true(flow:delete_action_relation(ownership.action_id))
+    assert.is_nil(flow:action_for(flow.root.id, "textDocument/implementation"))
+    assert.same({ second_id }, flow:action_target_ids(surviving.action_id))
+    assert.equals("shared history", flow:location(second_id).note)
+    assert.is_table(flow:action_for(first_id, "callHierarchy/outgoingCalls"))
+    assert.equals(second_id, flow.current_node_id)
+
+    local merged = Flow.merge(latest, flow, flow:journal(), flow._next_id)
+    local merged_flow = load(merged)
+    assert.is_nil(merged_flow:action_for(merged_flow.root.id, "textDocument/implementation"))
+    local merged_surviving = assert(merged_flow:action_for(merged_flow.root.id, "textDocument/references"))
+    assert.same({ second_id }, merged_surviving.target_ids)
+    assert.equals("shared history", merged_flow:location(second_id).note)
+    assert.is_table(merged_flow:location(first_id))
+    assert.equals(second_id, merged.current_node_id)
+
+    local isolated = Fixtures.new_flow()
+    local only = isolated:commit_navigation({
+      origin_node_id = isolated.root.id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { Fixtures.location("lua/only.lua", 1, "only") },
+    })
+    local only_id = only.node_id_by_identity[Fixtures.identity("lua/only.lua", 1)]
+    assert.is_true(isolated:delete_action_relation(only.action_id))
+    local archive = assert(isolated:action_for(isolated.root.id, "voyager/archive"))
+    assert.same({}, archive.target_ids)
+    assert.equals(only_id, archive.results[1].id)
+    assert.is_table(isolated:location(only_id))
+  end)
+
+  it("deletes manual relations through an invisible archive and removes the empty carrier", function()
+    local flow = Fixtures.new_flow()
+    local manual = Fixtures.location("lua/manual.lua", 1, "manual")
+    local target = Fixtures.location("lua/target.lua", 2, "target")
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      manual_location = manual,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { target },
+    })
+    local manual_id = commit.effective_origin_id
+    local manual_action = assert(flow:action_for(flow.root.id, "voyager/manual"))
+    assert.is_true(flow:set_current(manual_id))
+    local latest_with_manual = document(vim.deepcopy(flow.root), flow.current_node_id)
+
+    assert.is_true(flow:delete_action_relation(manual_action.id))
+    assert.is_nil(flow:action_for(flow.root.id, "voyager/manual"))
+    local archive = assert(flow:action_for(flow.root.id, "voyager/archive"))
+    assert.same({}, archive.target_ids)
+    assert.equals(manual_id, archive.results[1].id)
+    assert.equals("textDocument/definition", flow:location(manual_id).actions[1].method)
+    assert.equals(manual_id, flow.current_node_id)
+
+    local merged_manual_delete = Flow.merge(latest_with_manual, flow, flow:journal(), flow._next_id)
+    local merged_manual_flow = load(merged_manual_delete)
+    assert.is_nil(merged_manual_flow:action_for(merged_manual_flow.root.id, "voyager/manual"))
+    assert.is_table(merged_manual_flow:action_for(merged_manual_flow.root.id, "voyager/archive"))
+    assert.is_table(merged_manual_flow:location(manual_id))
+
+    local latest_with_archive = document(vim.deepcopy(flow.root), flow.current_node_id)
+    local active = load(latest_with_archive)
+    assert.is_true(active:delete(manual_id))
+    assert.is_nil(active:action_for(active.root.id, "voyager/archive"))
+    assert.is_nil(active:location(manual_id))
+    assert.is_true(active:journal().deleted[active.root.id]["voyager/archive"])
+    assert.equals(active.root.id, active.current_node_id)
+
+    local merged_archive_delete = Flow.merge(latest_with_archive, active, active:journal(), active._next_id)
+    local merged_archive_flow = load(merged_archive_delete)
+    assert.is_nil(merged_archive_flow:action_for(merged_archive_flow.root.id, "voyager/archive"))
+    assert.is_nil(merged_archive_flow:location(manual_id))
+    assert.equals(merged_archive_flow.root.id, merged_archive_flow.current_node_id)
+  end)
+
+  it("does not resurrect cleared history when an archive is recreated before merge", function()
+    local flow = Fixtures.new_flow()
+    local old = Fixtures.location("lua/old.lua", 1, "old")
+    local fresh = Fixtures.location("lua/fresh.lua", 2, "fresh")
+    local old_commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { old },
+    })
+    local fresh_commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/implementation",
+      label = "implementations",
+      locations = { fresh },
+    })
+    local old_id = old_commit.node_id_by_identity[old.identity]
+    local fresh_id = fresh_commit.node_id_by_identity[fresh.identity]
+    assert.is_true(flow:delete_action_relation(old_commit.action_id))
+    local latest = document(vim.deepcopy(flow.root), flow.current_node_id)
+    local active = load(latest)
+
+    assert.is_true(active:delete(old_id))
+    assert.is_nil(active:action_for(active.root.id, "voyager/archive"))
+    local implementation = assert(active:action_for(active.root.id, "textDocument/implementation"))
+    assert.is_true(active:delete_action_relation(implementation.id))
+    local recreated = assert(active:action_for(active.root.id, "voyager/archive"))
+    assert.same(
+      { fresh_id },
+      vim.tbl_map(function(result)
+        return result.id
+      end, recreated.results)
+    )
+
+    local merged = Flow.merge(latest, active, active:journal(), active._next_id)
+    local merged_flow = load(merged)
+    local archive = assert(merged_flow:action_for(merged_flow.root.id, "voyager/archive"))
+    assert.same(
+      { fresh_id },
+      vim.tbl_map(function(result)
+        return result.id
+      end, archive.results)
+    )
+    assert.is_nil(merged_flow:location(old_id))
+    assert.is_table(merged_flow:location(fresh_id))
+  end)
+
+  it("treats a deleted then recreated relation as fresh during save merge", function()
+    local flow = Fixtures.new_flow()
+    local old = Fixtures.location("lua/old.lua", 1, "old")
+    local fresh = Fixtures.location("lua/fresh.lua", 2, "fresh")
+    local original = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/incomingCalls",
+      label = "callers",
+      locations = { old },
+    })
+    local old_id = original.node_id_by_identity[old.identity]
+    local latest = document(vim.deepcopy(flow.root), flow.current_node_id)
+
+    assert.is_true(flow:delete_action_relation(original.action_id))
+    local recreated = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/incomingCalls",
+      label = "callers",
+      locations = { fresh },
+      query_status = "complete",
+    })
+    local fresh_id = recreated.node_id_by_identity[fresh.identity]
+
+    local merged = Flow.merge(latest, flow, flow:journal(), flow._next_id)
+    local merged_flow = load(merged)
+    local callers = assert(merged_flow:action_for(merged_flow.root.id, "callHierarchy/incomingCalls"))
+    local archive = assert(merged_flow:action_for(merged_flow.root.id, "voyager/archive"))
+
+    assert.same({ fresh_id }, callers.target_ids)
+    assert.same(
+      { fresh_id },
+      vim.tbl_map(function(result)
+        return result.id
+      end, callers.results)
+    )
+    assert.same(
+      { old_id },
+      vim.tbl_map(function(result)
+        return result.id
+      end, archive.results)
+    )
+    assert.is_table(merged_flow:location(old_id))
+    assert.is_table(merged_flow:location(fresh_id))
   end)
 
   it("keeps deleted branches out of a save merge while importing new ones", function()
@@ -342,6 +798,11 @@ describe("Voyager flow", function()
     for _, node in ipairs(flow:dfs()) do
       assert.is_true(node.kind ~= "action" or not node.collapsed)
     end
+
+    local first_action = flow.root.actions[1]
+    assert.is_true(flow:set_collapsed(first_action.id, true))
+    assert.is_false(flow:set_collapsed(first_action.id, true))
+    assert.is_true(flow:set_collapsed(first_action.id, false))
   end)
 
   it("finds nested nodes and returns nil for an unknown ID", function()
@@ -356,6 +817,60 @@ describe("Voyager flow", function()
 
     assert.equals(result_id, flow:find(result_id).id)
     assert.is_nil(flow:find("loc-ffffffffffffffffffffffffffffffff"))
+    assert.equals(commit.action_id, flow:action_for(flow.root.id, "textDocument/definition").id)
+    assert.is_nil(flow:action_for(flow.root.id, "textDocument/references"))
+    assert.same({ result_id }, flow:action_target_ids(commit.action_id))
+    assert.same({}, flow:action_target_ids("action-ffffffffffffffffffffffffffffffff"))
+  end)
+
+  it("finds the first active-edge path and excludes detached storage ancestry", function()
+    local flow = Fixtures.new_flow()
+    local first = Fixtures.location("lua/first.lua", 1, "first")
+    local second = Fixtures.location("lua/second.lua", 2, "second")
+    local third = Fixtures.location("lua/third.lua", 3, "third")
+    local ownership = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/implementation",
+      label = "implementations",
+      locations = { first, second, third },
+    })
+    local first_id = ownership.node_id_by_identity[first.identity]
+    local second_id = ownership.node_id_by_identity[second.identity]
+    local third_id = ownership.node_id_by_identity[third.identity]
+    flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/implementation",
+      label = "implementations",
+      locations = { first, third },
+      replace_targets = true,
+    })
+    local first_link = flow:commit_navigation({
+      origin_node_id = first_id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { second },
+    })
+    local third_link = flow:commit_navigation({
+      origin_node_id = third_id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { second },
+    })
+    local root_location = vim.deepcopy(flow.root.location)
+    root_location.identity = Fixtures.identity("lua/main.lua", 0)
+    flow:commit_navigation({
+      origin_node_id = second_id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { root_location },
+    })
+
+    assert.same({ flow.root.id, first_id, second_id }, flow:path_ids(second_id))
+    assert.is_true(flow:unlink_target(first_link.action_id, second_id))
+    assert.same({ flow.root.id, third_id, second_id }, flow:path_ids(second_id))
+    assert.is_true(flow:unlink_target(third_link.action_id, second_id))
+    assert.same({}, flow:path_ids(second_id))
+    assert.same({}, flow:path_ids("loc-missing"))
   end)
 
   it("walks location, action, and result nodes in stable depth-first order", function()
@@ -435,6 +950,37 @@ describe("Voyager flow", function()
     assert.same({ symbol = true, context = true }, flow:journal().metadata[result_id])
   end)
 
+  it("adds a query anchor when a call-site identity already exists", function()
+    local flow = Fixtures.new_flow()
+    local location = Fixtures.location("lua/auth.lua", 8, "AuthService.login")
+    local first = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { location },
+    })
+    local result_id = first.node_id_by_identity[location.identity]
+    local anchored = vim.deepcopy(location)
+    anchored.query_anchor = {
+      locator = { kind = "project", path = "lua/service.lua" },
+      range = {
+        start = { line = 3, character = 9 },
+        ["end"] = { line = 3, character = 14 },
+      },
+      line_text = "function login()",
+    }
+
+    flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/incomingCalls",
+      label = "callers",
+      locations = { anchored },
+    })
+
+    assert.same(anchored.query_anchor, flow:location(result_id).location.query_anchor)
+    assert.is_true(flow:journal().metadata[result_id].query_anchor)
+  end)
+
   it("marks visited on creation, navigation, and load", function()
     local flow = Fixtures.new_flow()
     assert.is_true(flow.root.visited)
@@ -469,17 +1015,55 @@ describe("Voyager flow", function()
     })
     local result_id = commit.node_id_by_identity[location.identity]
 
-    assert.is_true(flow:apply_symbol(result_id, "AuthService.login", "method"))
+    local anchor = query_anchor("lua/auth.lua", 8, 9, 14, "function login()")
+    assert.is_true(flow:apply_symbol(result_id, "AuthService.login", "method", anchor))
     local node = flow:location(result_id)
     assert.equals("AuthService.login", node.location.symbol)
     assert.equals("method", node.location.symbol_kind)
+    assert.same(anchor, node.location.query_anchor)
     assert.is_true(flow:journal().metadata[result_id].symbol)
-    assert.is_false(flow:apply_symbol(result_id, "AuthService.login", "method"))
+    assert.is_true(flow:journal().metadata[result_id].query_anchor)
+    assert.is_false(flow:apply_symbol(result_id, "AuthService.login", "method", anchor))
 
-    assert.is_true(flow:apply_symbol(flow.root.id, "Renamed.main", "function"))
+    assert.is_true(flow:apply_symbol(flow.root.id, "Renamed.main", "function", anchor))
     assert.equals("main", flow.root.location.symbol)
     assert.equals("function", flow.root.location.symbol_kind)
+    assert.is_nil(flow.root.location.query_anchor)
     assert.is_false(flow:apply_symbol("loc-ffffffffffffffffffffffffffffffff", "x", "y"))
+  end)
+
+  it("keeps a call-hierarchy subject authoritative during later enrichment", function()
+    local flow = Fixtures.new_flow()
+    local call_site = Fixtures.location("lua/caller.lua", 8, "ProtocolCaller")
+    call_site.symbol_kind = "function"
+    local protocol_anchor = query_anchor("lua/caller.lua", 3, 9, 23, "function ProtocolCaller()")
+    call_site.query_anchor = protocol_anchor
+    local commit = flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "callHierarchy/incomingCalls",
+      label = "callers",
+      locations = { call_site },
+    })
+    local result_id = commit.node_id_by_identity[call_site.identity]
+    local semantic_anchor = query_anchor("lua/caller.lua", 7, 9, 18, "function Enclosing()")
+
+    assert.is_false(flow:apply_symbol(result_id, "Enclosing", "method", semantic_anchor))
+    local node = flow:location(result_id)
+    assert.equals("ProtocolCaller", node.location.symbol)
+    assert.same(protocol_anchor, node.location.query_anchor)
+    assert.equals("function", node.location.symbol_kind)
+
+    local ordinary = vim.deepcopy(call_site)
+    ordinary.symbol = "Enclosing"
+    ordinary.query_anchor = nil
+    flow:commit_navigation({
+      origin_node_id = flow.root.id,
+      method = "textDocument/references",
+      label = "usages",
+      locations = { ordinary },
+    })
+    assert.equals("ProtocolCaller", flow:location(result_id).location.symbol)
+    assert.same(protocol_anchor, flow:location(result_id).location.query_anchor)
   end)
 
   it("keeps visited sticky and follows the symbol touch for kind in a merge", function()
@@ -501,11 +1085,13 @@ describe("Voyager flow", function()
     assert.equals("disk.symbol", merged_result.location.symbol)
     assert.equals("method", merged_result.location.symbol_kind)
 
-    assert.is_true(active:apply_symbol(active_result.id, "enriched.symbol", "function"))
+    local anchor = query_anchor("lua/auth.lua", 8, 9, 17, "function enriched()")
+    assert.is_true(active:apply_symbol(active_result.id, "enriched.symbol", "function", anchor))
     local touched = Flow.merge(latest, active, active:journal(), active._next_id)
     local touched_result = touched.root.actions[1].results[1]
     assert.equals("enriched.symbol", touched_result.location.symbol)
     assert.equals("function", touched_result.location.symbol_kind)
+    assert.same(anchor, touched_result.location.query_anchor)
     assert.is_true(touched_result.visited)
   end)
 
@@ -550,6 +1136,166 @@ describe("Voyager flow", function()
       end, merged.root.actions)
     )
     assert.equals(active.root.id, merged.root.id)
+  end)
+
+  it("merges and remaps relationship targets without losing stable order", function()
+    local latest_root = location_node(1, "lua/main.lua", 0, "main")
+    local latest_a = location_node(3, "lua/a.lua", 1, "a")
+    local latest_b = location_node(4, "lua/b.lua", 2, "b")
+    latest_root.actions = {
+      action_node(2, "textDocument/implementation", "implementations", { latest_a, latest_b }),
+    }
+    local latest = document(latest_root)
+
+    local active_root = location_node(11, "lua/main.lua", 0, "main")
+    local active_a = location_node(13, "lua/a.lua", 1, "a")
+    local active_action = action_node(12, "textDocument/implementation", "implementations", { active_a })
+    active_action.target_ids = { active_a.id }
+    active_action.query_status = "partial"
+    active_root.actions = { active_action }
+    local active = load(document(active_root))
+
+    local merged = Flow.merge(latest, active, active:journal(), active._next_id)
+    local action = merged.root.actions[1]
+    assert.equals(active_a.id, action.results[1].id)
+    assert.equals("lua/b.lua", action.results[2].location.locator.path)
+    assert.same({ active_a.id, action.results[2].id }, action.target_ids)
+    assert.equals("partial", action.query_status)
+  end)
+
+  it("preserves authoritative replacement order and clears through save merge", function()
+    local latest_root = location_node(1, "lua/main.lua", 0, "main")
+    local first = location_node(3, "lua/first.lua", 1, "first")
+    local second = location_node(4, "lua/second.lua", 2, "second")
+    latest_root.actions = {
+      action_node(2, "callHierarchy/outgoingCalls", "calls", { first, second }),
+    }
+    local latest = document(latest_root)
+    local active = load(latest)
+
+    active:commit_navigation({
+      origin_node_id = active.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { vim.deepcopy(second.location), vim.deepcopy(first.location) },
+      query_status = "complete",
+      replace_targets = true,
+    })
+    local reordered = Flow.merge(latest, active, active:journal(), active._next_id)
+    assert.same({ second.id, first.id }, reordered.root.actions[1].target_ids)
+    assert.equals("complete", reordered.root.actions[1].query_status)
+
+    active:commit_navigation({
+      origin_node_id = active.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = {},
+      query_status = "complete",
+      replace_targets = true,
+    })
+    local cleared = Flow.merge(latest, active, active:journal(), active._next_id)
+    assert.same({}, cleared.root.actions[1].target_ids)
+    assert.equals(2, #cleared.root.actions[1].results)
+  end)
+
+  it("keeps explicit unlink removals while merging unrelated disk targets", function()
+    local active_root = location_node(1, "lua/main.lua", 0, "main")
+    local active_first = location_node(3, "lua/first.lua", 1, "first")
+    local active_second = location_node(4, "lua/second.lua", 2, "second")
+    active_root.actions = {
+      action_node(2, "callHierarchy/outgoingCalls", "calls", { active_first, active_second }),
+    }
+    local active = load(document(active_root))
+    assert.is_true(active:unlink_target(active.root.actions[1].id, active_second.id))
+
+    local latest_root = location_node(1, "lua/main.lua", 0, "main")
+    local latest_first = location_node(3, "lua/first.lua", 1, "first")
+    local latest_second = location_node(4, "lua/second.lua", 2, "second")
+    local latest_third = location_node(5, "lua/third.lua", 3, "third")
+    latest_root.actions = {
+      action_node(2, "callHierarchy/outgoingCalls", "calls", {
+        latest_first,
+        latest_second,
+        latest_third,
+      }),
+    }
+
+    local merged = Flow.merge(document(latest_root), active, active:journal(), active._next_id)
+    local action = merged.root.actions[1]
+    assert.same({ active_first.id, latest_third.id }, action.target_ids)
+    assert.same(
+      { active_first.id, active_second.id, latest_third.id },
+      vim.tbl_map(function(result)
+        return result.id
+      end, action.results)
+    )
+  end)
+
+  it("globally canonicalizes concurrent discoveries and remaps all links and current", function()
+    local latest_root = location_node(1, "lua/main.lua", 0, "main")
+    local latest_shared = location_node(3, "lua/shared.lua", 1, "shared", "disk context")
+    latest_shared.note = "disk note"
+    latest_shared.actions = {
+      action_node(4, "textDocument/references", "usages", {
+        location_node(5, "lua/from_disk.lua", 2, "from_disk"),
+      }),
+    }
+    latest_root.actions = {
+      action_node(2, "callHierarchy/incomingCalls", "callers", { latest_shared }),
+    }
+
+    local active_root = location_node(11, "lua/main.lua", 0, "main")
+    local active_shared = location_node(13, "lua/shared.lua", 1, "shared", "old active context")
+    active_shared.actions = {
+      action_node(14, "textDocument/implementation", "implementations", {
+        location_node(15, "lua/from_active.lua", 3, "from_active"),
+      }),
+    }
+    active_root.actions = {
+      action_node(12, "callHierarchy/outgoingCalls", "calls", { active_shared }),
+    }
+    local active = load(document(active_root))
+    local active_update = Fixtures.location("lua/shared.lua", 1, "shared", "active context")
+    active_update.query_anchor = {
+      locator = { kind = "project", path = "lua/active_caller.lua" },
+      range = {
+        start = { line = 4, character = 2 },
+        ["end"] = { line = 4, character = 8 },
+      },
+      line_text = "active_call()",
+    }
+    active:commit_navigation({
+      origin_node_id = active.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { active_update },
+    })
+    assert.is_true(active:set_note(active_shared.id, "active note"))
+    assert.is_true(active:set_current(active_shared.id))
+
+    local merged = Flow.merge(document(latest_root), active, active:journal(), active._next_id)
+    local merged_flow = load(merged)
+    local incoming = assert(merged_flow:action_for(merged_flow.root.id, "callHierarchy/incomingCalls"))
+    local outgoing = assert(merged_flow:action_for(merged_flow.root.id, "callHierarchy/outgoingCalls"))
+    assert.same(incoming.target_ids, outgoing.target_ids)
+    assert.equals(1, #incoming.target_ids)
+
+    local canonical_id = incoming.target_ids[1]
+    local canonical = assert(merged_flow:location(canonical_id))
+    assert.equals(canonical_id, merged.current_node_id)
+    assert.equals("active note", canonical.note)
+    assert.equals("active context", canonical.location.context)
+    assert.same(active_update.query_anchor, canonical.location.query_anchor)
+    assert.is_table(merged_flow:action_for(canonical_id, "textDocument/references"))
+    assert.is_table(merged_flow:action_for(canonical_id, "textDocument/implementation"))
+
+    local shared_locations = 0
+    for _, node in ipairs(merged_flow:dfs()) do
+      if node.kind == "location" and node.location.locator.path == "lua/shared.lua" then
+        shared_locations = shared_locations + 1
+      end
+    end
+    assert.equals(1, shared_locations)
   end)
 
   it("applies journal precedence to notes, collapse, current, and display metadata", function()
@@ -621,6 +1367,7 @@ describe("Voyager flow", function()
     assert.equals("textDocument/references", imported.method)
     assert.not_equals(node_id("action", 5), imported.id)
     assert.not_equals(node_id("loc", 6), imported.results[1].id)
+    assert.same({ imported.results[1].id }, imported.target_ids)
     assert.equals(imported.results[1].id, merged.current_node_id)
     assert.equals(node_id("action", 5), merged.root.actions[2].id)
   end)
@@ -646,6 +1393,20 @@ describe("Voyager flow", function()
     local flow = load(document_value)
 
     assert.equals("implementations", flow.root.actions[1].label)
+    assert.same({}, flow.root.actions[1].target_ids)
+    assert.equals("complete", flow.root.actions[1].query_status)
+    assert.is_false(flow:is_dirty())
+  end)
+
+  it("infers relationship fields when loading legacy nested actions", function()
+    local result = location_node(3, "lua/auth.lua", 8, "auth")
+    local root = location_node(1, "lua/main.lua", 0, "main")
+    root.actions = { action_node(2, "textDocument/definition", "definition", { result }) }
+
+    local flow = load(document(root))
+    local action = flow.root.actions[1]
+    assert.same({ result.id }, action.target_ids)
+    assert.equals("complete", action.query_status)
     assert.is_false(flow:is_dirty())
   end)
 end)

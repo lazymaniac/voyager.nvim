@@ -208,6 +208,7 @@ describe("Voyager session lifecycle", function()
     deps:lsp_request("textDocument/references", { type = "complete" })
     deps:lsp_request("textDocument/hover")
     deps:lsp_request("voyager/manual")
+    deps:lsp_request("voyager/archive")
     deps:add_buffer(19, "/elsewhere/other.lua")
     deps:lsp_request("textDocument/references", { bufnr = 19 })
     assert.equals(2, #deps.lsp.starts)
@@ -251,6 +252,71 @@ describe("Voyager session lifecycle", function()
     assert.is_nil(session:state().flow:find(site_id))
     assert.equals(renders + 1, deps.sidebar.render_count)
     assert.is_nil(session:state().destination_claim)
+  end)
+
+  it("unlinks one displayed location occurrence without deleting its canonical node", function()
+    local session, deps = new_session()
+    open_with_flow(session)
+    local state = session:state()
+    local first = Fixtures.location("lua/first.lua", 1, "first")
+    local second = Fixtures.location("lua/second.lua", 2, "second")
+    local branches = state.flow:commit_navigation({
+      origin_node_id = deps.root_id,
+      method = "textDocument/implementation",
+      label = "implementations",
+      locations = { first, second },
+    })
+    local first_id = branches.node_id_by_identity[first.identity]
+    local second_id = branches.node_id_by_identity[second.identity]
+    local cross_link = state.flow:commit_navigation({
+      origin_node_id = first_id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { second },
+    })
+    assert.is_true(state.flow:set_note(second_id, "keep"))
+    assert.is_true(state.flow:set_current(second_id))
+    state.destination_claim = { sentinel = true }
+
+    assert.is_true(session:delete_row({
+      kind = "location",
+      owner_id = second_id,
+      context_location_id = second_id,
+      action_id = branches.action_id,
+    }))
+
+    assert.same({ first_id }, state.flow:action_target_ids(branches.action_id))
+    assert.same({ second_id }, state.flow:action_target_ids(cross_link.action_id))
+    assert.equals("keep", state.flow:location(second_id).note)
+    assert.equals(second_id, state.flow.current_node_id)
+    assert.is_nil(state.destination_claim)
+  end)
+
+  it("deletes a manual relation and removes its archive after the last history row", function()
+    local session, deps = new_session()
+    open_with_flow(session)
+    local state = session:state()
+    local manual = Fixtures.location("lua/manual.lua", 1, "manual")
+    local commit = state.flow:commit_navigation({
+      origin_node_id = deps.root_id,
+      manual_location = manual,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = {},
+    })
+    local manual_id = commit.effective_origin_id
+    local manual_action = assert(state.flow:action_for(deps.root_id, "voyager/manual"))
+
+    assert.is_true(session:delete_row({ kind = "action", owner_id = manual_action.id }))
+    assert.is_nil(state.flow:action_for(deps.root_id, "voyager/manual"))
+    local archive = assert(state.flow:action_for(deps.root_id, "voyager/archive"))
+    assert.same({}, archive.target_ids)
+    assert.equals(manual_id, archive.results[1].id)
+    assert.is_table(state.flow:location(manual_id))
+
+    assert.is_true(session:delete_row({ kind = "location", owner_id = manual_id, detached = true }))
+    assert.is_nil(state.flow:location(manual_id))
+    assert.is_nil(state.flow:action_for(deps.root_id, "voyager/archive"))
   end)
 
   it("jumps and records a picked action from a sidebar row", function()
@@ -954,6 +1020,12 @@ describe("Voyager session lifecycle", function()
     session.toggle_row = function(_, value)
       calls.toggle = value
     end
+    session.show_callers = function(_, value, refresh)
+      calls.callers = { row = value, refresh = refresh }
+    end
+    session.show_callees = function(_, value, refresh)
+      calls.callees = { row = value, refresh = refresh }
+    end
     session.save = function()
       calls.save = true
     end
@@ -970,12 +1042,20 @@ describe("Voyager session lifecycle", function()
     captured.sidebar.handlers.activate(row)
     captured.sidebar.handlers.note(row)
     captured.sidebar.handlers.toggle(row)
+    captured.sidebar.handlers.show_callers(row)
+    captured.sidebar.handlers.show_callees(row)
     captured.sidebar.handlers.save()
     captured.sidebar.handlers.load()
     captured.sidebar.handlers.close()
     assert.equals(row, calls.activate)
     assert.equals(row, calls.note)
     assert.equals(row, calls.toggle)
+    assert.same({ row = row, refresh = false }, calls.callers)
+    assert.same({ row = row, refresh = false }, calls.callees)
+    captured.sidebar.handlers.refresh_callers(row)
+    captured.sidebar.handlers.refresh_callees(row)
+    assert.same({ row = row, refresh = true }, calls.callers)
+    assert.same({ row = row, refresh = true }, calls.callees)
     assert.is_true(calls.save)
     assert.is_true(calls.load)
     assert.equals("sidebar", calls.close)
