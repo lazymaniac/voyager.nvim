@@ -136,10 +136,6 @@ local function relation_key(origin_id, method)
   return "relation:" .. origin_id .. ":" .. method
 end
 
-local function recursive_key(seed_id, method)
-  return "recursive:" .. seed_id .. ":" .. method
-end
-
 local function group_key(action_id)
   return "group:" .. action_id .. ":tests"
 end
@@ -224,81 +220,13 @@ local function relation_state_segments(value)
   return {}
 end
 
-local function recursive_state(value)
-  local state = value.state
-  if type(state) ~= "string" then
-    if value.cancelled then
-      state = "cancelled"
-    elseif value.paused or value.truncated then
-      state = "paused"
-    else
-      state = "running"
-    end
-  end
-  return state
-end
-
-local function recursive_state_segments(value)
-  local segments = {}
-  local allowance = type(value.allowance) == "number" and value.allowance or value.max_subjects
-  if type(value.processed) == "number" and type(allowance) == "number" then
-    table.insert(segments, segment(string.format(" · %d/%d", value.processed, allowance), "VoyagerCount"))
-  end
-  if type(value.depth) == "number" and type(value.max_depth) == "number" then
-    table.insert(segments, segment(string.format(" · depth %d/%d", value.depth, value.max_depth), "VoyagerCount"))
-  end
-  local state = recursive_state(value)
-  if state == "running" and type(value.active) == "number" then
-    table.insert(segments, segment(string.format(" · %d active", value.active), "VoyagerRequests"))
-  end
-  local has_message = type(value.message) == "string" and value.message ~= ""
-  if type(value.issues) == "number" and value.issues > 0 and not (state == "issues" and has_message) then
-    table.insert(
-      segments,
-      segment(string.format(" · %d issue%s", value.issues, value.issues == 1 and "" or "s"), "VoyagerStale")
-    )
-  end
-
-  if state ~= "running" then
-    local fallback = ({
-      paused = "paused — repeat the build key to continue",
-      issues = "stopped with issues",
-      cancelled = "cancelled",
-      stopped = "stopped",
-    })[state]
-    local message = has_message and value.message or fallback
-    if state == "paused" and has_message and not value.message:lower():find("paused", 1, true) then
-      message = "paused — " .. value.message
-    end
-    if message then
-      table.insert(segments, segment(" · " .. message, "VoyagerStale"))
-    end
-  elseif has_message then
-    table.insert(segments, segment(" · " .. value.message, "VoyagerRequests"))
-  end
-  return segments
-end
-
 function M.project(flow, width, status, display)
   status = status or {}
+  assert(type(flow) == "table", "Voyager sidebar projection requires a call tree")
   assert(type(display) == "table", "Voyager sidebar display options are required")
   local icons = display.icons
   assert(type(icons) == "table", "Voyager sidebar icons are required")
   local rows = {}
-
-  if flow == nil then
-    table.insert(
-      rows,
-      row({
-        kind = "hint",
-        owner_id = "",
-        key = "hint:waiting",
-        segments = { segment("  navigate to start recording", "VoyagerPath") },
-      }, width)
-    )
-    local waiting = truncate_segments({ segment("Voyager · (waiting)", "VoyagerHeader") }, width)
-    return rows, { text = segments_text(waiting), segments = waiting }
-  end
 
   local expanded_test_groups = status.expanded_test_groups or {}
   local relation_statuses = {}
@@ -324,12 +252,6 @@ function M.project(flow, width, status, display)
       return left.map_key < right.map_key
     end)
   end
-  local recursive_status = type(status.recursive) == "table" and status.recursive or nil
-  if recursive_status and (type(recursive_status.seed_id) ~= "string" or type(recursive_status.method) ~= "string") then
-    recursive_status = nil
-  end
-  local recursive_seen = false
-
   local ancestor_ids = {}
   for _, id in ipairs(flow:path_ids(flow.current_node_id)) do
     ancestor_ids[id] = true
@@ -395,7 +317,12 @@ function M.project(flow, width, status, display)
   end
 
   local function append_location(node, key, metadata)
-    local marker, glyph = marker_for_location(node)
+    local marker, glyph
+    if type(metadata) == "table" and metadata.alias == true then
+      glyph = segment("  ")
+    else
+      marker, glyph = marker_for_location(node)
+    end
     local location = node.location
     local symbol_hl = "VoyagerSymbol"
     if ancestor_ids[node.id] then
@@ -493,60 +420,6 @@ function M.project(flow, width, status, display)
     )
   end
 
-  local function recursive_renders_above(value)
-    local _, record = action_record(value.method)
-    if record and record.direction then
-      return record.direction == "incoming"
-    end
-    return value.direction == "callers"
-  end
-
-  local function append_recursive(origin)
-    if recursive_seen or not recursive_status or recursive_status.seed_id ~= origin.id then
-      return
-    end
-    recursive_seen = true
-    local above = recursive_renders_above(recursive_status)
-    local action_name, record = action_record(recursive_status.method)
-    local label = record and record.label or (above and "callers" or "calls")
-    local segments = {
-      segment("  "),
-      segment("  ", "VoyagerDisclosure"),
-      segment(badge(above and icons.caller or icons.callee), above and "VoyagerDirectionUp" or "VoyagerDirectionDown"),
-      segment(badge(action_name and icons[action_name]), "VoyagerIcon"),
-      segment("recursive " .. label .. (above and " of " or " from ") .. origin.location.symbol, "VoyagerActionLabel"),
-    }
-    vim.list_extend(segments, recursive_state_segments(recursive_status))
-    table.insert(
-      rows,
-      row({
-        kind = "recursive",
-        owner_id = origin.id,
-        key = recursive_key(origin.id, recursive_status.method),
-        context_location_id = origin.id,
-        origin_id = origin.id,
-        seed_id = origin.id,
-        method = recursive_status.method,
-        target_ids = {},
-        direction = recursive_status.direction,
-        state = recursive_state(recursive_status),
-        message = recursive_status.message,
-        processed = recursive_status.processed,
-        max_subjects = recursive_status.max_subjects,
-        depth_reached = recursive_status.depth,
-        max_depth = recursive_status.max_depth,
-        active = recursive_status.active,
-        issues = recursive_status.issues,
-        scheduled = recursive_status.scheduled,
-        allowance = recursive_status.allowance,
-        truncated = recursive_status.truncated,
-        paused = recursive_status.paused,
-        cancelled = recursive_status.cancelled,
-        segments = segments,
-      }, width)
-    )
-  end
-
   local function append_relation_status(segments, action, state)
     vim.list_extend(segments, relation_state_segments(state))
     if type(state) ~= "table" and action.query_status == "partial" then
@@ -558,18 +431,14 @@ function M.project(flow, width, status, display)
     local target_ids = target_ids_for(flow, action)
     local key = relation_key(origin.id, action.method)
     local relation_status = relation_statuses[key]
-    local marker
-    local current_glyph = segment("  ")
-    if action.collapsed and projected_action_contains_current(action, flow.current_node_id, {}, target_ids) then
-      marker = "descendant_current"
-      current_glyph = segment(badge(icons.current), "VoyagerCurrent")
-    end
+    local contains_current = projected_action_contains_current(action, flow.current_node_id, {}, target_ids)
+    local collapsed = action.collapsed and not contains_current
     local above = renders_above_method(action.method)
     local action_name, record = action_record(action.method)
     local label = record and record.label or action.label
     local segments = {
-      current_glyph,
-      segment(badge(action.collapsed and icons.collapsed or icons.expanded), "VoyagerDisclosure"),
+      segment("  "),
+      segment(badge(collapsed and icons.collapsed or icons.expanded), "VoyagerDisclosure"),
       segment(badge(above and icons.caller or icons.callee), above and "VoyagerDirectionUp" or "VoyagerDirectionDown"),
       segment(badge(action_name and icons[action_name]), "VoyagerIcon"),
       segment(relation_title(action.method, label, origin.location.symbol), "VoyagerActionLabel"),
@@ -587,13 +456,12 @@ function M.project(flow, width, status, display)
         method = action.method,
         action_id = action.id,
         target_ids = vim.deepcopy(target_ids),
-        marker = marker,
         state = relation_status and relation_status.state or action.query_status,
         message = relation_status and relation_status.message or nil,
         segments = segments,
       }, width)
     )
-    if action.collapsed then
+    if collapsed then
       return
     end
 
@@ -636,8 +504,6 @@ function M.project(flow, width, status, display)
     end
     if #tests > 0 then
       local expanded = expanded_test_groups[action.id] == true
-      local group_marker
-      local group_glyph = segment("  ")
       local tests_contain_current = false
       for _, entry in ipairs(tests) do
         if entry.id == flow.current_node_id then
@@ -649,10 +515,7 @@ function M.project(flow, width, status, display)
           break
         end
       end
-      if not expanded and tests_contain_current then
-        group_marker = "descendant_current"
-        group_glyph = segment(badge(icons.current), "VoyagerCurrent")
-      end
+      expanded = expanded or tests_contain_current
       local test_ids = vim.tbl_map(function(entry)
         return entry.id
       end, tests)
@@ -667,9 +530,8 @@ function M.project(flow, width, status, display)
           action_id = action.id,
           method = action.method,
           target_ids = test_ids,
-          marker = group_marker,
           segments = {
-            group_glyph,
+            segment("  "),
             segment(badge(expanded and icons.expanded or icons.collapsed), "VoyagerDisclosure"),
             segment("tests", "VoyagerActionLabel"),
             segment(" (" .. #tests .. ")", "VoyagerCount"),
@@ -703,10 +565,6 @@ function M.project(flow, width, status, display)
         append_transient(node, relation)
       end
     end
-    if recursive_status and recursive_status.seed_id == node.id and recursive_renders_above(recursive_status) then
-      append_recursive(node)
-    end
-
     append_location(
       node,
       occurrence_key,
@@ -716,10 +574,6 @@ function M.project(flow, width, status, display)
       }, metadata or {})
     )
     append_note(node, occurrence_key, metadata)
-
-    if recursive_status and recursive_status.seed_id == node.id and not recursive_renders_above(recursive_status) then
-      append_recursive(node)
-    end
 
     for _, action in ipairs(node.actions or {}) do
       if not is_storage_action(action) and not renders_above_method(action.method) then
@@ -806,6 +660,18 @@ function M.project(flow, width, status, display)
   local header_segments = { segment("Voyager · " .. flow.name, "VoyagerHeader") }
   if status.dirty then
     table.insert(header_segments, segment(" *", "VoyagerDirty"))
+  end
+  local graph_build = type(status.graph_build) == "table" and status.graph_build or nil
+  if graph_build and graph_build.state == "running" then
+    table.insert(header_segments, segment(" · building…", "VoyagerRequests"))
+  elseif graph_build and type(graph_build.issues) == "number" and graph_build.issues > 0 then
+    table.insert(
+      header_segments,
+      segment(
+        string.format(" · %d issue%s", graph_build.issues, graph_build.issues == 1 and "" or "s"),
+        "VoyagerStale"
+      )
+    )
   end
   local count = status.request_count or 0
   if count > 0 then
@@ -961,6 +827,28 @@ local function set_popup_cursor(popup, cursor)
   end
 end
 
+local function popup_is_focused(popup)
+  if popup.is_focused then
+    return popup:is_focused() == true
+  end
+  return popup.winid ~= nil and vim.api.nvim_win_is_valid(popup.winid) and vim.api.nvim_get_current_win() == popup.winid
+end
+
+local function center_popup_line(popup, line, line_count)
+  if popup.center_line then
+    return popup:center_line(line, line_count) ~= false
+  end
+  if not popup.winid or not vim.api.nvim_win_is_valid(popup.winid) then
+    return false
+  end
+  local ok = pcall(vim.api.nvim_win_call, popup.winid, function()
+    local target = math.max(1, math.min(line_count, line))
+    vim.api.nvim_win_set_cursor(popup.winid, { target, 0 })
+    vim.cmd("normal! zz")
+  end)
+  return ok
+end
+
 -- Find the visible relation/group row that now hides the previous occurrence,
 -- so a collapse has a deterministic cursor fallback.
 local function hidden_under_row(flow, previous, opts)
@@ -1049,6 +937,8 @@ function M.new(opts)
     _handlers = opts.handlers,
     _keymaps = vim.deepcopy(opts.keymaps),
     _line_to_row = {},
+    _centered_current_id = nil,
+    _centered_current_key = nil,
     _mounted = false,
     _notify = opts.notify,
     _popup_factory = opts.popup_factory or require("nui.popup"),
@@ -1066,6 +956,8 @@ end
 function Sidebar:_on_winclosed()
   self._winclosed_autocmd = nil
   self._mounted = false
+  self._centered_current_id = nil
+  self._centered_current_key = nil
   self._relationship_lens_active = false
   self:_clear_relationship_lens_marks()
   self:close_preview()
@@ -1113,14 +1005,6 @@ function Sidebar:_bind_keymaps()
   local bindings = {
     jump_or_toggle = selected(self._handlers.activate),
     jump_stay = selected(self._handlers.activate_stay),
-    run_action = selected(self._handlers.run_action),
-    show_callers = self._handlers.show_callers and selected(self._handlers.show_callers) or nil,
-    show_callees = self._handlers.show_callees and selected(self._handlers.show_callees) or nil,
-    refresh_callers = self._handlers.refresh_callers and selected(self._handlers.refresh_callers) or nil,
-    refresh_callees = self._handlers.refresh_callees and selected(self._handlers.refresh_callees) or nil,
-    build_callers = self._handlers.build_callers and selected(self._handlers.build_callers) or nil,
-    build_callees = self._handlers.build_callees and selected(self._handlers.build_callees) or nil,
-    cancel_build = self._handlers.cancel_build,
     delete = selected(self._handlers.delete),
     preview = selected(self._handlers.preview),
     note = selected(self._handlers.note),
@@ -1227,9 +1111,7 @@ function Sidebar:_update_relationship_lens()
       local lines = location_lines[row_value.context_location_id] or {}
       table.insert(lines, line)
       location_lines[row_value.context_location_id] = lines
-    elseif
-      row_value and (row_value.kind == "action" or row_value.kind == "relation" or row_value.kind == "recursive")
-    then
+    elseif row_value and (row_value.kind == "action" or row_value.kind == "relation") then
       table.insert(relation_rows, { line = line, row = row_value })
     end
   end
@@ -1264,12 +1146,7 @@ function Sidebar:_update_relationship_lens()
     end
   end
 
-  if
-    selected.kind == "action"
-    or selected.kind == "relation"
-    or selected.kind == "recursive"
-    or selected.kind == "group"
-  then
+  if selected.kind == "action" or selected.kind == "relation" or selected.kind == "group" then
     mark(selected_line, "VoyagerRelationFocus", 40)
     mark_relation_endpoints(selected)
   elseif selected.kind == "location" or selected.kind == "note" then
@@ -1385,6 +1262,8 @@ function Sidebar:remount(opts)
         self._popup:hide()
       end)
       self._mounted = false
+      self._centered_current_id = nil
+      self._centered_current_key = nil
     end
     return nil, reason
   end
@@ -1393,6 +1272,8 @@ function Sidebar:remount(opts)
       self._popup:hide()
     end)
     self._mounted = false
+    self._centered_current_id = nil
+    self._centered_current_key = nil
   end
   return self:mount(opts)
 end
@@ -1404,6 +1285,8 @@ function Sidebar:unmount(opts)
   self:_clear_relationship_lens()
   if not self._popup then
     self._mounted = false
+    self._centered_current_id = nil
+    self._centered_current_key = nil
     return
   end
 
@@ -1419,6 +1302,8 @@ function Sidebar:unmount(opts)
   self._popup = nil
   self._mounted = false
   self._line_to_row = {}
+  self._centered_current_id = nil
+  self._centered_current_key = nil
 end
 
 function Sidebar:_fit_to_content(fitted)
@@ -1508,6 +1393,30 @@ function Sidebar:render(flow, status)
 
   self._line_to_row = line_to_row
   set_popup_cursor(self._popup, { selected_index + 1, 0 })
+  local current_id = flow and flow.current_node_id or nil
+  local current_line
+  local current_key
+  for line, row_value in ipairs(line_to_row) do
+    if
+      row_value
+      and row_value.kind == "location"
+      and row_value.location_id == current_id
+      and row_value.alias ~= true
+      and row_value.marker == "current"
+    then
+      current_line = line
+      current_key = row_value.key
+      break
+    end
+  end
+  local current_changed = current_id ~= self._centered_current_id or current_key ~= self._centered_current_key
+  local keep_centered = (status or {}).center_current == true and not popup_is_focused(self._popup)
+  if current_line and (current_changed or keep_centered) then
+    if center_popup_line(self._popup, current_line, #lines) then
+      self._centered_current_id = current_id
+      self._centered_current_key = current_key
+    end
+  end
   if self._relationship_lens_active then
     self:_update_relationship_lens()
   else
@@ -1602,14 +1511,6 @@ end
 local help_entries = {
   { "jump_or_toggle", "jump to a location, or toggle a relation" },
   { "jump_stay", "jump but keep focus in the sidebar" },
-  { "run_action", "record an LSP action from the selected node" },
-  { "show_callers", "show callers, querying LSP when missing" },
-  { "show_callees", "show calls, querying LSP when missing" },
-  { "refresh_callers", "refresh callers from LSP" },
-  { "refresh_callees", "refresh calls from LSP" },
-  { "build_callers", "recursively build callers from the contextual symbol" },
-  { "build_callees", "recursively build calls from the contextual symbol" },
-  { "cancel_build", "cancel the active recursive build" },
   { "preview", "peek at the selected location" },
   { "delete", "unlink an occurrence; delete relation/history; clear note" },
   { "note", "add, edit, or remove a note" },
@@ -1685,23 +1586,6 @@ function Sidebar:focus_relation(origin_id, method)
     return false
   end
   local key = relation_key(origin_id, method)
-  for line, row_value in ipairs(self._line_to_row) do
-    if row_value and row_value.key == key then
-      set_popup_cursor(self._popup, { line, 0 })
-      self:focus()
-      self._relationship_lens_active = true
-      self:_update_relationship_lens()
-      return true
-    end
-  end
-  return false
-end
-
-function Sidebar:focus_recursive(seed_id, method)
-  if not self:is_mounted() or type(seed_id) ~= "string" or type(method) ~= "string" then
-    return false
-  end
-  local key = recursive_key(seed_id, method)
   for line, row_value in ipairs(self._line_to_row) do
     if row_value and row_value.key == key then
       set_popup_cursor(self._popup, { line, 0 })

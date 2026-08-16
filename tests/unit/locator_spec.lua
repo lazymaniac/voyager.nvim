@@ -27,6 +27,32 @@ describe("Voyager locators", function()
     )
   end)
 
+  it("includes the semantic query anchor in location identity", function()
+    local location = {
+      locator = { kind = "project", path = "lua/main.lua" },
+      range = { start = { line = 3, character = 4 }, ["end"] = { line = 3, character = 8 } },
+    }
+    local unanchored = Locator.location_key(location)
+    local first = vim.deepcopy(location)
+    first.query_anchor = {
+      locator = { kind = "project", path = "lua/caller.lua" },
+      range = { start = { line = 1, character = 0 }, ["end"] = { line = 1, character = 6 } },
+      line_text = "caller()",
+    }
+    local second = vim.deepcopy(first)
+    second.query_anchor.locator.path = "lua/callee.lua"
+
+    assert.not_equals(unanchored, Locator.location_key(first))
+    assert.not_equals(Locator.location_key(first), Locator.location_key(second))
+    first.query_anchor.line_text = "changed metadata"
+    assert.equals(
+      Locator.location_key(first),
+      Locator.location_key(vim.tbl_extend("force", vim.deepcopy(first), {
+        query_anchor = vim.tbl_extend("force", vim.deepcopy(first.query_anchor), { line_text = "other metadata" }),
+      }))
+    )
+  end)
+
   it("reproduces the approved root hash and name", function()
     local root = {
       locator = { kind = "project", path = "lua/auth.lua" },
@@ -78,6 +104,66 @@ describe("Voyager locators", function()
     assert.same({ kind = "project", path = "lua/auth.lua" }, locator:from_uri("file:///project/lua/../lua/auth.lua"))
     assert.same({ "return true" }, locator:source({ kind = "project", path = "lua\\auth.lua" }))
     assert.same({}, env.buffers)
+  end)
+
+  it("treats every absolute file as project-local when the project root is slash", function()
+    local env = Buffer.new({ files = { ["/project/lua/auth.lua"] = { "return true" } } })
+    local locator = Locator.new(env.runtime, "/", nil)
+
+    assert.same({ kind = "project", path = "project/lua/auth.lua" }, locator:from_uri("file:///project/lua/auth.lua"))
+    assert.is_true(locator:is_project_uri("file:///project/lua/auth.lua"))
+    assert.same({ "return true" }, locator:source({ kind = "project", path = "project/lua/auth.lua" }))
+  end)
+
+  it("uses real paths for project membership and semantic subjects", function()
+    local env = Buffer.new({})
+    local aliases = {
+      ["/workspace-link"] = "/real/project",
+      ["/workspace-link/lua/inside.lua"] = "/real/project/lua/inside.lua",
+      ["/real/project/lua/vendor.lua"] = "/opt/vendor/vendor.lua",
+      ["/outside/inside.lua"] = "/real/project/lua/inside.lua",
+    }
+    env.runtime.fs_realpath = function(path)
+      local normalized = vim.fs.normalize(path:gsub("\\", "/"), { expand_env = false })
+      return aliases[normalized] or normalized
+    end
+    local locator = Locator.new(env.runtime, "/workspace-link", nil)
+
+    assert.is_true(locator:is_project_uri("file:///workspace-link/lua/inside.lua"))
+    assert.is_true(locator:is_project_uri("file:///outside/inside.lua"))
+    assert.is_false(locator:is_project_uri("file:///real/project/lua/vendor.lua"))
+    assert.is_false(locator:is_project_uri("jdt://contents/Vendor.class"))
+    assert.is_false(locator:is_project_locator({ kind = "project", path = "lua/vendor.lua" }))
+
+    local location = {
+      locator = { kind = "project", path = "lua/inside.lua" },
+      range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 1 } },
+      query_anchor = {
+        locator = { kind = "absolute", path = "/opt/vendor/vendor.lua" },
+        range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 1 } },
+      },
+    }
+    assert.is_false(locator:is_project_location(location))
+    location.query_anchor.locator = { kind = "project", path = "lua/inside.lua" }
+    assert.is_true(locator:is_project_location(location))
+    location.locator = { kind = "absolute", path = "/opt/vendor/callsite.lua" }
+    assert.is_false(locator:is_project_location(location))
+  end)
+
+  it("excludes dependency trees that live inside the project root", function()
+    local env = Buffer.new({})
+    local locator = Locator.new(env.runtime, "/project", nil)
+
+    assert.is_true(locator:is_project_uri("file:///project/lua/service.lua"))
+    for _, path in ipairs({
+      "node_modules/pkg/index.js",
+      ".venv/lib/site-packages/pkg.py",
+      "vendor/pkg/source.go",
+      "third_party/pkg/source.cc",
+      ".deps/tool.lua",
+    }) do
+      assert.is_false(locator:is_project_uri("file:///project/" .. path), path)
+    end
   end)
 
   it("keeps environment syntax literal in project-relative locators", function()

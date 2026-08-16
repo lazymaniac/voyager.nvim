@@ -23,7 +23,49 @@ local function trim_root(path)
 end
 
 local function path_is_within(path, root)
+  if root == "/" then
+    return path:sub(1, 1) == "/"
+  end
   return path == root or path:sub(1, #root + 1) == root .. "/"
+end
+
+local dependency_directories = {
+  [".deps"] = true,
+  [".direnv"] = true,
+  [".gradle"] = true,
+  [".m2"] = true,
+  [".tox"] = true,
+  [".venv"] = true,
+  ["__pypackages__"] = true,
+  ["bower_components"] = true,
+  ["deps"] = true,
+  ["external"] = true,
+  ["node_modules"] = true,
+  ["site-packages"] = true,
+  ["third-party"] = true,
+  ["third_party"] = true,
+  ["vendor"] = true,
+  ["venv"] = true,
+}
+
+local function is_project_owned_path(path, root)
+  if not path_is_within(path, root) then
+    return false
+  end
+  local relative
+  if path == root then
+    relative = "."
+  elseif root == "/" then
+    relative = path:sub(2)
+  else
+    relative = path:sub(#root + 2)
+  end
+  for segment in relative:gmatch("[^/]+") do
+    if dependency_directories[segment] then
+      return false
+    end
+  end
+  return true
 end
 
 local function basename(locator)
@@ -89,14 +131,27 @@ end
 
 function M.location_key(location)
   local range = location.range
-  return canonical_json({
+  local identity = {
     location.locator.kind,
     location.locator.path or location.locator.uri,
     range.start.line,
     range.start.character,
     range["end"].line,
     range["end"].character,
-  })
+  }
+  local anchor = location.query_anchor
+  if type(anchor) == "table" then
+    local anchor_range = anchor.range
+    table.insert(identity, {
+      anchor.locator.kind,
+      anchor.locator.path or anchor.locator.uri,
+      anchor_range.start.line,
+      anchor_range.start.character,
+      anchor_range["end"].line,
+      anchor_range["end"].character,
+    })
+  end
+  return canonical_json(identity)
 end
 
 function M.contains(location, locator, cursor)
@@ -132,7 +187,8 @@ function Locator:_file_path(locator)
     return nil, "locator is invalid"
   end
   if locator.kind == "project" and type(locator.path) == "string" then
-    local path = real_path(self._runtime, self._project_root .. "/" .. locator.path:gsub("\\", "/"))
+    local separator = self._project_root == "/" and "" or "/"
+    local path = real_path(self._runtime, self._project_root .. separator .. locator.path:gsub("\\", "/"))
     if not path_is_within(path, self._project_root) then
       return nil, "project locator escapes project root"
     end
@@ -157,10 +213,38 @@ function Locator:from_uri(uri)
   end
   local path = real_path(self._runtime, filename)
   if path_is_within(path, self._project_root) then
-    local relative = path == self._project_root and "." or path:sub(#self._project_root + 2)
+    local relative
+    if path == self._project_root then
+      relative = "."
+    elseif self._project_root == "/" then
+      relative = path:sub(2)
+    else
+      relative = path:sub(#self._project_root + 2)
+    end
     return { kind = "project", path = relative:gsub("\\", "/") }
   end
   return { kind = "absolute", path = path }
+end
+
+function Locator:is_project_locator(locator)
+  local path = self:_file_path(locator)
+  return path ~= nil and is_project_owned_path(path, self._project_root)
+end
+
+function Locator:is_project_uri(uri)
+  local locator, reason = self:from_uri(uri)
+  if not locator then
+    return nil, reason
+  end
+  return self:is_project_locator(locator)
+end
+
+function Locator:is_project_location(location)
+  if type(location) ~= "table" then
+    return false
+  end
+  local subject = type(location.query_anchor) == "table" and location.query_anchor or location
+  return self:is_project_locator(location.locator) and self:is_project_locator(subject.locator)
 end
 
 function Locator:_uri_buffer(locator)

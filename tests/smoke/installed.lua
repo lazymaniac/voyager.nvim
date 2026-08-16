@@ -6,8 +6,6 @@ for _, command in ipairs({
   "VoyagerSave",
   "VoyagerLoad",
   "VoyagerClose",
-  "VoyagerBuild",
-  "VoyagerBuildCancel",
 }) do
   assert(vim.fn.exists(":" .. command) == 2, command .. " is not registered")
 end

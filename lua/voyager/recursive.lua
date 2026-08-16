@@ -12,39 +12,50 @@ local function nonempty_string(value, name)
   return value
 end
 
-local function validate_targets(target_ids)
-  assert(type(target_ids) == "table", "recursive target IDs must be a list")
+local function validate_list(values, name, allow_empty)
+  assert(type(values) == "table", name .. " must be a list")
   local count = 0
-  for index, target_id in pairs(target_ids) do
-    assert(type(index) == "number" and index % 1 == 0 and index > 0, "recursive target IDs must be a list")
-    assert(type(target_id) == "string" and target_id ~= "", "recursive target ID must be a non-empty string")
+  for index, value in pairs(values) do
+    assert(type(index) == "number" and index % 1 == 0 and index > 0, name .. " must be a list")
+    assert(type(value) == "string" and value ~= "", name .. " item must be a non-empty string")
     count = count + 1
   end
-  assert(count == #target_ids, "recursive target IDs must be a dense list")
+  assert(count == #values and (allow_empty or count > 0), name .. " must be a dense list")
+end
+
+local function work_key(action_name, subject_id)
+  return action_name .. "\0" .. subject_id
 end
 
 function M.new(opts)
   assert(type(opts) == "table", "recursive scheduler options are required")
   local seed_id = nonempty_string(opts.seed_id, "recursive seed ID")
-  local self = setmetatable({
-    action_name = nonempty_string(opts.action_name, "recursive action name"),
-    max_depth = positive_integer(opts.max_depth, "recursive max depth"),
-    max_subjects = positive_integer(opts.max_subjects, "recursive max subjects"),
+  validate_list(opts.action_names, "recursive action names", false)
+
+  local queue = {}
+  local seen = {}
+  for _, action_name in ipairs(opts.action_names) do
+    nonempty_string(action_name, "recursive action name")
+    local key = work_key(action_name, seed_id)
+    assert(not seen[key], "recursive action names must be unique")
+    seen[key] = true
+    table.insert(queue, { subject_id = seed_id, action_name = action_name, depth = 0 })
+  end
+
+  return setmetatable({
     concurrency = positive_integer(opts.concurrency, "recursive concurrency"),
     _active = 0,
     _active_by_depth = {},
-    _allowance = opts.max_subjects,
     _cancelled = false,
     _claims = {},
     _depth = 0,
     _issues = 0,
     _processed = 0,
-    _queue = { { subject_id = seed_id, depth = 0 } },
+    _queue = queue,
     _queue_head = 1,
-    _scheduled = 1,
-    _seen = { [seed_id] = true },
+    _scheduled = #queue,
+    _seen = seen,
   }, Recursive)
-  return self
 end
 
 function Recursive:_queue_empty()
@@ -61,12 +72,8 @@ function Recursive:_minimum_active_depth()
   return minimum
 end
 
-function Recursive:is_paused()
-  return not self._cancelled and not self:_queue_empty() and self._processed + self._active >= self._allowance
-end
-
 function Recursive:claim()
-  if self._cancelled or self:_queue_empty() or self._active >= self.concurrency or self:is_paused() then
+  if self._cancelled or self:_queue_empty() or self._active >= self.concurrency then
     return nil
   end
 
@@ -79,7 +86,7 @@ function Recursive:claim()
   self._queue_head = self._queue_head + 1
   local item = {
     subject_id = queued.subject_id,
-    action_name = self.action_name,
+    action_name = queued.action_name,
     depth = queued.depth,
   }
   self._claims[item] = queued
@@ -93,7 +100,7 @@ function Recursive:complete(item, target_ids, issue)
   if self._cancelled or not claimed then
     return false
   end
-  validate_targets(target_ids)
+  validate_list(target_ids, "recursive target IDs", true)
 
   self._claims[item] = nil
   self._active = self._active - 1
@@ -110,15 +117,18 @@ function Recursive:complete(item, target_ids, issue)
 
   local next_depth = claimed.depth + 1
   if #target_ids > 0 then
-    self._depth = math.max(self._depth, math.min(next_depth, self.max_depth))
+    self._depth = math.max(self._depth, next_depth)
   end
-  if next_depth < self.max_depth then
-    for _, target_id in ipairs(target_ids) do
-      if not self._seen[target_id] then
-        self._seen[target_id] = true
-        table.insert(self._queue, { subject_id = target_id, depth = next_depth })
-        self._scheduled = self._scheduled + 1
-      end
+  for _, target_id in ipairs(target_ids) do
+    local key = work_key(claimed.action_name, target_id)
+    if not self._seen[key] then
+      self._seen[key] = true
+      table.insert(self._queue, {
+        subject_id = target_id,
+        action_name = claimed.action_name,
+        depth = next_depth,
+      })
+      self._scheduled = self._scheduled + 1
     end
   end
   return true
@@ -141,26 +151,13 @@ function Recursive:is_done()
   return self._cancelled or (self._active == 0 and self:_queue_empty())
 end
 
-function Recursive:resume()
-  if self._cancelled then
-    return false
-  end
-  self._allowance = self._allowance + self.max_subjects
-  return true
-end
-
 function Recursive:status()
-  local paused = self:is_paused()
   return {
     processed = self._processed,
     scheduled = self._scheduled,
     active = self._active,
     depth = self._depth,
-    max_depth = self.max_depth,
-    max_subjects = self.max_subjects,
-    allowance = self._allowance,
-    truncated = paused,
-    paused = paused,
+    concurrency = self.concurrency,
     cancelled = self._cancelled,
     issues = self._issues,
   }

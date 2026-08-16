@@ -8,8 +8,6 @@ local command_names = {
   "VoyagerClose",
   "VoyagerToggle",
   "VoyagerExport",
-  "VoyagerBuild",
-  "VoyagerBuildCancel",
 }
 
 local function delete_commands()
@@ -98,15 +96,6 @@ describe("Voyager public interface", function()
           call("export")
           return self.active and 1 or nil
         end
-        function controller:build(opts)
-          call("build")
-          env.build_opts = vim.deepcopy(opts)
-          return self.active or nil
-        end
-        function controller:cancel_build()
-          call("cancel_build")
-          return self.active or nil
-        end
         function controller:state()
           return {
             request_count = 2,
@@ -150,9 +139,9 @@ describe("Voyager public interface", function()
     for _, command in ipairs(command_names) do
       assert.equals(2, vim.fn.exists(":" .. command))
     end
+    assert.equals(0, vim.fn.exists(":VoyagerBuild"))
+    assert.equals(0, vim.fn.exists(":VoyagerBuildCancel"))
     assert.same(mappings_before, vim.api.nvim_get_keymap("n"))
-    assert.same({ "callers", "callees" }, vim.fn.getcompletion("VoyagerBuild c", "cmdline"))
-    assert.same({}, vim.fn.getcompletion("VoyagerBuild callers ", "cmdline"))
 
     vim.cmd("VoyagerOpen")
     vim.cmd("VoyagerFocus")
@@ -161,113 +150,22 @@ describe("Voyager public interface", function()
     vim.cmd("VoyagerClose")
     vim.cmd("VoyagerToggle")
     vim.cmd("VoyagerExport")
-    vim.cmd("VoyagerBuild callers 4")
-    vim.cmd("VoyagerBuildCancel")
     assert.same(
-      { "open", "focus", "save", "load", "close", "open", "export", "build", "cancel_build" },
+      { "open", "focus", "save", "load", "close", "open", "export" },
       vim.tbl_map(function(call)
         return call.name
       end, env.calls)
     )
     assert.equals("command", env.close_source)
-    assert.same({ direction = "callers", depth = 4 }, env.build_opts)
     assert.equals(1, env.native_calls)
     assert.equals(1, env.runtime_calls)
   end)
 
-  it("rejects malformed recursive commands before creating a session", function()
-    vim.cmd("runtime plugin/voyager.lua")
-    for _, command in ipairs({
-      "VoyagerBuild sideways",
-      "VoyagerBuild callers 0",
-      "VoyagerBuild callees 11",
-      "VoyagerBuild callers nope",
-      "VoyagerBuild callers 2 extra",
-    }) do
-      vim.cmd(command)
-    end
-
+  it("does not expose manual build functions", function()
+    local Voyager = require("voyager")
+    assert.is_nil(Voyager.build)
+    assert.is_nil(Voyager.cancel_build)
     assert.equals(0, env.native_calls)
-    assert.same({}, env.calls)
-    assert.equals(5, #env.notifications)
-    assert.matches("direction must be 'callers' or 'callees'", env.notifications[1].message, nil, true)
-    assert.matches("depth must be an integer from 1 through 10", env.notifications[2].message, nil, true)
-    assert.matches("depth must be an integer from 1 through 10", env.notifications[3].message, nil, true)
-    assert.matches("usage: VoyagerBuild", env.notifications[4].message, nil, true)
-    assert.matches("usage: VoyagerBuild", env.notifications[5].message, nil, true)
-  end)
-
-  it("rejects invalid Lua build options before opening or delegating", function()
-    local Voyager = require("voyager")
-    local invalid = {
-      { direction = "sideways" },
-      { depth = 0 },
-      { depth = 11 },
-      { depth = 1.5 },
-      { max_subjects = 0 },
-      { max_subjects = 1001 },
-      { concurrency = 0 },
-      { concurrency = 17 },
-      { concurrency = "4" },
-      { breadth = 4 },
-      { origin_id = "" },
-      { origin_id = 7 },
-      "callees",
-    }
-    for _, opts in ipairs(invalid) do
-      assert.is_nil(Voyager.build(opts))
-    end
-
-    assert.equals(0, env.native_calls)
-    assert.same({}, env.calls)
-    assert.equals(#invalid, #env.notifications)
-    assert.matches("breadth is not a supported option", env.notifications[10].message, nil, true)
-    assert.matches("origin_id must be a non-empty string", env.notifications[11].message, nil, true)
-    assert.matches("origin_id must be a non-empty string", env.notifications[12].message, nil, true)
-
-    assert.is_true(Voyager.open())
-    assert.is_nil(Voyager.build({ max_subjects = 1001 }))
-    assert.same(
-      { "open" },
-      vim.tbl_map(function(call)
-        return call.name
-      end, env.calls)
-    )
-  end)
-
-  it("accepts every supported Lua build option at its upper boundary", function()
-    local Voyager = require("voyager")
-    local opts = {
-      direction = "callers",
-      depth = 10,
-      max_subjects = 1000,
-      concurrency = 16,
-      origin_id = "location-1",
-    }
-
-    assert.is_true(Voyager.build(opts))
-    assert.same(opts, env.build_opts)
-    assert.same(
-      { "open", "build" },
-      vim.tbl_map(function(call)
-        return call.name
-      end, env.calls)
-    )
-  end)
-
-  it("opens a session before starting a build and ignores cancellation while inactive", function()
-    local Voyager = require("voyager")
-
-    assert.is_nil(Voyager.cancel_build())
-    assert.is_true(Voyager.build())
-
-    assert.same(
-      { "open", "build" },
-      vim.tbl_map(function(call)
-        return call.name
-      end, env.calls)
-    )
-    assert.is_nil(env.build_opts)
   end)
 
   it("reports statusline data only while a session is active", function()

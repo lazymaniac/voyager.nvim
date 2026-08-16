@@ -264,6 +264,127 @@ describe("Voyager LSP location normalization", function()
     }, outgoing[1].location.query_anchor)
   end)
 
+  it("filters call subjects outside the project before reading their source", function()
+    local env, _, normalizer = setup({
+      files = {
+        ["/project/lua/origin.lua"] = { "origin target" },
+        ["/project/lua/internal.lua"] = { "internal body" },
+        ["/vendor/external.lua"] = { "external body" },
+      },
+    })
+    local snapshot = client(5, "calls", "utf-8")
+    local prepared = {
+      item = {
+        name = "origin",
+        uri = "file:///project/lua/origin.lua",
+        selectionRange = protocol_range(0, 6),
+        range = protocol_range(0, 13),
+      },
+    }
+    local function subject(name, uri)
+      return {
+        name = name,
+        kind = 12,
+        uri = uri,
+        selectionRange = protocol_range(0, #name),
+        range = protocol_range(0, #name),
+      }
+    end
+
+    local presentation, unique, failures, summary = normalizer:call_sites("outgoing", snapshot, prepared, {
+      {
+        to = subject("external", "file:///vendor/external.lua"),
+        fromRanges = { protocol_range(7, 13) },
+      },
+      {
+        to = subject("internal", "file:///project/lua/internal.lua"),
+        fromRanges = { protocol_range(7, 13) },
+      },
+      {
+        to = subject("virtual", "jdt://contents/External.class"),
+        fromRanges = { protocol_range(7, 13) },
+      },
+    })
+
+    assert.equals(1, #presentation)
+    assert.equals(1, #unique)
+    assert.equals("internal", unique[1].symbol)
+    assert.same({ kind = "project", path = "lua/internal.lua" }, unique[1].query_anchor.locator)
+    assert.same({}, failures)
+    assert.same({ usable_response_count = 1, empty_response_count = 0, invalid_response_count = 0 }, summary)
+    assert.is_false(vim.tbl_contains(env.runtime.calls, "read_file:/vendor/external.lua"))
+  end)
+
+  it("classifies an all-external call response as a usable empty leaf", function()
+    local _, _, normalizer = setup({ files = { ["/project/lua/origin.lua"] = { "origin target" } } })
+    local snapshot = client(5, "calls", "utf-8")
+    local prepared = {
+      item = {
+        name = "origin",
+        uri = "file:///project/lua/origin.lua",
+        selectionRange = protocol_range(0, 6),
+        range = protocol_range(0, 13),
+      },
+    }
+    local external = {
+      name = "external",
+      kind = 12,
+      uri = "file:///vendor/external.lua",
+      selectionRange = protocol_range(0, 8),
+      range = protocol_range(0, 8),
+    }
+
+    for _, case in ipairs({
+      { direction = "outgoing", calls = { { to = external, fromRanges = { protocol_range(7, 13) } } } },
+      { direction = "incoming", calls = { { from = external, fromRanges = { protocol_range(7, 13) } } } },
+    }) do
+      local presentation, unique, failures, summary =
+        normalizer:call_sites(case.direction, snapshot, prepared, case.calls)
+
+      assert.same({}, presentation)
+      assert.same({}, unique)
+      assert.same({}, failures)
+      assert.same({ usable_response_count = 1, empty_response_count = 1, invalid_response_count = 0 }, summary)
+    end
+  end)
+
+  it("keeps distinct semantic subjects at the same outgoing call site", function()
+    local _, _, normalizer = setup({
+      files = {
+        ["/project/lua/origin.lua"] = { "origin target" },
+        ["/project/lua/first.lua"] = { "first" },
+        ["/project/lua/second.lua"] = { "second" },
+      },
+    })
+    local snapshot = client(5, "calls", "utf-8")
+    local prepared = {
+      item = {
+        name = "origin",
+        uri = "file:///project/lua/origin.lua",
+        selectionRange = protocol_range(0, 6),
+        range = protocol_range(0, 13),
+      },
+    }
+    local function callee(name)
+      return {
+        name = name,
+        kind = 12,
+        uri = "file:///project/lua/" .. name .. ".lua",
+        selectionRange = protocol_range(0, #name),
+        range = protocol_range(0, #name),
+      }
+    end
+
+    local presentation, unique = normalizer:call_sites("outgoing", snapshot, prepared, {
+      { to = callee("first"), fromRanges = { protocol_range(7, 13) } },
+      { to = callee("second"), fromRanges = { protocol_range(7, 13) } },
+    })
+
+    assert.equals(2, #presentation)
+    assert.equals(2, #unique)
+    assert.not_equals(unique[1].identity, unique[2].identity)
+  end)
+
   it("summarizes one call-hierarchy result as one usable response", function()
     local _, _, normalizer = setup({
       files = { ["/project/lua/caller.lua"] = { "caller()" } },

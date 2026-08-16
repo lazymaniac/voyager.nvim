@@ -70,6 +70,14 @@ function M.new(opts)
   return setmetatable({ _locator = opts.locator }, Normalize)
 end
 
+function Normalize:is_project_uri(uri)
+  local ok, result = pcall(self._locator.is_project_uri, self._locator, uri)
+  if not ok then
+    return nil
+  end
+  return result
+end
+
 function Normalize:_item(client, raw, uri, protocol_range, preferred_symbol, response_index, range_index)
   if type(uri) ~= "string" or type(protocol_range) ~= "table" then
     return nil
@@ -237,25 +245,38 @@ function Normalize:call_sites(direction, client, prepared_item, calls)
       uri = type(prepared_item) == "table" and type(prepared_item.item) == "table" and prepared_item.item.uri or nil
     end
     local preferred_symbol = type(owner) == "table" and owner.name or nil
-    local query_anchor = self:_safe_query_anchor(client, owner)
     local valid_count = 0
     local invalid_count = 0
+    local project_owner
+    if type(owner) == "table" then
+      project_owner = self:is_project_uri(owner.uri)
+    end
 
-    if type(ranges) ~= "table" or #ranges == 0 then
+    if project_owner == false then
+      -- An outgoing row is displayed at its origin call site, so project
+      -- membership must follow the semantic caller/callee item instead.
+    elseif type(ranges) ~= "table" or #ranges == 0 then
       invalid_count = 1
-    elseif not query_anchor then
+    elseif project_owner ~= true then
       invalid_count = #ranges
     else
-      for range_index, range in ipairs(ranges) do
-        local item = self:_safe_item(client, call, uri, range, preferred_symbol, call_index, range_index)
-        if item then
-          item.location.query_anchor = vim.deepcopy(query_anchor)
-          item.location.symbol_kind = Symbols.kind_name(owner.kind)
-          valid_count = valid_count + 1
-          table.insert(presentation, item)
-          add_unique(unique, seen, item.location)
-        else
-          invalid_count = invalid_count + 1
+      local query_anchor = self:_safe_query_anchor(client, owner)
+      if not query_anchor then
+        invalid_count = #ranges
+      else
+        for range_index, range in ipairs(ranges) do
+          local item = self:_safe_item(client, call, uri, range, preferred_symbol, call_index, range_index)
+          if item then
+            item.location.query_anchor = vim.deepcopy(query_anchor)
+            item.location.symbol_kind = Symbols.kind_name(owner.kind)
+            item.location.identity = Locator.location_key(item.location)
+            item.identity = item.location.identity
+            valid_count = valid_count + 1
+            table.insert(presentation, item)
+            add_unique(unique, seen, item.location)
+          else
+            invalid_count = invalid_count + 1
+          end
         end
       end
     end
@@ -266,6 +287,9 @@ function Normalize:call_sites(direction, client, prepared_item, calls)
 
   if total_valid > 0 then
     summary.usable_response_count = 1
+  elseif total_invalid == 0 then
+    summary.usable_response_count = 1
+    summary.empty_response_count = 1
   else
     summary.invalid_response_count = 1
   end

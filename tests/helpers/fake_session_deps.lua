@@ -411,6 +411,17 @@ function M.new(overrides)
     open_target_calls = {},
     open_target_opts_calls = {},
   }
+  function env.locator:is_project_locator(locator)
+    return type(locator) == "table" and locator.kind == "project"
+  end
+  function env.locator:is_project_location(location)
+    local semantic = type(location) == "table" and type(location.query_anchor) == "table" and location.query_anchor
+      or location
+    return type(location) == "table"
+      and self:is_project_locator(location.locator)
+      and type(semantic) == "table"
+      and self:is_project_locator(semantic.locator)
+  end
   function env.locator:is_stale()
     return self.stale, self.stale and (self.stale_reason or "location is stale") or nil
   end

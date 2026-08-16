@@ -24,32 +24,28 @@ describe("Voyager configuration", function()
     assert.equals(resolver, config.storage.resolve_uri)
   end)
 
-  it("resolves the new sidebar, storage, and keymap defaults", function()
+  it("resolves the sidebar, navigation, storage, and keymap defaults", function()
     local config = Config.resolve()
     assert.equals("relative", config.sidebar.path)
+    assert.equals(4, config.navigation.concurrency)
     assert.is_false(config.storage.autosave)
     assert.equals("▲", config.sidebar.icons.caller)
     assert.equals("▼", config.sidebar.icons.callee)
     assert.equals("o", config.sidebar_keymaps.jump_stay)
-    assert.equals("a", config.sidebar_keymaps.run_action)
-    assert.equals("u", config.sidebar_keymaps.show_callers)
-    assert.equals("d", config.sidebar_keymaps.show_callees)
-    assert.equals("U", config.sidebar_keymaps.refresh_callers)
-    assert.equals("D", config.sidebar_keymaps.refresh_callees)
-    assert.equals("ru", config.sidebar_keymaps.build_callers)
-    assert.equals("rd", config.sidebar_keymaps.build_callees)
-    assert.equals("rc", config.sidebar_keymaps.cancel_build)
     assert.equals("x", config.sidebar_keymaps.delete)
     assert.equals("p", config.sidebar_keymaps.preview)
     assert.equals("zM", config.sidebar_keymaps.collapse_all)
     assert.equals("zR", config.sidebar_keymaps.expand_all)
     assert.equals("?", config.sidebar_keymaps.help)
-    assert.same({
-      direction = "callees",
-      depth = 3,
-      max_subjects = 32,
-      concurrency = 4,
-    }, config.navigation.recursive)
+    assert.is_nil(config.navigation.recursive)
+    assert.is_nil(config.sidebar_keymaps.run_action)
+    assert.is_nil(config.sidebar_keymaps.show_callers)
+    assert.is_nil(config.sidebar_keymaps.show_callees)
+    assert.is_nil(config.sidebar_keymaps.refresh_callers)
+    assert.is_nil(config.sidebar_keymaps.refresh_callees)
+    assert.is_nil(config.sidebar_keymaps.build_callers)
+    assert.is_nil(config.sidebar_keymaps.build_callees)
+    assert.is_nil(config.sidebar_keymaps.cancel_build)
 
     assert.equals("filename", Config.resolve({ sidebar = { path = "filename" } }).sidebar.path)
     assert.is_true(Config.resolve({ storage = { autosave = true } }).storage.autosave)
@@ -61,52 +57,16 @@ describe("Voyager configuration", function()
     end, "voyager.setup: storage.autosave must be a boolean")
   end)
 
-  it("resolves and validates bounded recursive navigation", function()
-    local config = Config.resolve({
-      navigation = {
-        recursive = {
-          direction = "callers",
-          depth = 5,
-          max_subjects = 1000,
-          concurrency = 16,
-        },
-      },
-    })
-    assert.same({
-      direction = "callers",
-      depth = 5,
-      max_subjects = 1000,
-      concurrency = 16,
-    }, config.navigation.recursive)
-    assert.equals("callees", Config.resolve().navigation.recursive.direction)
-    assert.same({
-      direction = "callers",
-      depth = 3,
-      max_subjects = 32,
-      concurrency = 4,
-    }, Config.resolve({ navigation = { recursive = { direction = "callers" } } }).navigation.recursive)
-
-    local invalid = {
-      { { direction = "both" }, "direction must be 'callers' or 'callees'" },
-      { { depth = 0 }, "depth must be an integer from 1 through 10" },
-      { { depth = 11 }, "depth must be an integer from 1 through 10" },
-      { { depth = 10.5 }, "depth must be an integer from 1 through 10" },
-      { { max_subjects = 0 }, "max_subjects must be an integer from 1 through 1000" },
-      { { max_subjects = 1001 }, "max_subjects must be an integer from 1 through 1000" },
-      { { concurrency = 0 }, "concurrency must be an integer from 1 through 16" },
-      { { concurrency = 17 }, "concurrency must be an integer from 1 through 16" },
-    }
-    for _, case in ipairs(invalid) do
+  it("resolves and validates automatic-tree concurrency", function()
+    assert.equals(16, Config.resolve({ navigation = { concurrency = 16 } }).navigation.concurrency)
+    for _, value in ipairs({ 0, 17, 1.5, "4" }) do
       assert.has_error(function()
-        Config.resolve({ navigation = { recursive = case[1] } })
-      end, "voyager.setup: navigation.recursive." .. case[2])
+        Config.resolve({ navigation = { concurrency = value } })
+      end, "voyager.setup: navigation.concurrency must be an integer from 1 through 16")
     end
     assert.has_error(function()
-      Config.resolve({ navigation = { recursive = "callees" } })
-    end, "voyager.setup: navigation.recursive must be a table")
-    assert.has_error(function()
-      Config.resolve({ navigation = { recursive = { breadth = 4 } } })
-    end, "voyager.setup: navigation.recursive.breadth is not a supported option")
+      Config.resolve({ navigation = { recursive = {} } })
+    end, "voyager.setup: navigation.recursive is not a supported option")
   end)
 
   it("resolves icon presets and merges overrides", function()
@@ -191,12 +151,20 @@ describe("Voyager configuration", function()
     assert.has_error(function()
       Config.resolve({ sidebar_keymaps = { note = "s", save = "s" } })
     end, "voyager.setup: sidebar_keymaps contains duplicate normalized LHS 's'")
-    assert.has_error(function()
-      Config.resolve({ sidebar_keymaps = { show_callers = "d" } })
-    end, "voyager.setup: sidebar_keymaps contains duplicate normalized LHS 'd'")
-    assert.has_error(function()
-      Config.resolve({ sidebar_keymaps = { build_callers = "rd" } })
-    end, "voyager.setup: sidebar_keymaps contains duplicate normalized LHS 'rd'")
+    for _, removed in ipairs({
+      "run_action",
+      "show_callers",
+      "show_callees",
+      "refresh_callers",
+      "refresh_callees",
+      "build_callers",
+      "build_callees",
+      "cancel_build",
+    }) do
+      assert.has_error(function()
+        Config.resolve({ sidebar_keymaps = { [removed] = "g?" } })
+      end, "voyager.setup: sidebar_keymaps." .. removed .. " is not a supported option")
+    end
     assert.has_error(function()
       Config.resolve({ sidebar = { icons = "fancy" } })
     end, "voyager.setup: sidebar.icons must be true, false, or a table of icon overrides")

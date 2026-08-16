@@ -4,8 +4,8 @@ source = {
   url = "git+https://github.com/lazymaniac/voyager.nvim.git",
 }
 description = {
-  summary = "Persistent flat LSP relationship flows for Neovim",
-  detailed = "Explore LSP relationships in a flat ledger, annotate locations, and save project-local flows.",
+  summary = "Automatic project-local call trees for Neovim",
+  detailed = "Automatically create complete project-only caller and callee trees, navigate and annotate symbols, and save trees for later.",
   homepage = "https://github.com/lazymaniac/voyager.nvim",
   license = "MIT",
 }

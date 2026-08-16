@@ -30,7 +30,14 @@ local function trim_root(path)
 end
 
 local function contains(path, root)
+  if root == "/" then
+    return path:sub(1, 1) == "/"
+  end
   return path == root or path:sub(1, #root + 1) == root .. "/"
+end
+
+local function is_filesystem_root(path)
+  return path == "/" or path:match("^%a:$") ~= nil
 end
 
 local function hex(bytes)
@@ -100,24 +107,28 @@ function Store:project_root(bufnr, clients, cwd)
   table.sort(roots, function(left, right)
     return #left > #right
   end)
-  if roots[1] then
+  if roots[1] and not is_filesystem_root(roots[1]) then
     return roots[1]
   end
 
   local git_root = self._runtime.find_root(file, ".git")
   if git_root then
-    return self:_realpath(git_root)
+    git_root = self:_realpath(git_root)
+    if not is_filesystem_root(git_root) then
+      return git_root
+    end
   end
 
   local current = self:_realpath(cwd)
-  if contains(file, current) then
+  if not is_filesystem_root(current) and contains(file, current) then
     return current
   end
   return self:_realpath(self._runtime.dirname(file))
 end
 
 function Store:_flows_dir(project_root)
-  return trim_root(normalize(project_root)) .. "/.voyager/flows"
+  local root = trim_root(normalize(project_root))
+  return root == "/" and "/.voyager/flows" or (root .. "/.voyager/flows")
 end
 
 function Store:_read_text(path)

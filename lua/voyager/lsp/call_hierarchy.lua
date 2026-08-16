@@ -200,7 +200,7 @@ function M.start(opts)
   end
 
   local function choose_prepared(prepared)
-    if #prepared == 1 then
+    if #prepared == 1 or context.automatic == true then
       start_followup(prepared[1])
       return
     end
@@ -330,12 +330,25 @@ function M.start(opts)
             message = item_error,
           })
         else
-          table.insert(flattened, {
-            client_id = response.client.id,
-            client = response.client,
-            item = vim.deepcopy(item),
-            response_index = #flattened + 1,
-          })
+          local classified, in_project = pcall(opts.normalizer.is_project_uri, opts.normalizer, item.uri)
+          if not classified or in_project == nil then
+            table.insert(validation_failures, {
+              kind = "normalization",
+              client_id = response.client.id,
+              client_name = response.client.name,
+              response_index = index,
+              message = "CallHierarchyItem.uri could not be classified",
+            })
+          elseif not in_project then
+            has_empty_response = true
+          else
+            table.insert(flattened, {
+              client_id = response.client.id,
+              client = response.client,
+              item = vim.deepcopy(item),
+              response_index = #flattened + 1,
+            })
+          end
         end
       end
     end
