@@ -1,36 +1,41 @@
 # Voyager.nvim
 
-Voyager is a project-local code exploration notebook for Neovim. It records LSP
-navigation as a flat relationship ledger in a small side popup, so you can return
-to an earlier symbol, explore a different path, annotate useful locations, and
-save the whole flow for later.
+Voyager is an automatic, project-local call-tree explorer for Neovim. Put the
+cursor on a symbol and run `:VoyagerOpen`; Voyager discovers the complete
+reachable call tree and keeps it in a compact side popup.
 
 ```text
-▾ ▲ callers of MysqlStore.save (2)
-   [m] AuthService.authorize — lua/auth.lua:5
-   [m] Worker.flush — lua/worker.lua:8
-● [f] MysqlStore.save — lua/mysql_store.lua:2
-▾ ▼ calls from MysqlStore.save (2)
-   [f] Db.exec — lua/db.lua:14
-    ✎ important for auth
-   [f] Log.audit — lua/log.lua:9
+▾ ▲ callers of Checkout.submit (1)
+   [m] Api.checkout — api/checkout.lua:17
+▾ ▲ callers of Store.save (2)
+   [m] Checkout.submit — services/checkout.lua:41
+   [m] Retry.flush — jobs/retry.lua:28
+● [m] Store.save — stores/store.lua:12
+▾ ▼ calls from Store.save (2)
+   [m] Db.write — db/client.lua:73
+   [m] Audit.log — audit/log.lua:9
+▾ ▼ calls from Db.write (1)
+   [m] Pool.execute — db/pool.lua:54
 ```
 
-Every row starts at a fixed horizontal level, so a long call chain never drifts
-out of the popup. Relation headers name their origin explicitly: callers sit
-above the symbol and code it reaches sits below. Rows use `usages`, `callers`,
-and `calls` instead of raw LSP method names; every destination is named after
-its enclosing symbol with a kind badge, and test results fold beneath a
-`tests (N)` group.
+Callers continue upward from the starting symbol; callees continue downward.
+The single `●` marks the active canonical node. When the active node changes,
+Voyager centers it in the popup without hiding the rest of the tree. The
+sidebar cursor is only a selection cursor, so browsing rows does not move the
+dot or your source window.
 
-Opening Voyager stages an empty session; the flow and its starting record are
-created by the first LSP navigation you make. Loading an old flow is always an
-explicit action.
+Tree creation is automatic, with no manual steps or depth controls. Voyager
+follows incoming and outgoing LSP call hierarchy until it exhausts the
+reachable project graph. Files outside the canonical project root, common
+dependency/vendor directories, and non-file URIs are excluded before they can
+enter the tree, so library calls cannot make it overflow. Cycles and converging
+paths reuse existing nodes through cross-links instead of expanding forever.
 
 ## Requirements
 
 - Neovim 0.12.4
 - [nui.nvim](https://github.com/MunifTanjim/nui.nvim)
+- An LSP server with call hierarchy support
 - A [Nerd Font](https://www.nerdfonts.com) for the default sidebar icons
   (optional — set `sidebar.icons = false` for plain text)
 
@@ -62,8 +67,7 @@ use({
 
 ## Minimal setup
 
-Voyager does not create global mappings for opening or loading a flow. Add the
-ones you want:
+Voyager does not create global mappings. Add the entry points you want:
 
 ```lua
 require("voyager").setup()
@@ -75,101 +79,104 @@ vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 
 | Command | Behavior |
 | --- | --- |
-| `:VoyagerOpen` | Open a session that records from the first navigation, or focus the active flow |
+| `:VoyagerOpen` | Automatically create a full call tree for the symbol under the cursor, or focus the active tree |
 | `:VoyagerFocus` | Focus or remount the active sidebar |
-| `:VoyagerSave` | Explicitly save or merge the active flow |
-| `:VoyagerLoad` | Pick a saved flow for the current project |
-| `:VoyagerClose` | Close Voyager, prompting when the flow is dirty |
+| `:VoyagerSave` | Explicitly save or merge the active tree |
+| `:VoyagerLoad` | Pick a saved tree for the current project |
+| `:VoyagerClose` | Close Voyager, prompting when the tree is dirty |
 | `:VoyagerToggle` | Open Voyager, or close it when a session is active |
-| `:VoyagerExport` | Send every resolvable flow location to the quickfix list |
+| `:VoyagerExport` | Send every resolvable tree location to the quickfix list |
 
 <!-- panvimdoc-include-comment
 
 :VoyagerOpen
-: Open a session that records from the first navigation, or focus the active flow.
+: Automatically create a full call tree for the symbol under the cursor, or focus the active tree.
 
 :VoyagerFocus
 : Focus or remount the active sidebar.
 
 :VoyagerSave
-: Explicitly save or merge the active flow.
+: Explicitly save or merge the active tree.
 
 :VoyagerLoad
-: Pick a saved flow for the current project.
+: Pick a saved tree for the current project.
 
 :VoyagerClose
-: Close Voyager, prompting when the flow is dirty.
+: Close Voyager, prompting when the tree is dirty.
 
 :VoyagerToggle
 : Open Voyager, or close it when a session is active.
 
 :VoyagerExport
-: Send every resolvable flow location to the quickfix list.
+: Send every resolvable tree location to the quickfix list.
 
 -->
 
-## Recording without touching your config
+## Automatic call tree
 
-Voyager installs no LSP mappings, changes no options, and never wraps or
-shadows a key. While a session is open it listens to the editor's own LSP
-traffic (the `LspRequest` autocmd): whenever your usual mapping, picker, or
-command sends one of the navigation requests below from the buffer you are
-editing, Voyager runs its own read-only request for the same action and
-records the results in the flow ledger. Your `gd`, `gr*`, snacks, Telescope, or
-any other navigation behaves exactly as it does without Voyager. The first
-observed navigation also creates the flow itself, rooted at the symbol the
-request started from.
+`:VoyagerOpen` captures the symbol under the source cursor immediately. It then
+starts two independent traversals from that root:
 
-| Action | LSP method | Sidebar label |
-| --- | --- | --- |
-| Definition | `textDocument/definition` | `definition` |
-| Declaration | `textDocument/declaration` | `declaration` |
-| References | `textDocument/references` | `usages` |
-| Implementations | `textDocument/implementation` | `implementations` |
-| Type definition | `textDocument/typeDefinition` | `type definitions` |
-| Incoming calls | `callHierarchy/incomingCalls` | `callers` |
-| Outgoing calls | `callHierarchy/outgoingCalls` | `calls` |
+- Incoming traversal places direct callers above the root and continues through
+  callers of those callers.
+- Outgoing traversal places direct callees below the root and continues through
+  calls made by those callees.
 
-Each unanchored destination is then refined asynchronously: Voyager asks a
-`textDocument/documentSymbol`-capable server (falling back to treesitter) for
-the destination's enclosing symbol and kind, so a reference site renders as
-`DurableObservationIngressService.accept` with a method badge instead of the
-bare word under the reference. The resolved symbol-selection range is retained
-as that row's query subject.
+This is deliberately two-sided rather than a walk of every edge in every
+direction. It answers “who reaches this symbol?” above and “what can this symbol
+reach?” below without pulling sibling branches into the tree.
 
-The sidebar is a compact floating card pinned to the configured editor edge.
-It grows and shrinks with the recorded flow instead of reserving a full column,
-up to `sidebar.width` columns and the available editor height.
+There is no configured depth or subject limit. `navigation.concurrency` limits
+only how many LSP requests may run at once; it does not truncate the result.
+Rows appear as requests finish, and the popup header shows when creation is
+still running. A timeout, unsupported symbol, or malformed server result stops
+that branch safely while completed branches remain usable.
+
+Every candidate is checked against the canonical project root before its source
+is read, stored, or scheduled. Common in-root dependency and vendor trees, such
+as `node_modules`, `.venv`, `vendor`, and `third_party`, are excluded as well.
+An LSP workspace that spans an entire filesystem is treated as too broad;
+Voyager falls back to the nearest Git root, containing working directory, or
+source-file directory.
+The displayed call site and its semantic caller/callee anchor must both be
+project-local. This matters for outgoing calls, whose call site may be in your
+file even when the callee belongs to an external library. Non-file documents
+are excluded from automatically generated trees.
+
+The same canonical call occurrence is stored once. Call cycles and converging
+paths render as relation cross-links to that occurrence, so
+the traversal terminates when the reachable project graph is exhausted.
+
+The popup is pinned to `sidebar.side` and grows up to `sidebar.width` and the
+available editor height. Relation headers always name their origin, such as
+`callers of Service.save` or `calls from Service.save`; `▲` and `▼` keep the two
+directions readable without color. Test locations gather beneath a folded
+`tests (N)` group.
 
 ### Sidebar mappings
 
 | Key | Behavior |
 | --- | --- |
 | `<CR>` | Jump from a location or note row; toggle a relation or tests row |
-| `o` | Jump but keep focus in the sidebar |
-| `a` | Jump to the selected node and pick an LSP action to record |
-| `u` | Show callers; query LSP automatically when they are not recorded |
-| `d` | Show calls from the symbol; query LSP automatically when missing |
-| `U`, `D` | Refresh callers or calls from LSP |
+| `o` | Jump to the selected location and return focus to the sidebar |
 | `p` | Peek at the selected location in a preview float |
 | `x` | Unlink an occurrence, delete a relation/history branch, or clear a note |
 | `n` | Add, edit, or remove a note on the selected location |
-| `s` | Save or merge the active flow |
-| `L` | Pick and load a saved project flow |
+| `s` | Save or merge the active tree |
+| `L` | Pick and load a saved project tree |
 | `za` | Collapse or expand the selected relation section |
 | `zM`, `zR` | Collapse or expand every relation section |
 | `?` | Show a key reference |
 | `q`, `<Esc>` | Close Voyager |
 
-With `sidebar.preview` enabled (the default) the preview float follows the
-cursor on its own: resting on a location or note row opens or refreshes it,
-other rows hide it, and it closes when the sidebar loses focus. Set
-`sidebar.preview = false` to fall back to the `p` peek that closes on the next
-cursor move.
+With `sidebar.preview` enabled (the default), the preview float follows the
+sidebar cursor and closes when the sidebar loses focus. Set
+`sidebar.preview = false` to use the explicit `p` preview, which closes on the
+next cursor move.
 
 ## Configuration
 
-`setup()` validates every option immediately. Changes made while a flow is open
+`setup()` validates every option immediately. Changes made while a tree is open
 apply to the next session.
 
 | Option | Type | Default | Description |
@@ -177,31 +184,27 @@ apply to the next session.
 | `sidebar.width` | integer | `42` | Maximum popup width; must be at least 20 |
 | `sidebar.side` | `"left"` or `"right"` | `"right"` | Editor edge the popup is pinned to |
 | `sidebar.border` | string | `"rounded"` | One of `none`, `single`, `double`, `rounded`, `solid`, or `shadow` |
-| `sidebar.icons` | boolean or table | `true` | `true` for Nerd Font icons, `false` for plain text, or per-icon overrides (including `icons.kinds`) |
+| `sidebar.icons` | boolean or table | `true` | Nerd Font icons, plain text, or per-icon overrides including `icons.kinds` |
 | `sidebar.path` | string | `"relative"` | Location paths: `relative`, `filename`, or `shortened` |
-| `sidebar.preview` | boolean | `true` | Preview float follows the sidebar cursor and closes on focus loss |
-| `sidebar.indent` | integer | `1` | Accepted for configuration compatibility; the flat ledger does not indent by depth |
+| `sidebar.preview` | boolean | `true` | Preview follows the sidebar cursor and closes on focus loss |
+| `sidebar.indent` | integer | `1` | Compatibility option accepted from 0 through 8 |
 | `sidebar.test_paths` | string list | common test layouts | Lua patterns that classify a location as test code |
-| `navigation.timeout_ms` | integer | `10000` | Per-network-stage timeout from 100 through 120000 milliseconds |
-| `sidebar_keymaps.jump_or_toggle` | keymap or false | `"<CR>"` | Activate a location/note or toggle an action |
-| `sidebar_keymaps.jump_stay` | keymap or false | `"o"` | Jump but keep focus in the sidebar |
-| `sidebar_keymaps.run_action` | keymap or false | `"a"` | Jump to the node and pick an action to record |
-| `sidebar_keymaps.show_callers` | keymap or false | `"u"` | Show or fetch callers for the contextual symbol |
-| `sidebar_keymaps.show_callees` | keymap or false | `"d"` | Show or fetch calls from the contextual symbol |
-| `sidebar_keymaps.refresh_callers` | keymap or false | `"U"` | Refresh callers from LSP |
-| `sidebar_keymaps.refresh_callees` | keymap or false | `"D"` | Refresh calls from LSP |
+| `navigation.timeout_ms` | integer | `10000` | Per-request-stage timeout from 100 through 120000 milliseconds |
+| `navigation.concurrency` | integer | `4` | Concurrent automatic call queries from 1 through 16 |
+| `sidebar_keymaps.jump_or_toggle` | keymap or false | `"<CR>"` | Activate a location/note or toggle a relation |
+| `sidebar_keymaps.jump_stay` | keymap or false | `"o"` | Jump and return focus to the sidebar |
 | `sidebar_keymaps.preview` | keymap or false | `"p"` | Peek at the selected location |
 | `sidebar_keymaps.delete` | keymap or false | `"x"` | Unlink an occurrence, delete a relation/history branch, or clear a note |
 | `sidebar_keymaps.note` | keymap or false | `"n"` | Edit a location note |
-| `sidebar_keymaps.save` | keymap or false | `"s"` | Save the flow |
-| `sidebar_keymaps.load` | keymap or false | `"L"` | Load a flow |
+| `sidebar_keymaps.save` | keymap or false | `"s"` | Save the tree |
+| `sidebar_keymaps.load` | keymap or false | `"L"` | Load a tree |
 | `sidebar_keymaps.toggle` | keymap or false | `"za"` | Toggle a relation section |
 | `sidebar_keymaps.collapse_all` | keymap or false | `"zM"` | Collapse every relation section |
 | `sidebar_keymaps.expand_all` | keymap or false | `"zR"` | Expand every relation section |
 | `sidebar_keymaps.help` | keymap or false | `"?"` | Show the key reference |
 | `sidebar_keymaps.close` | keymap or false | `{ "q", "<Esc>" }` | Close Voyager |
-| `storage.resolve_uri` | function or nil | `nil` | Resolve a non-file URI to a valid loaded buffer |
-| `storage.autosave` | boolean | `false` | Save dirty flows automatically on close, load, and quit |
+| `storage.resolve_uri` | function or nil | `nil` | Resolve non-file locations in legacy saved flows; automatic trees still exclude them |
+| `storage.autosave` | boolean | `false` | Save dirty trees automatically on close, load, and quit |
 
 <!-- panvimdoc-include-comment
 
@@ -221,37 +224,25 @@ sidebar.path
 : Location path display: `relative`, `filename`, or `shortened`.
 
 sidebar.preview
-: Preview float follows the sidebar cursor and closes on focus loss.
+: Preview follows the sidebar cursor and closes on focus loss.
 
 sidebar.indent
-: Accepted for configuration compatibility; the flat ledger does not indent by depth.
+: Compatibility option; an integer from 0 through 8.
 
 sidebar.test_paths
 : Lua patterns that classify a location as test code.
 
 navigation.timeout_ms
-: Per-network-stage timeout from 100 through 120000 milliseconds.
+: Per-request-stage timeout from 100 through 120000 milliseconds.
+
+navigation.concurrency
+: Maximum concurrent automatic call queries; an integer from 1 through 16.
 
 sidebar_keymaps.jump_or_toggle
-: Activate a location/note or toggle an action; a string, string list, or `false`.
+: Activate a location/note or toggle a relation; a string, string list, or `false`.
 
 sidebar_keymaps.jump_stay
-: Jump but keep focus in the sidebar; a string, string list, or `false`.
-
-sidebar_keymaps.run_action
-: Jump to the node and pick an action to record; a string, string list, or `false`.
-
-sidebar_keymaps.show_callers
-: Show or fetch callers for the contextual symbol; a string, string list, or `false`.
-
-sidebar_keymaps.show_callees
-: Show or fetch calls from the contextual symbol; a string, string list, or `false`.
-
-sidebar_keymaps.refresh_callers
-: Refresh callers from LSP; a string, string list, or `false`.
-
-sidebar_keymaps.refresh_callees
-: Refresh calls from LSP; a string, string list, or `false`.
+: Jump and return focus to the sidebar; a string, string list, or `false`.
 
 sidebar_keymaps.preview
 : Peek at the selected location; a string, string list, or `false`.
@@ -263,10 +254,10 @@ sidebar_keymaps.note
 : Edit a location note; a string, string list, or `false`.
 
 sidebar_keymaps.save
-: Save the flow; a string, string list, or `false`.
+: Save the tree; a string, string list, or `false`.
 
 sidebar_keymaps.load
-: Load a flow; a string, string list, or `false`.
+: Load a tree; a string, string list, or `false`.
 
 sidebar_keymaps.toggle
 : Toggle a relation section; a string, string list, or `false`.
@@ -284,208 +275,107 @@ sidebar_keymaps.close
 : Close Voyager; a string, string list, or `false`.
 
 storage.resolve_uri
-: Optional resolver from a non-file URI to a valid loaded buffer.
+: Optional resolver for non-file locations in legacy saved flows. Automatically generated trees always exclude non-file locations.
 
 storage.autosave
-: Save dirty flows automatically on close, load, and quit.
+: Save dirty trees automatically on close, load, and quit.
 
 -->
 
-A sidebar `keymap` is a string or non-empty string list. Mapping values set to
-`false` are disabled. Enabled mappings in each group must have distinct,
-non-empty normal-mode left-hand sides after Neovim keycode normalization.
+A sidebar `keymap` is a string or non-empty string list. Set a mapping to
+`false` to disable it. Enabled mappings must have distinct, non-empty
+normal-mode left-hand sides after Neovim keycode normalization.
 
-## Appearance
+## Active node and navigation
 
-Every part of a row carries a dedicated highlight group with a sensible
-default link, overridable like any other group: `VoyagerHeader`,
-`VoyagerDirty`, `VoyagerRequests`, `VoyagerSymbol`, `VoyagerVisited`,
-`VoyagerAncestor`, `VoyagerPath`, `VoyagerActionLabel`, `VoyagerCount`,
-`VoyagerIcon`, `VoyagerDisclosure`, `VoyagerDirectionUp`,
-`VoyagerDirectionDown`, `VoyagerCurrent`, `VoyagerCurrentLine`,
-`VoyagerStale`, `VoyagerNote`, `VoyagerFlash`, `VoyagerRelationFocus`,
-`VoyagerRelationHeader`, `VoyagerRelationOrigin`, and
-`VoyagerRelationTarget`. The current row gets a full-line highlight, every
-location on the current node's path renders its symbol emphasized, and visited
-locations render dimmed through `VoyagerVisited`. Moving the sidebar cursor
-onto a symbol highlights every visible alias plus its direct relation headers,
-origins, and targets. The `▲`/`▼` glyphs keep direction readable without color,
-and `VoyagerFlash` briefly marks the source line after a sidebar jump.
+Only the active canonical node gets `●` and the full-line
+`VoyagerCurrentLine` highlight. A cross-link alias to that node remains visible
+without a second dot. Activating a location with `<CR>` or `o` moves the logical
+current node, reveals its folded parent path, and centers its canonical row in
+the popup. The whole tree remains available above and below the viewport.
 
-Each location is prefixed with a badge for its symbol kind (class, interface,
-record, method, and friends) resolved from the language server or treesitter;
-override the glyphs through `sidebar.icons.kinds`.
+Moving the source cursor onto a displayed call occurrence or its stored symbol
+anchor also makes that node active and centers its canonical row automatically.
 
-`sidebar.path` trims location paths when the card gets crowded:
-`"relative"` (default) shows the project-relative path, `"filename"` only the
-file name, and `"shortened"` a `l/a/store.lua`-style abbreviation.
+Moving the sidebar selection highlights related aliases and relation headers,
+but it does not change the logical current node. This lets you inspect the tree
+without losing your place. `o` performs a real jump and then returns focus to
+the sidebar; `<CR>` leaves focus in the source window.
 
-The projection is flat: symbols and relation headers keep a constant left edge
-regardless of semantic depth. Ownership remains unambiguous because each header
-includes its origin, such as `callers of Service.save` or
-`calls from Service.save`.
+Every location has a symbol-kind badge and a project-relative source position.
+`sidebar.path` can show the full relative path, only the filename, or a shortened
+path. Missing or changed saved locations remain visible as stale rows instead
+of being silently removed. `:VoyagerExport` sends every currently resolvable
+location to the quickfix list.
 
-## Exploring and branching
-
-Navigate however you always do—your own mappings, Neovim's `gr*` defaults, or
-a picker plugin. When a navigation request leaves the buffer you are editing,
-Voyager concurrently records every unique normalized destination beneath a
-relation row such as `implementations of …`, `usages of …`, or `callers of …`.
-Successful empty responses remain visible as an action with zero results.
-Destinations in test files gather beneath a `tests (N)` row that starts folded;
-`<CR>` or `za` on it reveals them.
-
-Once an action records its destinations, Voyager watches for the cursor to land
-exactly on one of them in a normal source window—through a quickfix jump, a
-picker, or any other navigation—and marks that destination as the flow's
-current node. Later landings on the same action's destinations keep updating
-the current node until a newer action runs or you pick a node in the sidebar.
-
-Revisiting recorded ground never duplicates a location. A destination that
-already exists anywhere in the flow—an ancestor you retrace, or an overlapping
-result from two queries—is reused through an explicit relation edge. The edge
-still appears under its origin, so reverse and converging call paths remain
-visible. A manual jump onto an ancestor continues from that node instead of
-recording a connector.
-
-Unlinking an occurrence, or replacing a relation during refresh, removes only
-that visible edge. If nothing else links the canonical location, Voyager keeps
-it under an explicit `unlinked history` section, together with its notes and
-explored relations. It stays navigable and can be deleted deliberately from
-there instead of silently disappearing or continuing to inflate relation counts.
-
-The flat ledger keeps call-flow order without accumulating indentation: actions
-that surface callers appear above their origin, while definitions,
-declarations, implementations, type definitions, and outgoing calls appear
-below it.
-
-Call-hierarchy recording follows the protocol's prepare step without
-prompting: when a server returns several prepared items, Voyager records calls
-for the first one while your own mapping keeps its usual behavior.
-
-Select any location and press `u` for callers or `d` for calls from it. A cached
-relation expands and focuses immediately; a missing one gets a stable loading
-row while Voyager queries LSP from the row's persisted symbol-selection anchor.
-Ordinary destinations use their resolved enclosing symbol; call-hierarchy rows
-still jump to the recorded call site but use the protocol caller/callee item as
-their query subject. If an anchored source line has changed, the request fails
-safely instead of recording results for whichever symbol moved under the old
-coordinate. Background queries do not jump a source window, change Voyager's
-logical current node, or add newly loaded files to `:ls`. Repeating the same key
-coalesces an in-flight request, failures remain retryable, and a successful
-empty response is recorded as an authoritative `(0)` relation.
-`U`/`D` refresh an existing relation: the old targets remain usable during the
-request and on failure, while a complete success replaces them.
-
-The existing tools remain available: `a` jumps to the selected node and offers
-all seven actions in a picker, `o` jumps while keeping sidebar focus, `p` opens
-a bordered preview, and `x` unlinks a selected relation occurrence without
-erasing shared history. On a relation header it deletes that relation and moves
-otherwise unlinked records to history; on an unlinked-history row it deletes
-that stored branch; on a note it clears the note. Explicit unlinks and deletions
-survive save merges. `:VoyagerExport` sends every resolvable location to the
-quickfix list for `:cdo`-style follow-up work.
-
-If the editor cursor no longer matches Voyager's logical current node when an
-action starts, Voyager stages a `manual jump` connector for the actual source
-location. The connector and LSP action are committed together only when the LSP
-operation succeeds. Plain cursor movement is never recorded, and failed,
-cancelled, unsupported, or superseded actions leave no synthetic persisted
-relation.
+Press `x` to remove the selected relation occurrence while preserving a shared
+canonical location used elsewhere. If a location becomes unlinked, Voyager
+keeps it in `unlinked history` with its notes and explored relations until that
+history branch is deleted explicitly.
 
 ## Notes
 
 Press `n` on a location or its note row. The current note is prefilled through
-`vim.ui.input`; submitting a trimmed non-empty line saves it, while submitting an
-empty value removes it. Newline runs from custom input providers become spaces.
-Cancelling leaves the note unchanged. Notes are persisted with their location
-and can be useful for reminders such as “important for auth”.
+`vim.ui.input`; submitting a trimmed non-empty line saves it, while submitting
+an empty value removes it. Cancelling leaves the note unchanged. Notes are
+stored with their canonical location and appear beside every relevant path.
 
 ## Saving, merging, and loading
 
-Saving is explicit by default, and `storage.autosave = true` opts into saving
-dirty flows automatically on close, load, and quit instead of prompting (the
-prompt returns if an automatic save fails). Each project stores human-readable,
-schema-versioned JSON under:
+Saving is explicit by default. Set `storage.autosave = true` to save dirty trees
+automatically on close, load, and quit instead of prompting. Each project stores
+human-readable, schema-versioned JSON under:
 
 ```text
 <project-root>/.voyager/flows/<flow-name>-<root-hash>.json
 ```
 
-Valid schema-v1 flows migrate automatically when read. Duplicate locations
-from older concurrent merges are canonicalized without losing their notes or
-relations, and the next save writes the strict schema-v2 representation.
+There is one logical saved tree per root identity. Before every save, Voyager
+re-reads the latest valid revision and merges call relations, destinations,
+cross-links, notes, collapsed state, and the current node. The merged JSON is
+flushed to a unique sibling temporary file and atomically renamed. Sequential
+saves therefore merge the latest completed write; truly simultaneous processes
+remain last-rename-wins.
 
-There is one logical saved flow per root identity. Before every save, Voyager
-re-reads the latest valid revision and recursively merges actions, destinations,
-relation edges, notes, collapsed state, and the current node. New and saved-only
-records are retained unless the active session explicitly unlinked or deleted
-them. The merged JSON is flushed to a unique sibling temporary file and
-atomically renamed; sequential saves therefore merge the latest completed write.
-Truly simultaneous processes are last-rename-wins. The `.voyager` directory is
-project-local and may be committed to version control.
+Valid older flows migrate when read, and duplicate locations are canonicalized
+without losing notes or relations. `:VoyagerLoad` or sidebar `L` opens a
+latest-first picker for the current project. Loading restores the saved tree; it
+does not replace it with the symbol currently under the cursor. Invalid files
+are reported and skipped.
 
-`:VoyagerLoad` or sidebar `L` opens a latest-first project picker. Invalid files
-are reported and skipped. Loading a flow replaces the current one only after any
-dirty-flow decision completes. Missing or out-of-range destinations remain in
-the ledger as stale rows; Voyager does not silently delete them.
-
-Closing or replacing a modified flow asks whether to save, discard, or cancel.
-An untouched root-only flow closes without prompting.
-
-## Non-file URI resolver
-
-LSP servers can return virtual locations such as `jdt://` documents. Voyager can
-persist one only when it can read the source from an already loaded URI buffer or
-from `storage.resolve_uri`. Integrate your virtual-document provider by returning
-the loaded buffer that contains the URI's current source text:
-
-```lua
-local virtual_documents = {}
--- Populate this table from your LSP/virtual-document plugin. The buffer may
--- have a provider-specific name; the key is the original LSP URI.
-local function remember_virtual_document(uri, bufnr)
-  virtual_documents[uri] = bufnr
-end
-require("voyager").setup({
-  storage = {
-    resolve_uri = function(uri)
-      local bufnr = virtual_documents[uri]
-      if bufnr
-        and vim.api.nvim_buf_is_valid(bufnr)
-        and vim.api.nvim_buf_is_loaded(bufnr)
-      then
-        return bufnr
-      end
-    end,
-  },
-})
-```
-
-The resolver must return a valid loaded buffer or `nil`. After a restart, the
-provider must make that source available again before the saved URI node can be
-navigated; otherwise Voyager marks it stale.
+The `.voyager` directory is project-local and may be committed to version
+control. Closing or replacing a modified tree asks whether to save, discard, or
+cancel unless autosave is enabled.
 
 ## Lifecycle and cleanup
 
-Voyager owns one process-wide session and one NUI popup. `:VoyagerOpen` stages
-a new session only when none is active; repeated opens focus the existing one.
-Until the first navigation the sidebar shows a waiting placeholder, there is
-nothing to save, and closing never prompts. The popup remounts across tabs and
-valid resizes without creating or resizing source splits.
+Voyager owns one process-wide session and one NUI popup. With no active session,
+`:VoyagerOpen` captures the current symbol, mounts the popup, and starts tree
+creation. Repeated opens focus the existing tree. The popup remounts across tabs
+and valid resizes without creating or resizing source splits.
 
-Closing cancels pending LSP requests and late interaction tokens, removes the
-session autocmd group, and closes only Voyager-owned windows. Intentional
-buffers, cursors, jumplist/tagstack entries, and quickfix or location lists
-created while exploring are not rewound.
+Closing cancels outstanding call-hierarchy requests and closes only
+Voyager-owned windows. Source buffers, cursors, jumplist/tagstack entries, and
+quickfix or location lists created while exploring are not rewound.
 
 `VimLeavePre` performs teardown without a prompt, so explicitly save anything
-you want to keep before exiting Neovim — or set `storage.autosave = true` to
-have quitting save the flow for you.
+you want to keep before exiting Neovim, or enable `storage.autosave`.
 
-Run `:checkhealth voyager` to verify the Neovim version, `nui.nvim`, and
-storage writability. For statuslines, `require("voyager").status()` returns
-`nil` or `{ name, dirty, locations, requests }` for the active flow.
+Run `:checkhealth voyager` to verify the Neovim version, `nui.nvim`, and storage
+writability. For statuslines, `require("voyager").status()` returns `nil` when
+Voyager is inactive. An active session returns:
+
+```lua
+{
+  name = "Store.save",
+  dirty = true,
+  locations = 17,
+  requests = 4,
+}
+```
+
+`requests` is the aggregate number of in-flight LSP requests. Tree-creation
+progress is deliberately not a separate public status field.
 
 ## Development
 

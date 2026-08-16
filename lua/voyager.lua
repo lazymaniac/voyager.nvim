@@ -56,14 +56,7 @@ function M.status()
     return nil
   end
   local state = active_session:state()
-  if not state.flow then
-    return {
-      name = "(waiting)",
-      dirty = false,
-      locations = 0,
-      requests = state.request_count,
-    }
-  end
+  assert(state.flow, "active Voyager session has no call tree")
   local locations = 0
   for _, node in ipairs(state.flow:dfs()) do
     if node.kind == "location" then

@@ -7,7 +7,7 @@ local function row(kind, owner_id)
 end
 
 describe("Voyager restart journey: save phase", function()
-  it("records, annotates, and saves the complete branch", function()
+  it("creates, annotates, and saves the complete automatic call tree", function()
     local input_calls = 0
     local notifications = {}
     vim.notify = function(message)
@@ -37,11 +37,13 @@ describe("Voyager restart journey: save phase", function()
     assert.is_not_nil(popup_win)
     assert.equals("nofile", vim.bo[vim.api.nvim_win_get_buf(popup_win)].buftype)
 
-    vim.api.nvim_feedkeys(vim.keycode("gri"), "x", false)
-    E2E.wait_for_requests(session)
+    E2E.wait_for_graph(session)
     local flow = session:state().flow
-    local implementations = assert(
-      E2E.action(flow.root, "textDocument/implementation"),
+    assert.equals(flow.root.id, flow.current_node_id)
+    local callers = assert(E2E.action(flow.root, "callHierarchy/incomingCalls"))
+    assert.equals(0, #callers.results)
+    local calls = assert(
+      E2E.action(flow.root, "callHierarchy/outgoingCalls"),
       vim.inspect({
         notifications = notifications,
         actions = flow.root.actions,
@@ -50,22 +52,18 @@ describe("Voyager restart journey: save phase", function()
         cursor = vim.api.nvim_win_get_cursor(E2E.source_win),
       })
     )
-    assert.equals(2, #implementations.results)
-    E2E.wait("the native implementation quickfix list", function()
-      return #vim.fn.getqflist() == 4
-    end)
-    local mysql = assert(E2E.result(implementations, "lua/mysql_store.lua"))
-    local memory = assert(E2E.result(implementations, "lua/memory_store.lua"))
+    assert.equals(3, #calls.results)
+    local mysql = assert(E2E.result(calls, "lua/mysql_store.lua"))
+    local memory = assert(E2E.result(calls, "lua/memory_store.lua"))
+    local authorize = assert(E2E.result(calls, "lua/auth.lua"))
+    local authorized_calls = assert(E2E.action(authorize, "callHierarchy/outgoingCalls"))
+    assert.equals(2, #authorized_calls.results)
+    assert.is_not_nil(E2E.result(authorized_calls, "lua/mysql_store.lua"))
+    assert.is_not_nil(E2E.result(authorized_calls, "lua/memory_store.lua"))
+    assert.equals(0, #assert(E2E.action(mysql, "callHierarchy/outgoingCalls")).results)
+    assert.equals(0, #assert(E2E.action(memory, "callHierarchy/outgoingCalls")).results)
 
-    assert.is_table(session:state().destination_claim)
-    vim.cmd("cc 1")
-    vim.api.nvim_exec_autocmds("CursorMoved", { modeline = false })
-    local landed_suffix = assert(vim.api.nvim_buf_get_name(0):match("lua/[^/]+%.lua$"))
-    local landed = assert(E2E.result(implementations, landed_suffix))
-    assert.equals(landed.id, session:state().flow.current_node_id)
-    assert.is_table(session:state().destination_claim)
-
-    local activated = session:activate_row(row("location", mysql.id))
+    local activated = session:activate_row(row("location", memory.id))
     assert(
       activated,
       vim.inspect({
@@ -80,39 +78,21 @@ describe("Voyager restart journey: save phase", function()
           vim.api.nvim_win_get_buf(E2E.source_win)
         ) or nil,
         source_windows = session:state().source_windows,
-        target = mysql.location,
+        target = memory.location,
       })
     )
-    assert.matches("mysql_store.lua$", vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf()))
-    assert.matches("local function save", vim.api.nvim_get_current_line())
+    assert.matches("main.lua$", vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf()))
+    assert.matches("memory_store%.save", vim.api.nvim_get_current_line())
     assert.is_nil(session:state().destination_claim)
-    E2E.wait_for_clients(vim.api.nvim_get_current_buf())
-    vim.api.nvim_feedkeys(vim.keycode("grr"), "x", false)
-    E2E.wait_for_requests(session)
-    flow = session:state().flow
-    implementations = assert(E2E.action(flow.root, "textDocument/implementation"))
-    mysql = assert(E2E.result(implementations, "lua/mysql_store.lua"))
-    local references = assert(E2E.action(mysql, "textDocument/references"))
-    assert.equals(1, #references.results)
-    E2E.wait("the native references quickfix list", function()
-      return #vim.fn.getqflist() == 2
-    end)
-
-    session:activate_row(row("location", flow.root.id))
-    flow = session:state().flow
-    implementations = assert(E2E.action(flow.root, "textDocument/implementation"))
-    memory = assert(E2E.result(implementations, "lua/memory_store.lua"))
-    session:activate_row(row("location", memory.id))
+    assert.equals(memory.id, session:state().flow.current_node_id)
     session:edit_note(row("location", memory.id))
     assert.equals(1, input_calls)
-    session:toggle_row(row("action", implementations.id))
 
     flow = session:state().flow
-    implementations = assert(E2E.action(flow.root, "textDocument/implementation"))
-    memory = assert(E2E.result(implementations, "lua/memory_store.lua"))
+    calls = assert(E2E.action(flow.root, "callHierarchy/outgoingCalls"))
+    memory = assert(E2E.result(calls, "lua/memory_store.lua"))
     assert.equals(memory.id, flow.current_node_id)
     assert.equals("important for auth", memory.note)
-    assert.is_true(implementations.collapsed)
     assert(session:save(), vim.inspect({ notifications = notifications }))
     assert.is_false(session:state().flow:is_dirty())
 
@@ -121,6 +101,9 @@ describe("Voyager restart journey: save phase", function()
     local encoded = table.concat(vim.fn.readfile(paths[1]), "\n") .. "\n"
     local saved = Schema.decode(encoded)
     assert.equals(memory.id, saved.current_node_id)
+    local saved_calls = assert(E2E.action(saved.root, "callHierarchy/outgoingCalls"))
+    assert.equals(3, #saved_calls.results)
+    assert.equals("important for auth", assert(E2E.result(saved_calls, "lua/memory_store.lua")).note)
 
     local retained_buf = vim.api.nvim_get_current_buf()
     local retained_cursor = vim.api.nvim_win_get_cursor(0)

@@ -222,24 +222,11 @@ end
 
 function M.project(flow, width, status, display)
   status = status or {}
+  assert(type(flow) == "table", "Voyager sidebar projection requires a call tree")
   assert(type(display) == "table", "Voyager sidebar display options are required")
   local icons = display.icons
   assert(type(icons) == "table", "Voyager sidebar icons are required")
   local rows = {}
-
-  if flow == nil then
-    table.insert(
-      rows,
-      row({
-        kind = "hint",
-        owner_id = "",
-        key = "hint:waiting",
-        segments = { segment("  navigate to start recording", "VoyagerPath") },
-      }, width)
-    )
-    local waiting = truncate_segments({ segment("Voyager · (waiting)", "VoyagerHeader") }, width)
-    return rows, { text = segments_text(waiting), segments = waiting }
-  end
 
   local expanded_test_groups = status.expanded_test_groups or {}
   local relation_statuses = {}
@@ -265,7 +252,6 @@ function M.project(flow, width, status, display)
       return left.map_key < right.map_key
     end)
   end
-
   local ancestor_ids = {}
   for _, id in ipairs(flow:path_ids(flow.current_node_id)) do
     ancestor_ids[id] = true
@@ -331,7 +317,12 @@ function M.project(flow, width, status, display)
   end
 
   local function append_location(node, key, metadata)
-    local marker, glyph = marker_for_location(node)
+    local marker, glyph
+    if type(metadata) == "table" and metadata.alias == true then
+      glyph = segment("  ")
+    else
+      marker, glyph = marker_for_location(node)
+    end
     local location = node.location
     local symbol_hl = "VoyagerSymbol"
     if ancestor_ids[node.id] then
@@ -440,18 +431,14 @@ function M.project(flow, width, status, display)
     local target_ids = target_ids_for(flow, action)
     local key = relation_key(origin.id, action.method)
     local relation_status = relation_statuses[key]
-    local marker
-    local current_glyph = segment("  ")
-    if action.collapsed and projected_action_contains_current(action, flow.current_node_id, {}, target_ids) then
-      marker = "descendant_current"
-      current_glyph = segment(badge(icons.current), "VoyagerCurrent")
-    end
+    local contains_current = projected_action_contains_current(action, flow.current_node_id, {}, target_ids)
+    local collapsed = action.collapsed and not contains_current
     local above = renders_above_method(action.method)
     local action_name, record = action_record(action.method)
     local label = record and record.label or action.label
     local segments = {
-      current_glyph,
-      segment(badge(action.collapsed and icons.collapsed or icons.expanded), "VoyagerDisclosure"),
+      segment("  "),
+      segment(badge(collapsed and icons.collapsed or icons.expanded), "VoyagerDisclosure"),
       segment(badge(above and icons.caller or icons.callee), above and "VoyagerDirectionUp" or "VoyagerDirectionDown"),
       segment(badge(action_name and icons[action_name]), "VoyagerIcon"),
       segment(relation_title(action.method, label, origin.location.symbol), "VoyagerActionLabel"),
@@ -469,13 +456,12 @@ function M.project(flow, width, status, display)
         method = action.method,
         action_id = action.id,
         target_ids = vim.deepcopy(target_ids),
-        marker = marker,
         state = relation_status and relation_status.state or action.query_status,
         message = relation_status and relation_status.message or nil,
         segments = segments,
       }, width)
     )
-    if action.collapsed then
+    if collapsed then
       return
     end
 
@@ -518,8 +504,6 @@ function M.project(flow, width, status, display)
     end
     if #tests > 0 then
       local expanded = expanded_test_groups[action.id] == true
-      local group_marker
-      local group_glyph = segment("  ")
       local tests_contain_current = false
       for _, entry in ipairs(tests) do
         if entry.id == flow.current_node_id then
@@ -531,10 +515,7 @@ function M.project(flow, width, status, display)
           break
         end
       end
-      if not expanded and tests_contain_current then
-        group_marker = "descendant_current"
-        group_glyph = segment(badge(icons.current), "VoyagerCurrent")
-      end
+      expanded = expanded or tests_contain_current
       local test_ids = vim.tbl_map(function(entry)
         return entry.id
       end, tests)
@@ -549,9 +530,8 @@ function M.project(flow, width, status, display)
           action_id = action.id,
           method = action.method,
           target_ids = test_ids,
-          marker = group_marker,
           segments = {
-            group_glyph,
+            segment("  "),
             segment(badge(expanded and icons.expanded or icons.collapsed), "VoyagerDisclosure"),
             segment("tests", "VoyagerActionLabel"),
             segment(" (" .. #tests .. ")", "VoyagerCount"),
@@ -585,7 +565,6 @@ function M.project(flow, width, status, display)
         append_transient(node, relation)
       end
     end
-
     append_location(
       node,
       occurrence_key,
@@ -681,6 +660,18 @@ function M.project(flow, width, status, display)
   local header_segments = { segment("Voyager · " .. flow.name, "VoyagerHeader") }
   if status.dirty then
     table.insert(header_segments, segment(" *", "VoyagerDirty"))
+  end
+  local graph_build = type(status.graph_build) == "table" and status.graph_build or nil
+  if graph_build and graph_build.state == "running" then
+    table.insert(header_segments, segment(" · building…", "VoyagerRequests"))
+  elseif graph_build and type(graph_build.issues) == "number" and graph_build.issues > 0 then
+    table.insert(
+      header_segments,
+      segment(
+        string.format(" · %d issue%s", graph_build.issues, graph_build.issues == 1 and "" or "s"),
+        "VoyagerStale"
+      )
+    )
   end
   local count = status.request_count or 0
   if count > 0 then
@@ -836,6 +827,28 @@ local function set_popup_cursor(popup, cursor)
   end
 end
 
+local function popup_is_focused(popup)
+  if popup.is_focused then
+    return popup:is_focused() == true
+  end
+  return popup.winid ~= nil and vim.api.nvim_win_is_valid(popup.winid) and vim.api.nvim_get_current_win() == popup.winid
+end
+
+local function center_popup_line(popup, line, line_count)
+  if popup.center_line then
+    return popup:center_line(line, line_count) ~= false
+  end
+  if not popup.winid or not vim.api.nvim_win_is_valid(popup.winid) then
+    return false
+  end
+  local ok = pcall(vim.api.nvim_win_call, popup.winid, function()
+    local target = math.max(1, math.min(line_count, line))
+    vim.api.nvim_win_set_cursor(popup.winid, { target, 0 })
+    vim.cmd("normal! zz")
+  end)
+  return ok
+end
+
 -- Find the visible relation/group row that now hides the previous occurrence,
 -- so a collapse has a deterministic cursor fallback.
 local function hidden_under_row(flow, previous, opts)
@@ -924,6 +937,8 @@ function M.new(opts)
     _handlers = opts.handlers,
     _keymaps = vim.deepcopy(opts.keymaps),
     _line_to_row = {},
+    _centered_current_id = nil,
+    _centered_current_key = nil,
     _mounted = false,
     _notify = opts.notify,
     _popup_factory = opts.popup_factory or require("nui.popup"),
@@ -941,6 +956,8 @@ end
 function Sidebar:_on_winclosed()
   self._winclosed_autocmd = nil
   self._mounted = false
+  self._centered_current_id = nil
+  self._centered_current_key = nil
   self._relationship_lens_active = false
   self:_clear_relationship_lens_marks()
   self:close_preview()
@@ -988,11 +1005,6 @@ function Sidebar:_bind_keymaps()
   local bindings = {
     jump_or_toggle = selected(self._handlers.activate),
     jump_stay = selected(self._handlers.activate_stay),
-    run_action = selected(self._handlers.run_action),
-    show_callers = self._handlers.show_callers and selected(self._handlers.show_callers) or nil,
-    show_callees = self._handlers.show_callees and selected(self._handlers.show_callees) or nil,
-    refresh_callers = self._handlers.refresh_callers and selected(self._handlers.refresh_callers) or nil,
-    refresh_callees = self._handlers.refresh_callees and selected(self._handlers.refresh_callees) or nil,
     delete = selected(self._handlers.delete),
     preview = selected(self._handlers.preview),
     note = selected(self._handlers.note),
@@ -1250,6 +1262,8 @@ function Sidebar:remount(opts)
         self._popup:hide()
       end)
       self._mounted = false
+      self._centered_current_id = nil
+      self._centered_current_key = nil
     end
     return nil, reason
   end
@@ -1258,6 +1272,8 @@ function Sidebar:remount(opts)
       self._popup:hide()
     end)
     self._mounted = false
+    self._centered_current_id = nil
+    self._centered_current_key = nil
   end
   return self:mount(opts)
 end
@@ -1269,6 +1285,8 @@ function Sidebar:unmount(opts)
   self:_clear_relationship_lens()
   if not self._popup then
     self._mounted = false
+    self._centered_current_id = nil
+    self._centered_current_key = nil
     return
   end
 
@@ -1284,6 +1302,8 @@ function Sidebar:unmount(opts)
   self._popup = nil
   self._mounted = false
   self._line_to_row = {}
+  self._centered_current_id = nil
+  self._centered_current_key = nil
 end
 
 function Sidebar:_fit_to_content(fitted)
@@ -1373,6 +1393,30 @@ function Sidebar:render(flow, status)
 
   self._line_to_row = line_to_row
   set_popup_cursor(self._popup, { selected_index + 1, 0 })
+  local current_id = flow and flow.current_node_id or nil
+  local current_line
+  local current_key
+  for line, row_value in ipairs(line_to_row) do
+    if
+      row_value
+      and row_value.kind == "location"
+      and row_value.location_id == current_id
+      and row_value.alias ~= true
+      and row_value.marker == "current"
+    then
+      current_line = line
+      current_key = row_value.key
+      break
+    end
+  end
+  local current_changed = current_id ~= self._centered_current_id or current_key ~= self._centered_current_key
+  local keep_centered = (status or {}).center_current == true and not popup_is_focused(self._popup)
+  if current_line and (current_changed or keep_centered) then
+    if center_popup_line(self._popup, current_line, #lines) then
+      self._centered_current_id = current_id
+      self._centered_current_key = current_key
+    end
+  end
   if self._relationship_lens_active then
     self:_update_relationship_lens()
   else
@@ -1467,11 +1511,6 @@ end
 local help_entries = {
   { "jump_or_toggle", "jump to a location, or toggle a relation" },
   { "jump_stay", "jump but keep focus in the sidebar" },
-  { "run_action", "record an LSP action from the selected node" },
-  { "show_callers", "show callers, querying LSP when missing" },
-  { "show_callees", "show calls, querying LSP when missing" },
-  { "refresh_callers", "refresh callers from LSP" },
-  { "refresh_callees", "refresh calls from LSP" },
   { "preview", "peek at the selected location" },
   { "delete", "unlink an occurrence; delete relation/history; clear note" },
   { "note", "add, edit, or remove a note" },

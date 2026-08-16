@@ -24,23 +24,28 @@ describe("Voyager configuration", function()
     assert.equals(resolver, config.storage.resolve_uri)
   end)
 
-  it("resolves the new sidebar, storage, and keymap defaults", function()
+  it("resolves the sidebar, navigation, storage, and keymap defaults", function()
     local config = Config.resolve()
     assert.equals("relative", config.sidebar.path)
+    assert.equals(4, config.navigation.concurrency)
     assert.is_false(config.storage.autosave)
     assert.equals("▲", config.sidebar.icons.caller)
     assert.equals("▼", config.sidebar.icons.callee)
     assert.equals("o", config.sidebar_keymaps.jump_stay)
-    assert.equals("a", config.sidebar_keymaps.run_action)
-    assert.equals("u", config.sidebar_keymaps.show_callers)
-    assert.equals("d", config.sidebar_keymaps.show_callees)
-    assert.equals("U", config.sidebar_keymaps.refresh_callers)
-    assert.equals("D", config.sidebar_keymaps.refresh_callees)
     assert.equals("x", config.sidebar_keymaps.delete)
     assert.equals("p", config.sidebar_keymaps.preview)
     assert.equals("zM", config.sidebar_keymaps.collapse_all)
     assert.equals("zR", config.sidebar_keymaps.expand_all)
     assert.equals("?", config.sidebar_keymaps.help)
+    assert.is_nil(config.navigation.recursive)
+    assert.is_nil(config.sidebar_keymaps.run_action)
+    assert.is_nil(config.sidebar_keymaps.show_callers)
+    assert.is_nil(config.sidebar_keymaps.show_callees)
+    assert.is_nil(config.sidebar_keymaps.refresh_callers)
+    assert.is_nil(config.sidebar_keymaps.refresh_callees)
+    assert.is_nil(config.sidebar_keymaps.build_callers)
+    assert.is_nil(config.sidebar_keymaps.build_callees)
+    assert.is_nil(config.sidebar_keymaps.cancel_build)
 
     assert.equals("filename", Config.resolve({ sidebar = { path = "filename" } }).sidebar.path)
     assert.is_true(Config.resolve({ storage = { autosave = true } }).storage.autosave)
@@ -50,6 +55,18 @@ describe("Voyager configuration", function()
     assert.has_error(function()
       Config.resolve({ storage = { autosave = "yes" } })
     end, "voyager.setup: storage.autosave must be a boolean")
+  end)
+
+  it("resolves and validates automatic-tree concurrency", function()
+    assert.equals(16, Config.resolve({ navigation = { concurrency = 16 } }).navigation.concurrency)
+    for _, value in ipairs({ 0, 17, 1.5, "4" }) do
+      assert.has_error(function()
+        Config.resolve({ navigation = { concurrency = value } })
+      end, "voyager.setup: navigation.concurrency must be an integer from 1 through 16")
+    end
+    assert.has_error(function()
+      Config.resolve({ navigation = { recursive = {} } })
+    end, "voyager.setup: navigation.recursive is not a supported option")
   end)
 
   it("resolves icon presets and merges overrides", function()
@@ -134,9 +151,20 @@ describe("Voyager configuration", function()
     assert.has_error(function()
       Config.resolve({ sidebar_keymaps = { note = "s", save = "s" } })
     end, "voyager.setup: sidebar_keymaps contains duplicate normalized LHS 's'")
-    assert.has_error(function()
-      Config.resolve({ sidebar_keymaps = { show_callers = "d" } })
-    end, "voyager.setup: sidebar_keymaps contains duplicate normalized LHS 'd'")
+    for _, removed in ipairs({
+      "run_action",
+      "show_callers",
+      "show_callees",
+      "refresh_callers",
+      "refresh_callees",
+      "build_callers",
+      "build_callees",
+      "cancel_build",
+    }) do
+      assert.has_error(function()
+        Config.resolve({ sidebar_keymaps = { [removed] = "g?" } })
+      end, "voyager.setup: sidebar_keymaps." .. removed .. " is not a supported option")
+    end
     assert.has_error(function()
       Config.resolve({ sidebar = { icons = "fancy" } })
     end, "voyager.setup: sidebar.icons must be true, false, or a table of icon overrides")

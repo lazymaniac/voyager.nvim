@@ -20,6 +20,7 @@ describe("Voyager public interface", function()
   local original_runtime
   local original_session
   local original_voyager
+  local original_notify
   local env
 
   before_each(function()
@@ -27,12 +28,17 @@ describe("Voyager public interface", function()
     original_runtime = package.loaded["voyager.runtime"]
     original_session = package.loaded["voyager.session"]
     original_voyager = package.loaded["voyager"]
+    original_notify = vim.notify
     env = {
       calls = {},
       config_snapshots = {},
       native_calls = 0,
+      notifications = {},
       runtime = {},
     }
+    vim.notify = function(message, level)
+      table.insert(env.notifications, { message = message, level = level })
+    end
 
     package.loaded["voyager.runtime"] = {
       native = function()
@@ -124,14 +130,17 @@ describe("Voyager public interface", function()
     package.loaded["voyager"] = original_voyager
     package.loaded["voyager.runtime"] = original_runtime
     package.loaded["voyager.session"] = original_session
+    vim.notify = original_notify
   end)
 
-  it("registers seven zero-argument commands without global mappings", function()
+  it("registers commands without global mappings", function()
     local mappings_before = vim.api.nvim_get_keymap("n")
     vim.cmd("runtime plugin/voyager.lua")
     for _, command in ipairs(command_names) do
       assert.equals(2, vim.fn.exists(":" .. command))
     end
+    assert.equals(0, vim.fn.exists(":VoyagerBuild"))
+    assert.equals(0, vim.fn.exists(":VoyagerBuildCancel"))
     assert.same(mappings_before, vim.api.nvim_get_keymap("n"))
 
     vim.cmd("VoyagerOpen")
@@ -150,6 +159,13 @@ describe("Voyager public interface", function()
     assert.equals("command", env.close_source)
     assert.equals(1, env.native_calls)
     assert.equals(1, env.runtime_calls)
+  end)
+
+  it("does not expose manual build functions", function()
+    local Voyager = require("voyager")
+    assert.is_nil(Voyager.build)
+    assert.is_nil(Voyager.cancel_build)
+    assert.equals(0, env.native_calls)
   end)
 
   it("reports statusline data only while a session is active", function()

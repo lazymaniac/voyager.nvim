@@ -41,6 +41,31 @@ local function clean_location(location)
   return copy
 end
 
+local function location_identity(location)
+  return Locator.location_key(location)
+end
+
+function Flow:_replace_location_identity(node, previous_identity)
+  local identity = location_identity(node.location)
+  if identity == previous_identity then
+    local existing_id = self._identity_index[identity]
+    if existing_id and existing_id ~= node.id then
+      return false
+    end
+    self._identity_index[identity] = node.id
+    return true
+  end
+  local existing_id = self._identity_index[identity]
+  if existing_id and existing_id ~= node.id then
+    return false
+  end
+  if self._identity_index[previous_identity] == node.id then
+    self._identity_index[previous_identity] = nil
+  end
+  self._identity_index[identity] = node.id
+  return true
+end
+
 function Flow:_reindex()
   self._index = {}
   self._parents = {}
@@ -51,7 +76,7 @@ function Flow:_reindex()
     self._index[node.id] = node
     self._parents[node.id] = parent_id
     if node.kind == "location" then
-      local identity = Locator.location_key(node.location)
+      local identity = location_identity(node.location)
       assert(not self._identity_index[identity], "duplicate Voyager location identity: " .. identity)
       self._identity_index[identity] = node.id
     else
@@ -333,30 +358,44 @@ function Flow:apply_symbol(node_id, symbol, symbol_kind, query_anchor)
   if node.id ~= self.root.id and node.location.query_anchor ~= nil then
     return false
   end
+  local previous_identity = location_identity(node.location)
+  local updated = vim.deepcopy(node.location)
   local changed = false
-  local touched = self._journal.metadata[node_id] or {}
+  local touched = vim.deepcopy(self._journal.metadata[node_id] or {})
   -- A semantic display name and its LSP subject anchor are one update. The
   -- root participates in flow identity, while an existing protocol/semantic
   -- anchor is already authoritative and is left untouched.
   if node.id ~= self.root.id and type(symbol) == "string" and symbol ~= "" and type(query_anchor) == "table" then
-    if node.location.symbol ~= symbol then
-      node.location.symbol = symbol
+    if updated.symbol ~= symbol then
+      updated.symbol = symbol
       touched.symbol = true
       changed = true
     end
-    if not vim.deep_equal(node.location.query_anchor, query_anchor) then
-      node.location.query_anchor = vim.deepcopy(query_anchor)
+    if not vim.deep_equal(updated.query_anchor, query_anchor) then
+      updated.query_anchor = vim.deepcopy(query_anchor)
       touched.query_anchor = true
       touched.symbol = true
       changed = true
     end
   end
-  if type(symbol_kind) == "string" and symbol_kind ~= "" and node.location.symbol_kind ~= symbol_kind then
-    node.location.symbol_kind = symbol_kind
+  if type(symbol_kind) == "string" and symbol_kind ~= "" and updated.symbol_kind ~= symbol_kind then
+    updated.symbol_kind = symbol_kind
     touched.symbol = true
     changed = true
   end
   if changed then
+    local updated_identity = location_identity(updated)
+    local existing_id = self._identity_index[updated_identity]
+    if updated_identity ~= previous_identity and existing_id and existing_id ~= node.id then
+      return false
+    end
+    node.location.symbol = updated.symbol
+    node.location.symbol_kind = updated.symbol_kind
+    node.location.query_anchor = vim.deepcopy(updated.query_anchor)
+    assert(self:_replace_location_identity(node, previous_identity), "Voyager symbol enrichment duplicates a location")
+    if updated_identity ~= previous_identity then
+      touched.previous_identity = previous_identity
+    end
     self._journal.metadata[node_id] = touched
     self._dirty = true
   end
@@ -517,6 +556,8 @@ function Flow:delete(node_id)
 
   local deleted_parent_id = parent.id
   local deleted_key
+  local deleted_previous_key
+  local deleted_by_identity = false
   local surviving_location_id
   if node.kind == "action" then
     assert(remove_child(parent.actions, node_id))
@@ -525,12 +566,15 @@ function Flow:delete(node_id)
   else
     assert(remove_child(parent.results, node_id))
     deleted_key = Locator.location_key(node.location)
+    deleted_previous_key = (self._journal.metadata[node.id] or {}).previous_identity
+    deleted_by_identity = true
     surviving_location_id = assert(self._parents[parent.id], "Voyager result has no owning location")
     if parent.method == archive_method and #parent.results == 0 then
       local archive_owner = assert(self:location(surviving_location_id), "Voyager archive has no owning location")
       assert(remove_child(archive_owner.actions, parent.id))
       deleted_parent_id = archive_owner.id
       deleted_key = archive_method
+      deleted_by_identity = false
     end
   end
 
@@ -538,6 +582,9 @@ function Flow:delete(node_id)
   -- save-merge can skip re-importing the branch from the on-disk document.
   local deleted = self._journal.deleted[deleted_parent_id] or {}
   deleted[deleted_key] = true
+  if deleted_by_identity and type(deleted_previous_key) == "string" then
+    deleted[deleted_previous_key] = true
+  end
   self._journal.deleted[deleted_parent_id] = deleted
 
   local subtree = collect_subtree_ids(node, {})
@@ -607,6 +654,7 @@ function Flow:_commit_direct(input)
   local returned_targets = {}
 
   local function refresh_metadata(node, location)
+    local previous_identity = location_identity(node.location)
     local touched = self._journal.metadata[node.id] or {}
     local metadata_changed = false
     -- The root symbol is part of the immutable flow identity. Other display
@@ -644,6 +692,13 @@ function Flow:_commit_direct(input)
       metadata_changed = true
     end
     if metadata_changed then
+      local refreshed_identity = location_identity(node.location)
+      assert(self:_replace_location_identity(node, previous_identity), "Voyager metadata refresh duplicates a location")
+      -- Exact lookup means identity-bearing anchor fields are already equal;
+      -- keep this migration record defensive if the identity shape expands.
+      if refreshed_identity ~= previous_identity then
+        touched.previous_identity = previous_identity
+      end
       self._journal.metadata[node.id] = touched
       changed = true
     end
@@ -654,8 +709,10 @@ function Flow:_commit_direct(input)
   -- This preserves the storage tree but makes reverse and overlapping routes
   -- complete rather than silently dropping already-known destinations.
   local node_id_by_identity = {}
+  local canonical_identities = {}
+  local ambiguous_aliases = {}
   for _, location in ipairs(input.locations or {}) do
-    local identity = location.identity or Locator.location_key(location)
+    local identity = location_identity(location)
     local target_id = self._identity_index[identity]
     local target = target_id and self:location(target_id) or nil
     if not target then
@@ -692,6 +749,22 @@ function Flow:_commit_direct(input)
       changed = true
     end
     node_id_by_identity[identity] = target_id
+    canonical_identities[identity] = true
+    local supplied_identity = type(location.identity) == "string" and location.identity or nil
+    if
+      supplied_identity
+      and supplied_identity ~= identity
+      and not canonical_identities[supplied_identity]
+      and not ambiguous_aliases[supplied_identity]
+    then
+      local aliased_id = node_id_by_identity[supplied_identity]
+      if aliased_id and aliased_id ~= target_id then
+        node_id_by_identity[supplied_identity] = nil
+        ambiguous_aliases[supplied_identity] = true
+      else
+        node_id_by_identity[supplied_identity] = target_id
+      end
+    end
   end
 
   if input.replace_targets == true and not vim.deep_equal(action.target_ids, returned_target_ids) then
@@ -717,7 +790,7 @@ function Flow:commit_navigation(input)
 
   local staged = setmetatable(vim.deepcopy(self), Flow)
   staged:_reindex()
-  local identity = input.manual_location.identity or Locator.location_key(input.manual_location)
+  local identity = location_identity(input.manual_location)
   local effective_origin_id = staged._identity_index[identity]
   local manual_changed = false
   if not effective_origin_id then
@@ -869,17 +942,37 @@ function M.merge(latest_document, active_flow, active_journal, next_id)
   local function merge_result_children(latest_results, active_results, active_action_id)
     local result = {}
     local active_by_identity = {}
+    local active_by_previous_identity = {}
+    local ambiguous_previous_identities = {}
     local matched = {}
     for _, location in ipairs(active_results) do
       active_by_identity[Locator.location_key(location.location)] = location
+      local metadata_touch = active_journal.metadata[location.id] or {}
+      local previous_identity = metadata_touch.previous_identity
+      if type(previous_identity) == "string" and not ambiguous_previous_identities[previous_identity] then
+        local existing = active_by_previous_identity[previous_identity]
+        if existing and existing ~= location then
+          active_by_previous_identity[previous_identity] = nil
+          ambiguous_previous_identities[previous_identity] = true
+        else
+          active_by_previous_identity[previous_identity] = location
+        end
+      end
     end
     for _, latest_location in ipairs(latest_results) do
       local identity = Locator.location_key(latest_location.location)
       local active_location = active_by_identity[identity]
+      local deleted = was_deleted(active_action_id, identity)
+      if not active_location and not deleted then
+        local transitioned = active_by_previous_identity[identity]
+        if transitioned and not matched[transitioned] then
+          active_location = transitioned
+        end
+      end
       if active_location then
         matched[active_location] = true
         table.insert(result, merge_location(latest_location, active_location))
-      elseif not was_deleted(active_action_id, identity) then
+      elseif not deleted then
         table.insert(result, import_node(latest_location))
       end
     end

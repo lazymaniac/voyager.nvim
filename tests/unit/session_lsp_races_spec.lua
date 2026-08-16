@@ -234,7 +234,11 @@ describe("Voyager asynchronous navigation orchestration", function()
     deps.windows[deps.origin_win].bufnr = 51
     deps.windows[deps.origin_win].cursor = { 5, 0 }
     deps:trigger("CursorMoved")
-    assert.equals(root_id, session:state().flow.current_node_id)
+    assert.equals(
+      claim.targets[1].node_id,
+      session:state().flow.current_node_id,
+      "ordinary active-symbol tracking resumes after the claim is cleared"
+    )
   end)
 
   it("settles every logical status exactly once", function()

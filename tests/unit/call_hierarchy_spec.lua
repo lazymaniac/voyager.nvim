@@ -27,6 +27,12 @@ local function new_harness(opts)
   end, opts.clients or {})
   local action = Actions.get(opts.action or "incoming_calls")
   local normalizer = {
+    is_project_uri = function(_, uri)
+      if opts.is_project_uri then
+        return opts.is_project_uri(uri)
+      end
+      return type(uri) == "string" and uri:sub(1, 16) == "file:///project/"
+    end,
     call_sites = function(_, direction, client, selected, calls)
       table.insert(normalization_calls, {
         direction = direction,
@@ -58,6 +64,7 @@ local function new_harness(opts)
       bufnr = 3,
       winid = 8,
       timeout_ms = 1000,
+      automatic = opts.automatic == true,
     },
     clients = clients,
     request_stage = RequestGroup.start,
@@ -145,6 +152,36 @@ describe("Voyager call hierarchy", function()
     assert.equals("outgoing", env.normalization_calls[1].direction)
   end)
 
+  it("skips external prepared items and follows the sole project item", function()
+    local client = FakeClient.new({ id = 3, name = "only" })
+    local env = new_harness({ clients = { client }, action = "outgoing_calls" })
+    local internal = prepared("origin")
+    local external = prepared("vendor", "file:///vendor/vendor.lua")
+
+    client:reply_prepare(nil, { external, internal })
+
+    assert.equals(0, #env.select_calls)
+    assert.same(internal, client.requests[2].params.item)
+    client:reply_followup(nil, {})
+    assert.equals("empty", env.completions[1].status)
+  end)
+
+  it("classifies all-external prepared items as an empty hierarchy", function()
+    local client = FakeClient.new({ id = 3, name = "only" })
+    local env = new_harness({ clients = { client } })
+
+    client:reply_prepare(nil, {
+      prepared("vendor", "file:///vendor/vendor.lua"),
+      prepared("class", "jdt://contents/Vendor.class"),
+    })
+
+    assert.equals(1, #client.methods)
+    assert.equals(0, #env.select_calls)
+    assert.equals(1, #env.completions)
+    assert.equals("empty", env.completions[1].status)
+    assert.same({}, env.completions[1].failures)
+  end)
+
   it("opens a timer-free picker for multiple immutable prepared tuples", function()
     local client = FakeClient.new({ id = 1, name = "alpha" })
     local env = new_harness({ clients = { client } })
@@ -173,6 +210,19 @@ describe("Voyager call hierarchy", function()
     assert.equals(2, #env.timers.created)
     assert.equals(1000, env.timers.created[2].timeout_ms)
     assert.same(second, client.requests[2].params.item)
+    client:reply_followup(nil, {})
+    assert.equals("empty", env.completions[1].status)
+  end)
+
+  it("uses the first project item without prompting during automatic creation", function()
+    local client = FakeClient.new({ id = 1, name = "alpha" })
+    local env = new_harness({ clients = { client }, automatic = true })
+    local first = prepared("first")
+    local second = prepared("second")
+    client:reply_prepare(nil, { first, second })
+
+    assert.equals(0, #env.select_calls)
+    assert.same(first, client.requests[2].params.item)
     client:reply_followup(nil, {})
     assert.equals("empty", env.completions[1].status)
   end)

@@ -5,12 +5,12 @@ local Locator = require("voyager.locator")
 local Schema = require("voyager.schema")
 local Store = require("voyager.store")
 
-local function new_store(fs, schema)
+local function new_store(fs, schema, project_root)
   local runtime = fs:runtime()
   return Store.new({
     runtime = runtime,
     schema = schema or Schema,
-    locator = Locator.new(runtime, "/project"),
+    locator = Locator.new(runtime, project_root or "/project"),
     flow = Flow,
   })
 end
@@ -126,6 +126,21 @@ describe("Voyager storage", function()
         cwd = "/repo",
         expected = "/repo/$HOME",
       },
+      {
+        name = "filesystem root LSP workspace falls back to the containing cwd",
+        file = "/repo/lua/main.lua",
+        clients = { { config = { root_dir = "/" } } },
+        cwd = "/repo",
+        expected = "/repo",
+      },
+      {
+        name = "filesystem-wide discovery falls back to the file directory",
+        file = "/repo/lua/main.lua",
+        clients = { { config = { root_dir = "/" } } },
+        git_root = "/",
+        cwd = "/",
+        expected = "/repo/lua",
+      },
     }
 
     for _, case in ipairs(cases) do
@@ -157,6 +172,7 @@ describe("Voyager storage", function()
     })
     local store = new_store(fs, collision_schema)
     assert.equals("/project/.voyager/flows/" .. flow.flow_id .. ".json", store:path_for(flow))
+    assert.equals("/.voyager/flows/" .. flow.flow_id .. ".json", new_store(fs, nil, "/"):path_for(flow))
 
     local path8 = store:path_for(flow)
     fs.files[path8] = "collision-8"

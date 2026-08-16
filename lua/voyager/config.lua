@@ -133,15 +133,13 @@ local defaults = {
     indent = 1,
     test_paths = default_test_paths,
   },
-  navigation = { timeout_ms = 10000 },
+  navigation = {
+    timeout_ms = 10000,
+    concurrency = 4,
+  },
   sidebar_keymaps = {
     jump_or_toggle = "<CR>",
     jump_stay = "o",
-    run_action = "a",
-    show_callers = "u",
-    show_callees = "d",
-    refresh_callers = "U",
-    refresh_callees = "D",
     delete = "x",
     preview = "p",
     note = "n",
@@ -167,15 +165,10 @@ local known = {
     indent = true,
     test_paths = true,
   },
-  navigation = { timeout_ms = true },
+  navigation = { timeout_ms = true, concurrency = true },
   sidebar_keymaps = {
     jump_or_toggle = true,
     jump_stay = true,
-    run_action = true,
-    show_callers = true,
-    show_callees = true,
-    refresh_callers = true,
-    refresh_callees = true,
     delete = true,
     preview = true,
     note = true,
@@ -239,7 +232,6 @@ function M.resolve(opts)
     end
     reject_unknown(section, supplied, known[section])
   end
-
   local result = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts)
   for key, value in pairs(opts.sidebar_keymaps or {}) do
     result.sidebar_keymaps[key] = vim.deepcopy(value)
@@ -287,6 +279,10 @@ function M.resolve(opts)
   local timeout = result.navigation.timeout_ms
   if type(timeout) ~= "number" or timeout % 1 ~= 0 or timeout < 100 or timeout > 120000 then
     fail("navigation.timeout_ms", "must be an integer from 100 through 120000")
+  end
+  local concurrency = result.navigation.concurrency
+  if type(concurrency) ~= "number" or concurrency % 1 ~= 0 or concurrency < 1 or concurrency > 16 then
+    fail("navigation.concurrency", "must be an integer from 1 through 16")
   end
   if not path_styles[result.sidebar.path] then
     fail("sidebar.path", "must be 'relative', 'filename', or 'shortened'")

@@ -12,7 +12,7 @@ PLENARY_REV := 50012918b2fc8357b87cff2a7f7f0446e47da174
 NUI_REV := f535005e6ad1016383f24e39559833759453564e
 PANVIMDOC_REV := 662fb20304d20c539fb48a0bda628f5165507de7
 STYLUA_VERSION := 2.5.2
-DOC_DATE := 2026 August 01
+DOC_DATE := 2026 August 16
 LUAROCKS_VERSION := 3.13.0
 ROCKSPEC := voyager.nvim-scm-1.rockspec
 ROCK_BUILD_OUTPUT := $(ROOT)/voyager.nvim-scm-1.all.rock
@@ -76,7 +76,7 @@ format-check: check-stylua
 
 docs: check-deps
 	@$(CONTAINER) build -t voyager-panvimdoc:4.0.1 $(PANVIMDOC)
-	@$(CONTAINER) run --rm -v $(ROOT):/work -w /work voyager-panvimdoc:4.0.1 --project-name voyager --input-file README.md --vim-version "Neovim 0.12.4" --toc true --description "Persistent flat LSP relationship flows" --title-date-pattern "$(DOC_DATE)" --dedup-subheadings true --demojify true --treesitter true --ignore-rawblocks true --doc-mapping false --doc-mapping-project-name true --shift-heading-level-by 0 --increment-heading-level-by 0
+	@$(CONTAINER) run --rm -v $(ROOT):/work -w /work voyager-panvimdoc:4.0.1 --project-name voyager --input-file README.md --vim-version "Neovim 0.12.4" --toc true --description "Automatic project-local call trees" --title-date-pattern "$(DOC_DATE)" --dedup-subheadings true --demojify true --treesitter true --ignore-rawblocks true --doc-mapping false --doc-mapping-project-name true --shift-heading-level-by 0 --increment-heading-level-by 0
 
 help-check:
 	@$(MAKE) docs

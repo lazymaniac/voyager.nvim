@@ -1,5 +1,6 @@
 local Locator = require("voyager.locator")
 local Actions = require("voyager.lsp.actions")
+local Recursive = require("voyager.recursive")
 
 local M = {}
 local Session = {}
@@ -34,12 +35,23 @@ local function trim_root(path)
 end
 
 local function contains(path, root)
+  if root == "/" then
+    return path:sub(1, 1) == "/"
+  end
   return path == root or path:sub(1, #root + 1) == root .. "/"
 end
 
 local function realpath(runtime, path)
   local normalized = normalize(path)
   return trim_root(normalize(runtime.fs_realpath(normalized) or normalized))
+end
+
+local function is_filesystem_root(path)
+  return path == "/" or path:match("^%a:$") ~= nil
+end
+
+local function project_path(root, relative)
+  return root == "/" and ("/" .. relative) or (root .. "/" .. relative)
 end
 
 local function project_root(runtime, bufnr)
@@ -57,15 +69,18 @@ local function project_root(runtime, bufnr)
   table.sort(roots, function(left, right)
     return #left > #right
   end)
-  if roots[1] then
+  if roots[1] and not is_filesystem_root(roots[1]) then
     return roots[1]
   end
   local git_root = runtime.find_root(file, ".git")
   if git_root then
-    return realpath(runtime, git_root)
+    git_root = realpath(runtime, git_root)
+    if not is_filesystem_root(git_root) then
+      return git_root
+    end
   end
   local cwd = realpath(runtime, runtime.cwd())
-  if contains(file, cwd) then
+  if not is_filesystem_root(cwd) and contains(file, cwd) then
     return cwd
   end
   return realpath(runtime, runtime.dirname(file))
@@ -84,7 +99,6 @@ function M.new(opts)
     _symbols_factory = opts.symbols_factory,
     _ui = opts.ui,
     _generation = 0,
-    _recording = 0,
     _interaction_counter = 0,
     _interaction_tokens = {},
   }, Session)
@@ -122,7 +136,7 @@ function Session:_buffer_in_flow(state, name)
       end
       if
         locator.kind == "project"
-        and realpath(self._runtime, state.project_root .. "/" .. locator.path) == realpath(self._runtime, name)
+        and realpath(self._runtime, project_path(state.project_root, locator.path)) == realpath(self._runtime, name)
       then
         return true
       end
@@ -181,15 +195,18 @@ function Session:_stage_state(opts)
     directional_request_tokens = {},
     invalidated_request_tokens = {},
     relations = {},
+    graph_build = nil,
+    graph_build_token = 0,
     request_token = 0,
     interaction_token = 0,
     interaction_tokens = {},
     tracking_token = 0,
     destination_claim = nil,
     expanded_test_groups = {},
-    observer_pending = {},
     current_claim_token = 0,
     manual_claim_token = 0,
+    symbol_enrichments = {},
+    symbol_enrichment_attempted = {},
     source_windows = vim.deepcopy(opts.source_windows or { opts.origin_win }),
     origin_buf = opts.origin_buf,
     origin_win = opts.origin_win,
@@ -207,7 +224,7 @@ function Session:_uri_for_locator(state, locator)
   if locator.kind == "uri" then
     return locator.uri
   end
-  local path = locator.kind == "project" and (state.project_root .. "/" .. locator.path) or locator.path
+  local path = locator.kind == "project" and project_path(state.project_root, locator.path) or locator.path
   local ok, uri = pcall(self._runtime.uri_from_fname, path)
   return ok and uri or nil
 end
@@ -224,8 +241,14 @@ function Session:_enrich_nodes(state, generation, flow_id, items)
   for _, item in ipairs(items) do
     local node_id = type(item) == "table" and item.node_id or item
     local node = type(node_id) == "string" and state.flow:location(node_id) or nil
-    if node and node.location.query_anchor == nil and not seen[node.id] then
+    if
+      node
+      and node.location.query_anchor == nil
+      and not seen[node.id]
+      and state.symbol_enrichments[node.id] == nil
+    then
       seen[node.id] = true
+      state.symbol_enrichment_attempted[node.id] = true
       local uri = self:_uri_for_locator(state, node.location.locator)
       if uri then
         table.insert(requests, { node_id = node.id, uri = uri, location = vim.deepcopy(node.location) })
@@ -235,14 +258,26 @@ function Session:_enrich_nodes(state, generation, flow_id, items)
   if #requests == 0 then
     return
   end
-  pcall(state.symbols.resolve, state.symbols, requests, {
-    timeout_ms = state.config.navigation.timeout_ms,
-  }, function(results)
-    if not self:_valid_state(state, generation) or state.flow.flow_id ~= flow_id then
+
+  for _, request in ipairs(requests) do
+    state.symbol_enrichments[request.node_id] = { waiters = {} }
+  end
+  local settled = false
+  local function finish(results)
+    if settled then
       return
     end
+    settled = true
+    if not self:_valid_state(state, generation) or not state.flow or state.flow.flow_id ~= flow_id then
+      return
+    end
+    results = type(results) == "table" and results or {}
     local changed = false
-    for node_id, value in pairs(results or {}) do
+    local waiters = {}
+    for _, request in ipairs(requests) do
+      local node_id = request.node_id
+      local entry = state.symbol_enrichments[node_id]
+      local value = type(results[node_id]) == "table" and results[node_id] or {}
       local node = state.flow:location(node_id)
       local relation_active = false
       for _, action_name in ipairs({ "incoming_calls", "outgoing_calls" }) do
@@ -265,19 +300,79 @@ function Session:_enrich_nodes(state, generation, flow_id, items)
       then
         changed = true
       end
+      state.symbol_enrichments[node_id] = nil
+      for _, waiter in ipairs((entry and entry.waiters) or {}) do
+        table.insert(waiters, waiter)
+      end
     end
     if changed then
       self:_render(state)
     end
-  end)
+    for _, waiter in ipairs(waiters) do
+      local called, waiter_error = pcall(waiter)
+      if not called then
+        self._ui.notify("Voyager: symbol waiter failed: " .. tostring(waiter_error), vim.log.levels.ERROR)
+      end
+    end
+  end
+
+  local called = pcall(state.symbols.resolve, state.symbols, requests, {
+    timeout_ms = state.config.navigation.timeout_ms,
+  }, finish)
+  if not called then
+    finish({})
+  end
+end
+
+function Session:_await_symbol_enrichment(state, node_id, callback)
+  local node = state.flow and state.flow:location(node_id) or nil
+  if not node or node.id == state.flow.root.id or node.location.query_anchor ~= nil or not state.symbols then
+    callback()
+    return false
+  end
+
+  local pending = state.symbol_enrichments[node_id]
+  if pending then
+    table.insert(pending.waiters, callback)
+    return true
+  end
+  if state.symbol_enrichment_attempted[node_id] then
+    callback()
+    return false
+  end
+
+  self:_enrich_nodes(state, state.generation, state.flow.flow_id, { node_id })
+  pending = state.symbol_enrichments[node_id]
+  if not pending then
+    callback()
+    return false
+  end
+  table.insert(pending.waiters, callback)
+  return true
 end
 
 function Session:_render(state)
+  local graph_build
+  if state.graph_build then
+    graph_build = {
+      seed_id = state.graph_build.seed_id,
+      state = state.graph_build.state,
+      processed = state.graph_build.processed,
+      scheduled = state.graph_build.scheduled,
+      depth = state.graph_build.depth,
+      active = state.graph_build.active,
+      issues = state.graph_build.issues,
+      cancelled = state.graph_build.cancelled,
+      message = state.graph_build.message,
+    }
+  end
   state.sidebar:render(state.flow, {
     dirty = state.flow ~= nil and state.flow:is_dirty() or false,
     request_count = state.request_count,
+    center_current = state.graph_build ~= nil and state.graph_build.state == "running",
     expanded_test_groups = state.expanded_test_groups,
     relations = state.relations,
+    graph_build = graph_build,
   })
 end
 
@@ -314,48 +409,18 @@ function Session:_notify_outcome(outcome)
   end
 end
 
-function Session:_observe_lsp_request(state, args)
-  if self._recording > 0 then
-    return
-  end
-  local data = type(args.data) == "table" and args.data or {}
-  local request = type(data.request) == "table" and data.request or nil
-  if not request or request.type ~= "pending" then
-    return
-  end
-  local action_name, action = Actions.by_method(request.method)
-  if not action_name or action.internal == true then
-    return
-  end
-  local runtime = self._runtime
-  local winid = runtime.current_win()
-  if request.bufnr ~= runtime.current_buf() or not self:_eligible_window(state, winid) then
-    return
-  end
-  if state.observer_pending[action_name] then
-    return
-  end
-  state.observer_pending[action_name] = true
-  runtime.schedule(function()
-    if self._state == state then
-      state.observer_pending[action_name] = nil
-    end
-  end)
-  local recorded, record_error = pcall(self.run_action, self, action_name)
-  if not recorded then
-    self._ui.notify("Voyager: could not record " .. action_name .. ": " .. tostring(record_error), vim.log.levels.ERROR)
-  end
-end
-
 function Session:_valid_state(state, generation)
   return self._state == state and self:is_active() and state.generation == generation
 end
 
 function Session:_remount_for_event(state)
-  state.sidebar:remount({
+  local mounted = state.sidebar:remount({
     tabpage = self._runtime.current_tabpage(),
     focus = false,
   })
+  if mounted then
+    self:_render(state)
+  end
 end
 
 function Session:_register_autocmds(state)
@@ -370,24 +435,26 @@ function Session:_register_autocmds(state)
     end
   end
 
-  runtime.create_autocmd("LspRequest", {
-    group = state.autocmd_group,
-    callback = guarded(function(args)
-      self:_observe_lsp_request(state, args)
-    end),
-  })
+  local function track_source_cursor()
+    local winid = runtime.current_win()
+    self:_record_source_window(state, winid)
+    local claimed = self:_check_destination_claim(state, winid)
+    if not claimed and state.destination_claim == nil then
+      self:_track_current_symbol(state, winid)
+    end
+  end
+
   runtime.create_autocmd("WinEnter", {
     group = state.autocmd_group,
-    callback = guarded(function()
-      local winid = runtime.current_win()
-      self:_record_source_window(state, winid)
-    end),
+    callback = guarded(track_source_cursor),
+  })
+  runtime.create_autocmd("BufEnter", {
+    group = state.autocmd_group,
+    callback = guarded(track_source_cursor),
   })
   runtime.create_autocmd("CursorMoved", {
     group = state.autocmd_group,
-    callback = guarded(function()
-      self:_check_destination_claim(state, runtime.current_win())
-    end),
+    callback = guarded(track_source_cursor),
   })
   runtime.create_autocmd("WinClosed", {
     group = state.autocmd_group,
@@ -443,8 +510,8 @@ function Session:open()
   local root_dir = project_root(runtime, origin_buf)
   local locator = self._locator_factory(root_dir, config.storage.resolve_uri)
   local store = self._store_factory(locator)
-  -- The flow (and its root record) is created lazily by the first observed
-  -- LSP navigation, so opening only stages an empty session.
+  -- Publish the staged session only after its popup mounts; root capture then
+  -- either starts automatic creation or tears the staged session down.
   local generation = math.max(self._generation, self._state and self._state.generation or 0) + 1
   local staged = self:_stage_state({
     generation = generation,
@@ -468,7 +535,11 @@ function Session:open()
   self._generation = generation
   self._state = staged
   self:_register_autocmds(staged)
-  self:_render(staged)
+  if not self:_create_flow(staged, origin_buf, origin_win) then
+    self:_teardown("open")
+    return nil
+  end
+  self:_start_graph_build(staged, staged.flow.root.id)
   return true
 end
 
@@ -489,6 +560,7 @@ function Session:focus()
     self._ui.notify("Voyager: " .. tostring(reason), vim.log.levels.WARN)
     return nil
   end
+  self:_render(state)
   return true
 end
 
@@ -598,16 +670,22 @@ function Session:_commit_outcome(state, context, request_token, outcome)
   then
     state.flow:set_current(commit.effective_origin_id)
   end
+  if state.graph_build then
+    self:_guard_graph_relations(state)
+  end
   return { commit = commit, tagged_items = tagged_items }
 end
 
--- The starting record is captured from the origin of the first navigation,
--- not from the cursor at :VoyagerOpen time.
+-- Capture the graph root from the symbol under the cursor at :VoyagerOpen.
 function Session:_create_flow(state, bufnr, winid)
   local runtime = self._runtime
   local root, root_error = Locator.capture_root(bufnr, winid, state.project_root, runtime)
   if not root then
     self._ui.notify("Voyager: could not capture root: " .. tostring(root_error), vim.log.levels.ERROR)
+    return nil
+  end
+  if not self:_is_project_location(state, root) then
+    self._ui.notify("Voyager: the current symbol is outside project files", vim.log.levels.WARN)
     return nil
   end
   local nonce, nonce_error = runtime.random(16)
@@ -823,6 +901,27 @@ function Session:run_action(action_name)
   return handle
 end
 
+function Session:_reveal_current_path(state, node_id)
+  local path = state.flow:path_ids(node_id)
+  for index = 1, #path - 1 do
+    local origin = state.flow:location(path[index])
+    local target_id = path[index + 1]
+    if origin then
+      for _, action in ipairs(origin.actions or {}) do
+        local contains_target = false
+        for _, candidate in ipairs(state.flow:action_target_ids(action)) do
+          contains_target = contains_target or candidate == target_id
+        end
+        if contains_target then
+          state.flow:set_collapsed(action.id, false)
+          state.expanded_test_groups[action.id] = true
+          break
+        end
+      end
+    end
+  end
+end
+
 function Session:_make_current(state, node_id)
   if not state.flow or not state.flow:location(node_id) then
     return false
@@ -830,6 +929,7 @@ function Session:_make_current(state, node_id)
   if not state.flow:set_current(node_id) then
     return false
   end
+  self:_reveal_current_path(state, node_id)
   state.current_claim_token = 0
   state.manual_claim_token = 0
   self:_render(state)
@@ -881,7 +981,7 @@ end
 function Session:_check_destination_claim(state, winid)
   local claim = state.destination_claim
   if not claim then
-    return
+    return false
   end
   if
     claim.generation ~= state.generation
@@ -889,10 +989,10 @@ function Session:_check_destination_claim(state, winid)
     or claim.request_token ~= state.tracking_token
   then
     state.destination_claim = nil
-    return
+    return false
   end
   if not self:_eligible_window(state, winid) then
-    return
+    return false
   end
   local runtime = self._runtime
   local bufnr = runtime.win_buf(winid)
@@ -932,7 +1032,75 @@ function Session:_check_destination_claim(state, winid)
   local chosen = exact or contained or (#on_line == 1 and on_line[1] or nil)
   if chosen then
     self:_make_current(state, chosen.node_id)
+    return true
   end
+  return false
+end
+
+local function locator_path(state, runtime, locator)
+  if type(locator) ~= "table" then
+    return nil
+  end
+  if locator.kind == "project" and type(locator.path) == "string" then
+    local separator = state.project_root == "/" and "" or "/"
+    return realpath(runtime, state.project_root .. separator .. locator.path)
+  end
+  if locator.kind == "absolute" and type(locator.path) == "string" then
+    return realpath(runtime, locator.path)
+  end
+  if locator.kind == "uri" and type(locator.uri) == "string" then
+    return locator.uri
+  end
+end
+
+function Session:_track_current_symbol(state, winid)
+  if not state.flow or not self:_eligible_window(state, winid) then
+    return false
+  end
+  local runtime = self._runtime
+  local bufnr = runtime.win_buf(winid)
+  local buffer_name = runtime.buffer_name(bufnr)
+  local buffer_path = realpath(runtime, buffer_name)
+  local cursor = runtime.cursor(winid)
+  local direct_matches = {}
+  local semantic_matches = {}
+  local display_matches = {}
+
+  local function matches_cursor(candidate)
+    if type(candidate) ~= "table" or type(candidate.locator) ~= "table" or type(candidate.range) ~= "table" then
+      return false
+    end
+    local path = locator_path(state, runtime, candidate.locator)
+    local same_buffer = candidate.locator.kind == "uri" and path == buffer_name or path == buffer_path
+    return same_buffer and Locator.contains(candidate, candidate.locator, cursor)
+  end
+
+  for _, node in ipairs(state.flow:dfs()) do
+    if node.kind == "location" then
+      local location = node.location
+      if matches_cursor(location.query_anchor) then
+        table.insert(semantic_matches, node.id)
+      end
+      if matches_cursor(location) then
+        table.insert(location.query_anchor == nil and direct_matches or display_matches, node.id)
+      end
+    end
+  end
+
+  -- A direct location (not a call-site proxy) is the strongest match. For
+  -- anchored call rows, the semantic symbol outranks another row whose
+  -- display range happens to overlap it.
+  local matches = #direct_matches > 0 and direct_matches
+    or (#semantic_matches > 0 and semantic_matches or display_matches)
+  for _, node_id in ipairs(matches) do
+    if node_id == state.flow.current_node_id then
+      return false
+    end
+  end
+  if matches[1] then
+    return self:_make_current(state, matches[1])
+  end
+  return false
 end
 
 function Session:_replace_interaction_token(kind)
@@ -1162,6 +1330,150 @@ function Session:_stored_action_context(state, origin_id)
   }
 end
 
+function Session:_is_project_location(state, location)
+  if type(location) ~= "table" then
+    return false
+  end
+  if type(state.locator.is_project_location) == "function" then
+    local ok, result = pcall(state.locator.is_project_location, state.locator, location)
+    return ok and result == true
+  end
+  local semantic = type(location.query_anchor) == "table" and location.query_anchor or location
+  return type(location.locator) == "table"
+    and location.locator.kind == "project"
+    and type(semantic.locator) == "table"
+    and semantic.locator.kind == "project"
+end
+
+function Session:_is_project_relation_target(state, method, location)
+  if not self:_is_project_location(state, location) then
+    return false
+  end
+  local _, action = Actions.by_method(method)
+  if action and action.direction ~= nil then
+    -- Current call-hierarchy rows always carry the semantic caller/callee
+    -- anchor. Old cached rows did not, so their display call site alone cannot
+    -- prove that the represented symbol belongs to the project.
+    return type(location.query_anchor) == "table"
+  end
+  return true
+end
+
+function Session:_repair_project_current(state)
+  local flow = state.flow
+  local current = flow and flow:location(flow.current_node_id) or nil
+  if current and self:_is_project_location(state, current.location) then
+    return false
+  end
+  return flow ~= nil and flow:set_current(flow.root.id) or false
+end
+
+function Session:_sanitize_project_action(state, action)
+  if type(action) ~= "table" or action.kind ~= "action" then
+    return false
+  end
+  local changed = false
+  for _, target_id in ipairs(state.flow:action_target_ids(action)) do
+    local target = state.flow:location(target_id)
+    if not target or not self:_is_project_relation_target(state, action.method, target.location) then
+      local deleted = target ~= nil and target.id ~= state.flow.root.id and state.flow:delete(target.id)
+      if not deleted and state.flow:find(action.id) then
+        changed = state.flow:unlink_target(action.id, target_id) or changed
+      else
+        changed = deleted or changed
+      end
+    end
+  end
+  return self:_repair_project_current(state) or changed
+end
+
+function Session:_sanitize_project_flow(state)
+  local flow = state.flow
+  if not flow or not self:_is_project_location(state, flow.root.location) then
+    return nil, "saved flow root is outside project files"
+  end
+  local location_order = {}
+  local unsafe = {}
+  for _, node in ipairs(flow:dfs()) do
+    if node.kind == "location" and node.id ~= flow.root.id then
+      table.insert(location_order, node.id)
+      local parent = flow:find(flow:parent_id(node.id))
+      local parent_action = parent and parent.kind == "action" and select(2, Actions.by_method(parent.method)) or nil
+      if
+        not self:_is_project_location(state, node.location)
+        or (parent_action and parent_action.direction ~= nil and type(node.location.query_anchor) ~= "table")
+      then
+        unsafe[node.id] = true
+      end
+    end
+  end
+  for _, node in ipairs(flow:dfs()) do
+    if node.kind == "action" then
+      for _, target_id in ipairs(flow:action_target_ids(node)) do
+        local target = flow:location(target_id)
+        if
+          target
+          and target.id ~= flow.root.id
+          and not self:_is_project_relation_target(state, node.method, target.location)
+        then
+          unsafe[target.id] = true
+        end
+      end
+    end
+  end
+  local changed = false
+  for _, node_id in ipairs(location_order) do
+    if unsafe[node_id] then
+      changed = flow:delete(node_id) or changed
+    end
+  end
+  for _, node in ipairs(flow:dfs()) do
+    if node.kind == "action" then
+      changed = self:_sanitize_project_action(state, node) or changed
+    end
+  end
+  changed = self:_repair_project_current(state) or changed
+  return true, changed
+end
+
+function Session:_filter_project_outcome(state, outcome)
+  if type(outcome) ~= "table" then
+    return outcome
+  end
+  local accepted = {}
+  local locations = {}
+  for _, location in ipairs(outcome.locations or {}) do
+    if self:_is_project_relation_target(state, outcome.method, location) then
+      local previous_identity = location.identity
+      local identity = Locator.location_key(location)
+      location.identity = identity
+      accepted[identity] = true
+      if type(previous_identity) == "string" then
+        accepted[previous_identity] = identity
+      end
+      table.insert(locations, location)
+    end
+  end
+  local items = {}
+  for _, item in ipairs(outcome.items or {}) do
+    local identity = type(item.location) == "table" and Locator.location_key(item.location)
+      or (type(item.identity) == "string" and accepted[item.identity] or nil)
+    if identity and accepted[identity] then
+      item.identity = accepted[identity] == true and identity or accepted[identity]
+      if type(item.location) == "table" then
+        item.location.identity = item.identity
+      end
+      table.insert(items, item)
+    end
+  end
+  outcome.locations = locations
+  outcome.items = items
+  if outcome.status == "success" and #locations == 0 then
+    outcome.status = "empty"
+  end
+  return outcome
+end
+
 local function relation_error_message(outcome)
   local failure = first_failure_message(outcome)
   if failure then
@@ -1182,7 +1494,135 @@ local function relation_error_message(outcome)
   return "request failed"
 end
 
+local function relation_result(state, pending, status, outcome)
+  local persisted = state.flow and state.flow:action_for(pending.origin_id, pending.method) or nil
+  local target_ids = persisted and state.flow:action_target_ids(persisted) or {}
+  local locations = {}
+  for _, target_id in ipairs(target_ids) do
+    local target = state.flow:location(target_id)
+    if target then
+      table.insert(locations, vim.deepcopy(target.location))
+    end
+  end
+  return {
+    status = status,
+    action = vim.deepcopy(persisted or pending.action),
+    action_id = persisted and persisted.id or nil,
+    origin_id = pending.origin_id,
+    method = pending.method,
+    label = pending.label,
+    target_ids = target_ids,
+    locations = locations,
+    failures = vim.deepcopy(type(outcome) == "table" and outcome.failures or {}),
+    message = type(outcome) == "table"
+        and not committing_statuses[status]
+        and status ~= "cached"
+        and relation_error_message(outcome)
+      or nil,
+  }
+end
+
+function Session:_call_relation_listener(listener, result)
+  if type(listener) ~= "function" then
+    return
+  end
+  local called, callback_error = pcall(listener, vim.deepcopy(result))
+  if not called then
+    self._ui.notify("Voyager: relation listener failed: " .. tostring(callback_error), vim.log.levels.ERROR)
+  end
+end
+
+function Session:_deliver_relation_listeners(pending, result)
+  local listeners = pending.listeners or {}
+  pending.listeners = {}
+  pending.owners = {}
+  for _, entry in ipairs(listeners) do
+    self:_call_relation_listener(entry.callback, result)
+  end
+end
+
+function Session:_attach_relation_consumer(pending, opts)
+  opts = opts or {}
+  if opts.owner == nil then
+    pending.manual = true
+    pending.notify = opts.notify ~= false
+    pending.expand = opts.expand ~= false
+  else
+    pending.owners = pending.owners or {}
+    pending.owners[opts.owner] = true
+  end
+  if type(opts.listener) == "function" then
+    pending.listeners = pending.listeners or {}
+    table.insert(pending.listeners, { owner = opts.owner, callback = opts.listener })
+  end
+end
+
+function Session:_cancel_pending_relation(state, key, pending, reason, deliver)
+  if state.relation_requests[key] ~= pending then
+    return false
+  end
+  local request_token = pending.request_token
+  local handle = pending.handle or state.request_handles[request_token]
+  state.relation_requests[key] = nil
+  state.directional_request_tokens[request_token] = nil
+  state.request_handles[request_token] = nil
+  assert(state.request_count > 0, "Voyager request counter underflow")
+  state.request_count = state.request_count - 1
+  state.relations[key] = nil
+  if deliver then
+    self:_deliver_relation_listeners(
+      pending,
+      relation_result(state, pending, "cancelled", {
+        status = "cancelled",
+        failures = { { kind = "cancelled", message = tostring(reason or "cancelled") } },
+      })
+    )
+  else
+    pending.listeners = {}
+    pending.owners = {}
+  end
+  if type(handle) == "table" and type(handle.cancel) == "function" then
+    pcall(handle.cancel, handle, reason or "cancelled")
+  end
+  return true
+end
+
+function Session:_detach_relation_owner(state, owner, reason)
+  if owner == nil then
+    return false
+  end
+  local cancelled = {}
+  local detached = false
+  for key, pending in pairs(state.relation_requests) do
+    local listeners = {}
+    local removed = false
+    for _, entry in ipairs(pending.listeners or {}) do
+      if entry.owner == owner then
+        removed = true
+      else
+        table.insert(listeners, entry)
+      end
+    end
+    if pending.owners and pending.owners[owner] then
+      pending.owners[owner] = nil
+      removed = true
+    end
+    if removed then
+      detached = true
+      pending.listeners = listeners
+      if not pending.manual and next(pending.owners or {}) == nil and #listeners == 0 then
+        table.insert(cancelled, { key = key, pending = pending })
+      end
+    end
+  end
+  for _, entry in ipairs(cancelled) do
+    self:_cancel_pending_relation(state, entry.key, entry.pending, reason or "consumer cancelled", false)
+  end
+  return detached
+end
+
 function Session:show_relation(row, action_name, opts)
+  opts = type(opts) == "table" and opts or {}
   if not self:is_active() then
     return nil
   end
@@ -1207,11 +1647,19 @@ function Session:show_relation(row, action_name, opts)
 
   local key = relation_key(origin_id, action.method)
   local transient = state.relations[key]
-  local force = type(opts) == "table" and opts.refresh == true
+  local force = opts.refresh == true
   if transient and transient.state == "error" and transient.replace_targets == true then
     force = true
   end
   local cached = state.flow:action_for(origin_id, action.method)
+  local retry_partial = opts.retry_partial == true and cached and cached.query_status == "partial"
+  local focus = opts.focus ~= false
+  local expand = opts.expand ~= false
+  local manual = opts.owner == nil
+  local sanitized_cached = false
+  if cached and opts.project_only == true then
+    sanitized_cached = self:_sanitize_project_action(state, cached)
+  end
 
   -- Repeated lowercase/uppercase commands coalesce on the same logical
   -- relation while still bringing its stable row back into view.
@@ -1220,53 +1668,91 @@ function Session:show_relation(row, action_name, opts)
     if force then
       if (state.relation_versions[key] or 0) ~= pending.relation_version then
         self:_invalidate_relation(state, origin_id, action.method, "refresh")
-        return self:show_relation(row, action_name, { refresh = true })
+        return self:show_relation(row, action_name, opts)
       end
       pending.replace_targets = true
       if state.relations[key] then
         state.relations[key].replace_targets = true
       end
     end
-    state.sidebar:focus_relation(origin_id, action.method)
-    return true
-  end
-
-  if cached and not force and not (transient and transient.state == "error") then
-    local had_transient = state.relations[key] ~= nil
-    state.relations[key] = nil
-    local expanded = state.flow:set_collapsed(cached.id, false)
-    if expanded or had_transient then
+    self:_attach_relation_consumer(pending, opts)
+    if manual and not state.relations[key] then
+      state.relations[key] = {
+        key = key,
+        origin_id = origin_id,
+        method = action.method,
+        label = action.label,
+        state = "loading",
+        replace_targets = pending.replace_targets == true,
+      }
       self:_render(state)
     end
-    state.sidebar:focus_relation(origin_id, action.method)
+    if focus then
+      state.sidebar:focus_relation(origin_id, action.method)
+    end
+    return pending.handle or true
+  end
+
+  if cached and not force and not retry_partial and not (transient and transient.state == "error") then
+    local had_transient = state.relations[key] ~= nil
+    state.relations[key] = nil
+    local expanded = expand and state.flow:set_collapsed(cached.id, false) or false
+    if expanded or had_transient or sanitized_cached then
+      self:_render(state)
+    end
+    if focus then
+      state.sidebar:focus_relation(origin_id, action.method)
+    end
+    self:_call_relation_listener(
+      opts.listener,
+      relation_result(state, {
+        action = action,
+        origin_id = origin_id,
+        method = action.method,
+        label = action.label,
+      }, "cached")
+    )
     return true
   end
 
-  if cached then
+  if cached and expand then
     state.flow:set_collapsed(cached.id, false)
   end
 
   state.request_token = state.request_token + 1
   local request_token = state.request_token
-  state.relations[key] = {
-    key = key,
-    origin_id = origin_id,
-    method = action.method,
-    label = action.label,
-    state = "loading",
-    replace_targets = force,
-  }
-  state.relation_requests[key] = {
+  pending = {
     request_token = request_token,
     origin_id = origin_id,
     method = action.method,
+    label = action.label,
+    action = action,
     replace_targets = force,
     relation_version = state.relation_versions[key] or 0,
+    listeners = {},
+    owners = {},
+    manual = false,
+    notify = false,
+    expand = false,
   }
+  self:_attach_relation_consumer(pending, opts)
+  state.relation_requests[key] = pending
+  if pending.manual then
+    state.relations[key] = {
+      key = key,
+      origin_id = origin_id,
+      method = action.method,
+      label = action.label,
+      state = "loading",
+      replace_targets = force,
+    }
+  end
   state.directional_request_tokens[request_token] = true
   state.request_count = state.request_count + 1
   self:_render(state)
-  state.sidebar:focus_relation(origin_id, action.method)
+  if focus then
+    state.sidebar:focus_relation(origin_id, action.method)
+  end
 
   local context, context_error = self:_stored_action_context(state, origin_id)
   if not context then
@@ -1274,22 +1760,35 @@ function Session:show_relation(row, action_name, opts)
     state.directional_request_tokens[request_token] = nil
     assert(state.request_count > 0, "Voyager request counter underflow")
     state.request_count = state.request_count - 1
-    state.relations[key] = {
-      key = key,
-      origin_id = origin_id,
-      method = action.method,
-      label = action.label,
-      state = "error",
-      message = tostring(context_error),
-      replace_targets = force,
-    }
+    if pending.manual then
+      state.relations[key] = {
+        key = key,
+        origin_id = origin_id,
+        method = action.method,
+        label = action.label,
+        state = "error",
+        message = tostring(context_error),
+        replace_targets = force,
+      }
+    else
+      state.relations[key] = nil
+    end
     self:_render(state)
-    self._ui.notify("Voyager: " .. action.label .. " failed: " .. tostring(context_error), vim.log.levels.ERROR)
+    local failed = {
+      status = "error",
+      failures = { { kind = "setup", message = tostring(context_error) } },
+    }
+    if pending.notify then
+      self._ui.notify("Voyager: " .. action.label .. " failed: " .. tostring(context_error), vim.log.levels.ERROR)
+    end
+    self:_deliver_relation_listeners(pending, relation_result(state, pending, "error", failed))
     return nil
   end
   context.request_token = request_token
   context.replace_targets = force
   context.relation_version = state.relation_requests[key].relation_version
+  context.project_only = opts.project_only == true
+  context.automatic = opts.automatic == true
 
   local generation = state.generation
   local flow_id = state.flow.flow_id
@@ -1303,10 +1802,11 @@ function Session:show_relation(row, action_name, opts)
       return
     end
 
-    local pending = state.relation_requests[key]
-    if not pending or pending.request_token ~= request_token then
+    local current = state.relation_requests[key]
+    if not current or current.request_token ~= request_token then
       return
     end
+    pending = current
     local replacement_intent = pending.replace_targets == true
     local stale_relation = replacement_intent and (state.relation_versions[key] or 0) ~= pending.relation_version
     context.replace_targets = replacement_intent
@@ -1320,6 +1820,13 @@ function Session:show_relation(row, action_name, opts)
     if stale_relation then
       state.relations[key] = nil
       self:_render(state)
+      self:_deliver_relation_listeners(
+        pending,
+        relation_result(state, pending, "superseded", {
+          status = "superseded",
+          failures = {},
+        })
+      )
       return
     end
 
@@ -1332,6 +1839,10 @@ function Session:show_relation(row, action_name, opts)
         failures = { { kind = "setup", message = "invalid LSP completion" } },
       }
 
+    if context.project_only and committing_statuses[outcome.status] then
+      outcome = self:_filter_project_outcome(state, outcome)
+    end
+
     local commit_result
     if committing_statuses[outcome.status] then
       local commit_ok, value = pcall(self._commit_outcome, self, state, context, request_token, outcome)
@@ -1339,35 +1850,61 @@ function Session:show_relation(row, action_name, opts)
         state.relations[key] = nil
         if not value.stale_relation then
           commit_result = value
-          state.flow:set_collapsed(value.commit.action_id, false)
-          self:_notify_outcome(outcome)
+          if pending.expand then
+            state.flow:set_collapsed(value.commit.action_id, false)
+          end
+          if pending.notify then
+            self:_notify_outcome(outcome)
+          end
         end
       else
+        outcome = {
+          status = "error",
+          action = action,
+          method = action.method,
+          label = action.label,
+          origin_node_id = origin_id,
+          failures = { { kind = "commit", message = tostring(value) } },
+        }
+        if pending.manual then
+          state.relations[key] = {
+            key = key,
+            origin_id = origin_id,
+            method = action.method,
+            label = action.label,
+            state = "error",
+            message = tostring(value),
+            replace_targets = replacement_intent,
+          }
+        else
+          state.relations[key] = nil
+        end
+        if pending.notify then
+          self._ui.notify("Voyager: " .. action.label .. " failed: " .. tostring(value), vim.log.levels.ERROR)
+        end
+      end
+    elseif outcome.status == "cancelled" or outcome.status == "superseded" then
+      state.relations[key] = nil
+      if pending.notify then
+        self:_notify_outcome(outcome)
+      end
+    else
+      if pending.manual then
         state.relations[key] = {
           key = key,
           origin_id = origin_id,
           method = action.method,
           label = action.label,
           state = "error",
-          message = tostring(value),
+          message = relation_error_message(outcome),
           replace_targets = replacement_intent,
         }
-        self._ui.notify("Voyager: " .. action.label .. " failed: " .. tostring(value), vim.log.levels.ERROR)
+      else
+        state.relations[key] = nil
       end
-    elseif outcome.status == "cancelled" or outcome.status == "superseded" then
-      state.relations[key] = nil
-      self:_notify_outcome(outcome)
-    else
-      state.relations[key] = {
-        key = key,
-        origin_id = origin_id,
-        method = action.method,
-        label = action.label,
-        state = "error",
-        message = relation_error_message(outcome),
-        replace_targets = replacement_intent,
-      }
-      self:_notify_outcome(outcome)
+      if pending.notify then
+        self:_notify_outcome(outcome)
+      end
     end
 
     -- Rendering preserves the user's current stable row. Only the immediate
@@ -1377,6 +1914,7 @@ function Session:show_relation(row, action_name, opts)
     if commit_result and #commit_result.tagged_items > 0 then
       self:_enrich_nodes(state, generation, flow_id, commit_result.tagged_items)
     end
+    self:_deliver_relation_listeners(pending, relation_result(state, pending, outcome.status, outcome))
   end
 
   local started, handle = pcall(state.lsp.start, state.lsp, action_name, vim.deepcopy(context), settle)
@@ -1437,6 +1975,8 @@ function Session:show_relation(row, action_name, opts)
   return handle
 end
 
+-- Compatibility helpers for direct controller integrations. The automatic
+-- graph builder is the only product surface that calls these relations.
 function Session:show_callers(row, refresh)
   return self:show_relation(row, "incoming_calls", { refresh = refresh == true })
 end
@@ -1445,22 +1985,323 @@ function Session:show_callees(row, refresh)
   return self:show_relation(row, "outgoing_calls", { refresh = refresh == true })
 end
 
+local graph_action_names = { "incoming_calls", "outgoing_calls" }
+
+local graph_ok_statuses = {
+  cached = true,
+  success = true,
+  empty = true,
+}
+
+local graph_target_statuses = vim.tbl_extend("force", vim.deepcopy(graph_ok_statuses), { partial = true })
+
+function Session:_sync_graph_build_status(record)
+  local status = record.scheduler:status()
+  record.processed = status.processed
+  record.scheduled = status.scheduled
+  record.depth = status.depth
+  record.active = status.active
+  record.issues = status.issues
+  record.cancelled = status.cancelled
+  return status
+end
+
+local function graph_subject_snapshot(node)
+  if not node then
+    return { present = false }
+  end
+  local location = node.location
+  local anchor = type(location.query_anchor) == "table" and location.query_anchor or location
+  return {
+    present = true,
+    anchored = anchor ~= location,
+    locator = vim.deepcopy(anchor.locator),
+    range = vim.deepcopy(anchor.range),
+    line_text = anchor.line_text,
+  }
+end
+
+local function graph_relation_snapshot(flow, origin_id, method)
+  local action = flow and flow:action_for(origin_id, method) or nil
+  local target_ids = action and flow:action_target_ids(action) or {}
+  table.sort(target_ids)
+  return {
+    present = action ~= nil,
+    query_status = action and action.query_status or nil,
+    target_ids = target_ids,
+  }
+end
+
+function Session:_graph_relations_unchanged(state, record)
+  for origin_id, expected in pairs(record.subject_snapshots or {}) do
+    if not vim.deep_equal(expected, graph_subject_snapshot(state.flow:location(origin_id))) then
+      return false
+    end
+  end
+  for _, expected in pairs(record.relation_snapshots or {}) do
+    if not vim.deep_equal(expected.value, graph_relation_snapshot(state.flow, expected.origin_id, expected.method)) then
+      return false
+    end
+  end
+  return true
+end
+
+function Session:_guard_graph_relations(state)
+  local record = state.graph_build
+  if not record or record.state ~= "running" or self:_graph_relations_unchanged(state, record) then
+    return true
+  end
+
+  self:_cancel_graph_build({ dismiss = false, render = false, reason = "flow changed" })
+  record.state = "issues"
+  record.message = "flow changed during graph creation"
+  self:_render(state)
+  self._ui.notify("Voyager: graph creation stopped because the flow changed", vim.log.levels.WARN)
+  return false
+end
+
+function Session:_update_graph_build(state, record)
+  if self._state ~= state or state.graph_build ~= record then
+    return true
+  end
+  if not self:_guard_graph_relations(state) then
+    return true
+  end
+  local status = self:_sync_graph_build_status(record)
+  if status.cancelled then
+    record.state = "cancelled"
+    record.message = record.message or "cancelled"
+    self:_render(state)
+    return true
+  end
+  if record.scheduler:is_done() then
+    if status.issues > 0 then
+      record.state = "issues"
+      record.message = string.format("completed with %d issue%s", status.issues, status.issues == 1 and "" or "s")
+      self:_render(state)
+      if not record.terminal_notified then
+        record.terminal_notified = true
+        self._ui.notify(
+          string.format(
+            "Voyager: graph creation completed with %d issue%s",
+            status.issues,
+            status.issues == 1 and "" or "s"
+          ),
+          vim.log.levels.WARN
+        )
+      end
+    else
+      state.graph_build = nil
+      self:_render(state)
+    end
+    return true
+  end
+  record.state = "running"
+  record.message = nil
+  self:_render(state)
+  return false
+end
+
+function Session:_schedule_graph_pump(state, record)
+  if self._state ~= state or state.graph_build ~= record or record.pump_scheduled or record.state ~= "running" then
+    return
+  end
+  record.pump_scheduled = true
+  self._runtime.schedule(function()
+    record.pump_scheduled = false
+    if self:_valid_state(state, state.generation) and state.graph_build == record and record.state == "running" then
+      self:_pump_graph(state, record)
+    end
+  end)
+end
+
+function Session:_pump_graph(state, record)
+  if self._state ~= state or state.graph_build ~= record or record.state ~= "running" then
+    return
+  end
+  if not self:_guard_graph_relations(state) then
+    return
+  end
+
+  local claimed = 0
+  while claimed < record.batch_size do
+    local item = record.scheduler:claim()
+    if not item then
+      break
+    end
+    claimed = claimed + 1
+    local delivered = false
+    local function complete(result)
+      if delivered then
+        return
+      end
+      delivered = true
+      if self._state ~= state or state.graph_build ~= record then
+        return
+      end
+      if not self:_guard_graph_relations(state) then
+        return
+      end
+      result = type(result) == "table" and result or { status = "error", target_ids = {} }
+      local may_use_cached_targets = result.status ~= "cancelled"
+        and result.status ~= "superseded"
+        and type(result.action_id) == "string"
+      local candidates = (graph_target_statuses[result.status] or may_use_cached_targets)
+          and type(result.target_ids) == "table"
+          and result.target_ids
+        or {}
+      local targets = {}
+      local seen = {}
+      for _, target_id in ipairs(candidates) do
+        local target = state.flow:location(target_id)
+        if target and self:_is_project_location(state, target.location) and not seen[target_id] then
+          seen[target_id] = true
+          table.insert(targets, target_id)
+        end
+      end
+      local issue = not graph_ok_statuses[result.status]
+      local method = Actions.get(item.action_name).method
+      local key = relation_key(item.subject_id, method)
+      record.relation_snapshots[key] = {
+        origin_id = item.subject_id,
+        method = method,
+        value = graph_relation_snapshot(state.flow, item.subject_id, method),
+      }
+      if record.scheduler:complete(item, targets, issue) then
+        if not self:_update_graph_build(state, record) then
+          self:_schedule_graph_pump(state, record)
+        end
+      end
+    end
+
+    self:_await_symbol_enrichment(state, item.subject_id, function()
+      if self._state ~= state or state.graph_build ~= record or record.state ~= "running" then
+        return
+      end
+      if not self:_guard_graph_relations(state) then
+        return
+      end
+      record.subject_snapshots[item.subject_id] = graph_subject_snapshot(state.flow:location(item.subject_id))
+      local called, started = pcall(
+        self.show_relation,
+        self,
+        {
+          kind = "location",
+          owner_id = item.subject_id,
+          context_location_id = item.subject_id,
+        },
+        item.action_name,
+        {
+          focus = false,
+          expand = false,
+          retry_partial = true,
+          notify = false,
+          owner = record.owner,
+          listener = complete,
+          project_only = true,
+          automatic = true,
+        }
+      )
+      if not called then
+        complete({
+          status = "error",
+          target_ids = {},
+          failures = { { kind = "setup", message = tostring(started) } },
+        })
+      elseif started == nil and not delivered then
+        complete({
+          status = "error",
+          target_ids = {},
+          failures = { { kind = "setup", message = "relation request did not start" } },
+        })
+      end
+    end)
+  end
+
+  if self._state ~= state or state.graph_build ~= record then
+    return
+  end
+  if self:_update_graph_build(state, record) then
+    return
+  end
+  local status = record.scheduler:status()
+  if claimed >= record.batch_size and status.active < record.concurrency then
+    self:_schedule_graph_pump(state, record)
+  end
+end
+
+function Session:_start_graph_build(state, seed_id)
+  if self._state ~= state or not self:is_active() or not state.flow:location(seed_id) then
+    return nil
+  end
+  if state.graph_build and state.graph_build.state == "running" then
+    return state.graph_build.scheduler
+  end
+
+  local create_ok, scheduler = pcall(Recursive.new, {
+    seed_id = seed_id,
+    action_names = graph_action_names,
+    concurrency = state.config.navigation.concurrency,
+  })
+  if not create_ok then
+    self._ui.notify("Voyager: could not start graph creation: " .. tostring(scheduler), vim.log.levels.ERROR)
+    return nil
+  end
+
+  state.graph_build_token = state.graph_build_token + 1
+  local status = scheduler:status()
+  local record = {
+    owner = string.format("graph:%d:%d", state.generation, state.graph_build_token),
+    scheduler = scheduler,
+    seed_id = seed_id,
+    state = "running",
+    processed = status.processed,
+    scheduled = status.scheduled,
+    depth = status.depth,
+    active = status.active,
+    issues = status.issues,
+    cancelled = status.cancelled,
+    concurrency = status.concurrency,
+    relation_snapshots = {},
+    subject_snapshots = {},
+  }
+  record.batch_size = math.max(1, math.min(32, record.concurrency * 4))
+  state.graph_build = record
+  self:_render(state)
+  self:_schedule_graph_pump(state, record)
+  return scheduler
+end
+
+function Session:_cancel_graph_build(opts)
+  opts = type(opts) == "table" and opts or {}
+  if not self:is_active() or not self._state.graph_build then
+    return false
+  end
+  local state = self._state
+  local record = state.graph_build
+  record.scheduler:cancel()
+  self:_detach_relation_owner(state, record.owner, opts.reason or "graph creation cancelled")
+  self:_sync_graph_build_status(record)
+  if opts.dismiss then
+    state.graph_build = nil
+  else
+    record.state = "cancelled"
+    record.message = tostring(opts.reason or "cancelled")
+  end
+  if opts.render ~= false then
+    self:_render(state)
+  end
+  return true
+end
+
 function Session:_invalidate_relation(state, origin_id, method, reason)
   local key = relation_key(origin_id, method)
   local pending = state.relation_requests[key]
   local had_state = pending ~= nil or state.relations[key] ~= nil
   local handles = {}
+  state.relation_versions[key] = (state.relation_versions[key] or 0) + 1
   if pending then
-    local request_token = pending.request_token
-    local handle = pending.handle or state.request_handles[request_token]
-    if handle then
-      table.insert(handles, handle)
-    end
-    state.relation_requests[key] = nil
-    state.directional_request_tokens[request_token] = nil
-    state.request_handles[request_token] = nil
-    assert(state.request_count > 0, "Voyager request counter underflow")
-    state.request_count = state.request_count - 1
+    self:_cancel_pending_relation(state, key, pending, reason or "invalidate", true)
   end
   local ordinary = state.ordinary_relation_requests[key]
   if ordinary then
@@ -1478,7 +2319,6 @@ function Session:_invalidate_relation(state, origin_id, method, reason)
     end
   end
   state.relations[key] = nil
-  state.relation_versions[key] = (state.relation_versions[key] or 0) + 1
   for _, handle in ipairs(handles) do
     if type(handle) == "table" and type(handle.cancel) == "function" then
       pcall(handle.cancel, handle, reason or "invalidate")
@@ -1499,6 +2339,9 @@ function Session:delete_row(row)
     self:_notify_inapplicable("delete", row)
     return false
   end
+  if row.kind == "graph_build" then
+    return self:_cancel_graph_build({ dismiss = true, reason = "delete" })
+  end
   if row.kind == "note" then
     if state.flow:set_note(row.owner_id, nil) then
       self:_render(state)
@@ -1512,15 +2355,36 @@ function Session:delete_row(row)
       self:_notify_inapplicable("delete", row)
       return false
     end
-    if not self:_invalidate_relation(state, origin_id, row.method, "delete") then
+    local key = relation_key(origin_id, row.method)
+    if not state.relation_requests[key] and not state.relations[key] then
       return false
+    end
+    local cancelled_build = false
+    if state.graph_build then
+      cancelled_build = self:_cancel_graph_build({ dismiss = true, reason = "delete" })
+    end
+    if not self:_invalidate_relation(state, origin_id, row.method, "delete") then
+      return cancelled_build
     end
     self:_render(state)
     return true
   end
   if row.kind == "location" and type(row.action_id) == "string" then
     local action = state.flow:find(row.action_id)
-    if not action or action.kind ~= "action" or not state.flow:unlink_target(action.id, row.owner_id) then
+    if not action or action.kind ~= "action" then
+      return false
+    end
+    local linked = false
+    for _, target_id in ipairs(state.flow:action_target_ids(action)) do
+      linked = linked or target_id == row.owner_id
+    end
+    if not linked then
+      return false
+    end
+    if state.graph_build then
+      self:_cancel_graph_build({ dismiss = true, reason = "delete" })
+    end
+    if not state.flow:unlink_target(action.id, row.owner_id) then
       return false
     end
     local origin_id = state.flow:parent_id(action.id)
@@ -1539,14 +2403,25 @@ function Session:delete_row(row)
     self._ui.notify("Voyager: the flow root cannot be deleted", vim.log.levels.INFO)
     return false
   end
+  local target = state.flow:find(row.owner_id)
+  if
+    not target
+    or (row.kind == "location" and target.kind ~= "location")
+    or (row.kind == "action" and (target.kind ~= "action" or target.method == "voyager/archive"))
+  then
+    return false
+  end
   local relation_origin_id
   local relation_method
   if row.kind == "action" then
-    local action = state.flow:find(row.owner_id)
+    local action = target
     if action and action.kind == "action" then
       relation_origin_id = state.flow:parent_id(action.id)
       relation_method = action.method
     end
+  end
+  if state.graph_build then
+    self:_cancel_graph_build({ dismiss = true, reason = "delete" })
   end
   local deleted
   if row.kind == "action" and type(state.flow.delete_action_relation) == "function" then
@@ -1889,6 +2764,7 @@ function Session:save(on_success)
     return nil
   end
 
+  self:_guard_graph_relations(state)
   self:_render(state)
   if type(on_success) == "function" then
     on_success()
@@ -1924,6 +2800,11 @@ end
 function Session:_install_loaded_flow(candidate, project_root_value, config, locator, store, load_context)
   local old = self:is_active() and self._state or nil
   local previous_generation = old and old.generation or self._generation
+  local scoped, scope_error = self:_sanitize_project_flow({ flow = candidate, locator = locator })
+  if not scoped then
+    self._ui.notify("Voyager load failed: " .. tostring(scope_error), vim.log.levels.ERROR)
+    return nil, scope_error
+  end
   local current = candidate:location(candidate.current_node_id)
   local stale = current == nil
   if current then
@@ -1979,6 +2860,9 @@ function Session:_install_loaded_flow(candidate, project_root_value, config, loc
   end
 
   if old then
+    if old.graph_build then
+      self:_cancel_graph_build({ dismiss = true, render = false, reason = "load" })
+    end
     old.phase = "replacing"
     old.generation = staged.generation
     self:_invalidate_interactions(old)
@@ -2081,6 +2965,9 @@ function Session:_teardown(source)
     return false
   end
   local state = self._state
+  if state.graph_build then
+    self:_cancel_graph_build({ dismiss = true, render = false, reason = source or "close" })
+  end
   local previous_generation = state.generation
   local current_win = self._runtime.current_win()
   local owned_focus = state.sidebar:owns_window(current_win)
@@ -2129,6 +3016,9 @@ end
 
 function Session:shutdown()
   local state = self._state
+  if self:is_active() and state.graph_build then
+    self:_cancel_graph_build({ dismiss = true, reason = "shutdown" })
+  end
   if
     self:is_active()
     and state.phase == "active"
@@ -2153,20 +3043,6 @@ function M.native(config_provider, runtime, overrides)
   local Symbols = require("voyager.symbols")
 
   local controller
-  -- Every Voyager-originated client request is dispatched synchronously inside
-  -- request_group.start, so this counter is what lets the LspRequest observer
-  -- distinguish the user's navigation from Voyager's own recording traffic.
-  local recording_request_group = {
-    start = function(request_opts)
-      controller._recording = controller._recording + 1
-      local started, result = pcall(RequestGroup.start, request_opts)
-      controller._recording = controller._recording - 1
-      if not started then
-        error(result, 0)
-      end
-      return result
-    end,
-  }
 
   local factories = vim.tbl_extend("force", {
     flow = Flow,
@@ -2183,7 +3059,7 @@ function M.native(config_provider, runtime, overrides)
       return Lsp.new({
         actions = Actions,
         normalizer = Normalize.new({ locator = locator }),
-        request_group = recording_request_group,
+        request_group = RequestGroup,
         get_clients = runtime.get_clients,
         make_position_params = runtime.make_position_params,
         timer = runtime.timer,
@@ -2197,7 +3073,7 @@ function M.native(config_provider, runtime, overrides)
       return Symbols.new({
         locator = locator,
         get_clients = runtime.get_clients,
-        request_group = recording_request_group,
+        request_group = RequestGroup,
         timer = runtime.timer,
         filetype_match = runtime.filetype_match,
         get_string_parser = runtime.ts_string_parser,
@@ -2222,21 +3098,6 @@ function M.native(config_provider, runtime, overrides)
           end,
           activate_stay = function(row)
             return controller:activate_row(row, { stay = true })
-          end,
-          run_action = function(row)
-            return controller:run_action_for_row(row)
-          end,
-          show_callers = function(row)
-            return controller:show_callers(row, false)
-          end,
-          show_callees = function(row)
-            return controller:show_callees(row, false)
-          end,
-          refresh_callers = function(row)
-            return controller:show_callers(row, true)
-          end,
-          refresh_callees = function(row)
-            return controller:show_callees(row, true)
           end,
           delete = function(row)
             return controller:delete_row(row)

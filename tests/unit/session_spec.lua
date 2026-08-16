@@ -1,18 +1,34 @@
 local FakeSessionDeps = require("tests.helpers.fake_session_deps")
 local Fixtures = require("tests.helpers.flow")
+local Locator = require("voyager.locator")
+local Actions = require("voyager.lsp.actions")
 local Session = require("voyager.session")
+local Sidebar = require("voyager.sidebar")
 
 local function new_session(overrides)
   local deps = FakeSessionDeps.new(overrides)
   return Session.new(deps:session_options()), deps
 end
 
--- Most lifecycle tests want the pre-lazy-root behavior: an open session whose
--- flow is already rooted at the origin cursor.
+-- Automatic graph creation is covered separately. Lifecycle cases cancel its
+-- queued work so they can isolate the operation under test.
 local function open_with_flow(session)
   assert.is_true(session:open())
-  assert.is_true(session:ensure_flow())
+  if session:state().graph_build then
+    assert.is_true(session:_cancel_graph_build({ dismiss = true, render = false, reason = "test isolation" }))
+  end
   return true
+end
+
+local function call_location(location, semantic_locator)
+  local value = vim.deepcopy(location)
+  value.query_anchor = {
+    locator = vim.deepcopy(semantic_locator or value.locator),
+    range = vim.deepcopy(value.range),
+    line_text = "semantic symbol",
+  }
+  value.identity = Locator.location_key(value)
+  return value
 end
 
 describe("Voyager session lifecycle", function()
@@ -38,37 +54,56 @@ describe("Voyager session lifecycle", function()
     assert.equals(deps.root_id, session:state().flow.current_node_id)
     assert.is_false(session:state().flow:is_dirty())
     assert.is_false(deps.sidebar.mount_calls[1].focus)
-    -- one placeholder render at open, one once the flow exists
+    -- one root render followed by one automatic-build render
     assert.equals(2, deps.sidebar.render_count)
     assert.equals(7, #deps.autocmd_calls)
   end)
 
-  it("opens without a flow and roots it at the first navigation origin", function()
+  it("atomically rejects a dependency seed and fails closed on boundary errors", function()
+    local session, deps = new_session({ buffer_name = "/project/node_modules/pkg/index.lua" })
+    deps.locator.is_project_location = function(_, location)
+      return not location.locator.path:find("node_modules", 1, true)
+    end
+
+    assert.is_nil(session:open())
+    assert.is_false(session:is_active())
+    assert.equals(0, #deps.lsp.starts)
+    assert.same({ { owned = true } }, deps.sidebar.unmount_calls)
+    assert.matches("outside project files", deps.notifications[#deps.notifications].message, nil, true)
+
+    session, deps = new_session()
+    deps.locator.is_project_location = function()
+      error("realpath failed")
+    end
+    assert.is_nil(session:open())
+    assert.is_false(session:is_active())
+    assert.matches("outside project files", deps.notifications[#deps.notifications].message, nil, true)
+  end)
+
+  it("captures the cursor root and schedules both call directions on open", function()
     local session, deps = new_session()
     assert.is_true(session:open())
     assert.is_true(session:is_active())
-    assert.is_nil(session:state().flow)
-    local placeholder = deps.sidebar.render_calls[1]
-    assert.is_nil(placeholder.flow)
-    assert.is_false(placeholder.status.dirty)
-
-    assert.is_nil(session:save())
-    assert.matches("nothing recorded yet", deps.notifications[#deps.notifications].message, nil, true)
-
-    deps:lsp_request("textDocument/references")
     local flow = session:state().flow
     assert.is_table(flow)
     assert.equals("main", flow.root.location.symbol)
     assert.equals(flow.root.id, flow.current_node_id)
-    assert.equals(1, #deps.lsp.starts)
-    assert.equals(flow.root.id, deps.lsp.starts[1].context.origin_node_id)
+    assert.is_table(session:state().graph_build)
+    assert.is_nil(deps.autocmds.LspRequest)
 
-    -- the freshly created root is offered for symbol enrichment
+    deps:flush_scheduled()
+    assert.same({ "incoming_calls", "outgoing_calls" }, {
+      deps.lsp.starts[1].action_name,
+      deps.lsp.starts[2].action_name,
+    })
+    assert.equals(flow.root.id, deps.lsp.starts[1].context.origin_node_id)
+    assert.equals(flow.root.id, deps.lsp.starts[2].context.origin_node_id)
+
     assert.equals(1, #deps.symbols.resolve_calls)
     assert.equals(flow.root.id, deps.symbols.resolve_calls[1].requests[1].node_id)
   end)
 
-  it("closes a rootless session without prompting and toggles cleanly", function()
+  it("closes a clean session without prompting and toggles cleanly", function()
     local session, deps = new_session()
     assert.is_true(session:open())
     assert.is_true(session:close("command"))
@@ -88,6 +123,37 @@ describe("Voyager session lifecycle", function()
     assert.equals("lua/main.lua", session:state().flow.root.location.locator.path)
   end)
 
+  it("joins project locations beneath the filesystem root with one slash", function()
+    local session, deps = new_session()
+    open_with_flow(session)
+    local state = session:state()
+    state.project_root = "/"
+    assert.is_table(session:show_callers({ kind = "location", owner_id = state.flow.root.id }))
+    assert.equals("file:///lua/main.lua", deps.lsp.starts[1].context.stored_position.uri)
+  end)
+
+  it("does not use a filesystem-wide LSP root as the project boundary", function()
+    local session, deps = new_session()
+    deps.clients[1].config.root_dir = "/"
+
+    open_with_flow(session)
+
+    assert.equals("/project", session:state().project_root)
+
+    session:close("test")
+    session, deps = new_session()
+    deps.clients[1].config.root_dir = "/"
+    deps.runtime.find_root = function()
+      return "/"
+    end
+    deps.runtime.cwd = function()
+      return "/"
+    end
+
+    open_with_flow(session)
+    assert.equals("/project/lua", session:state().project_root)
+  end)
+
   it("does not publish a session when the initial sidebar cannot mount", function()
     local session, deps = new_session()
     deps.sidebar.mount_result = false
@@ -99,17 +165,16 @@ describe("Voyager session lifecycle", function()
     assert.matches("24 columns", deps.notifications[#deps.notifications].message)
   end)
 
-  it("accepts a named unsaved buffer and rejects entropy failure before mounting", function()
+  it("accepts a named unsaved buffer and tears down after entropy failure", function()
     local session, deps = new_session({ buffer_name = "/project/lua/new.lua" })
     open_with_flow(session)
     assert.equals("new.lua", session:state().flow.root.location.locator.path:match("([^/]+)$"))
 
     session, deps = new_session()
     deps.random_error = "entropy unavailable"
-    assert.is_true(session:open())
-    assert.is_nil(session:ensure_flow())
-    assert.is_true(session:is_active())
-    assert.is_nil(session:state().flow)
+    assert.is_nil(session:open())
+    assert.is_false(session:is_active())
+    assert.same({ { owned = true } }, deps.sidebar.unmount_calls)
     assert.matches("entropy unavailable", deps.notifications[1].message, nil, true)
   end)
 
@@ -123,8 +188,10 @@ describe("Voyager session lifecycle", function()
     assert.equals(1, deps.sidebar.focus_count)
 
     deps.sidebar.mounted = false
+    local renders = deps.sidebar.render_count
     assert.is_true(session:focus())
     assert.is_true(deps.sidebar.remount_calls[#deps.sidebar.remount_calls].focus)
+    assert.equals(renders + 1, deps.sidebar.render_count)
 
     deps.sidebar.mounted = false
     deps.sidebar.remount_result = false
@@ -137,19 +204,23 @@ describe("Voyager session lifecycle", function()
   it("remounts without focus across tabs and resize validity changes", function()
     local session, deps = new_session()
     open_with_flow(session)
+    local renders = deps.sidebar.render_count
     deps:trigger("TabEnter")
     assert.is_false(deps.sidebar.remount_calls[#deps.sidebar.remount_calls].focus)
+    assert.equals(renders + 1, deps.sidebar.render_count)
 
     deps.sidebar.remount_result = false
     deps.sidebar.remount_error = "too small"
     deps:trigger("VimResized")
     assert.is_false(deps.sidebar:is_mounted())
     assert.is_true(session:is_active())
+    assert.equals(renders + 1, deps.sidebar.render_count)
 
     deps.sidebar.remount_result = true
     deps:trigger("VimResized")
     assert.is_true(deps.sidebar:is_mounted())
     assert.is_false(deps.sidebar.remount_calls[#deps.sidebar.remount_calls].focus)
+    assert.equals(renders + 2, deps.sidebar.render_count)
   end)
 
   it("tracks recent source windows, evicts closed candidates, and never creates a split", function()
@@ -178,54 +249,115 @@ describe("Voyager session lifecycle", function()
     assert.equals(window_count, vim.tbl_count(deps.windows))
   end)
 
-  it("records an observed navigation request without touching any mapping", function()
+  it("tracks the active tree symbol from ordinary source navigation", function()
     local session, deps = new_session()
     open_with_flow(session)
+    local state = session:state()
+    local location = Fixtures.location("lua/callsite.lua", 4, "Service.save")
+    location.query_anchor = {
+      locator = { kind = "project", path = "lua/service.lua" },
+      range = {
+        start = { line = 2, character = 0 },
+        ["end"] = { line = 2, character = 4 },
+      },
+      line_text = "save()",
+    }
+    location.identity = Locator.location_key(location)
+    local commit = state.flow:commit_navigation({
+      origin_node_id = state.flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { location },
+    })
+    local child_id = assert(commit.node_id_by_identity[location.identity])
 
-    deps:lsp_request("textDocument/references")
-    assert.equals(1, #deps.lsp.starts)
-    assert.equals("references", deps.lsp.starts[1].action_name)
-    assert.same({ line = 0, character = 6 }, deps.lsp.starts[1].context.cursor)
+    deps:add_buffer(12, "/project/lua/service.lua", { lines = { "one", "two", "save()" } })
+    deps:add_window(22, 12)
+    deps.windows[22].cursor = { 3, 1 }
+    deps.current_win_id = 22
+    local renders = deps.sidebar.render_count
+    deps:trigger("BufEnter", { buf = 12 })
+    assert.equals(child_id, state.flow.current_node_id)
+    assert.equals(renders + 1, deps.sidebar.render_count)
 
-    deps:lsp_request("textDocument/implementation")
-    assert.equals("implementation", deps.lsp.starts[2].action_name)
-    assert.equals(2, #deps.lsp.starts)
+    deps.current_win_id = deps.origin_win
+    deps:trigger("WinEnter", { buf = deps.origin_buf })
+    assert.equals(state.flow.root.id, state.flow.current_node_id)
   end)
 
-  it("coalesces same-tick duplicates and ignores foreign or ineligible requests", function()
+  it("prefers a semantic anchor over another node's overlapping display range", function()
     local session, deps = new_session()
     open_with_flow(session)
+    local state = session:state()
+    local display_match = Fixtures.location("lua/service.lua", 2, "display match")
+    display_match.query_anchor = {
+      locator = { kind = "project", path = "lua/other.lua" },
+      range = vim.deepcopy(display_match.range),
+      line_text = "other()",
+    }
+    display_match.identity = Locator.location_key(display_match)
+    local semantic_match = Fixtures.location("lua/callsite.lua", 4, "semantic match")
+    semantic_match.query_anchor = {
+      locator = { kind = "project", path = "lua/service.lua" },
+      range = vim.deepcopy(display_match.range),
+      line_text = "save()",
+    }
+    semantic_match.identity = Locator.location_key(semantic_match)
+    local commit = state.flow:commit_navigation({
+      origin_node_id = state.flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      label = "calls",
+      locations = { display_match, semantic_match },
+    })
+    local display_id = assert(commit.node_id_by_identity[display_match.identity])
+    local semantic_id = assert(commit.node_id_by_identity[semantic_match.identity])
+    assert.is_true(state.flow:set_current(display_id))
 
-    deps:lsp_request("textDocument/references", { client_id = 7 })
-    deps:lsp_request("textDocument/references", { client_id = 8 })
-    assert.equals(1, #deps.lsp.starts)
+    deps:add_buffer(12, "/project/lua/service.lua", { lines = { "one", "two", "save()" } })
+    deps:add_window(22, 12)
+    deps.windows[22].cursor = { 3, 1 }
+    deps.current_win_id = 22
+    deps:trigger("BufEnter", { buf = 12 })
 
+    assert.equals(semantic_id, state.flow.current_node_id)
+  end)
+
+  it("keeps a direct symbol active ahead of a call row anchored to it", function()
+    local session, deps = new_session()
+    open_with_flow(session)
+    local state = session:state()
+    local call = Fixtures.location("lua/callsite.lua", 4, "main")
+    call.query_anchor = {
+      locator = vim.deepcopy(state.flow.root.location.locator),
+      range = vim.deepcopy(state.flow.root.location.range),
+      line_text = state.flow.root.location.context,
+    }
+    call.identity = Locator.location_key(call)
+    local commit = state.flow:commit_navigation({
+      origin_node_id = state.flow.root.id,
+      method = "callHierarchy/incomingCalls",
+      label = "callers",
+      locations = { call },
+    })
+    local call_id = assert(commit.node_id_by_identity[call.identity])
+    assert.is_true(state.flow:set_current(call_id))
+
+    deps.current_win_id = deps.origin_win
+    deps:trigger("CursorMoved", { buf = deps.origin_buf })
+
+    assert.equals(state.flow.root.id, state.flow.current_node_id)
+  end)
+
+  it("does not observe editor LSP requests", function()
+    local session, deps = new_session()
+    assert.is_true(session:open())
+    assert.is_nil(deps.autocmds.LspRequest)
     deps:flush_scheduled()
-    deps:lsp_request("textDocument/references")
     assert.equals(2, #deps.lsp.starts)
-
-    deps:lsp_request("textDocument/references", { type = "cancel" })
-    deps:lsp_request("textDocument/references", { type = "complete" })
-    deps:lsp_request("textDocument/hover")
-    deps:lsp_request("voyager/manual")
-    deps:lsp_request("voyager/archive")
-    deps:add_buffer(19, "/elsewhere/other.lua")
-    deps:lsp_request("textDocument/references", { bufnr = 19 })
-    assert.equals(2, #deps.lsp.starts)
-
-    deps:flush_scheduled()
-    session._recording = 1
-    deps:lsp_request("textDocument/references")
-    session._recording = 0
-    assert.equals(2, #deps.lsp.starts)
-
-    local original_run_action = session.run_action
-    session.run_action = function()
-      error("recording exploded")
-    end
-    deps:lsp_request("textDocument/definition")
-    session.run_action = original_run_action
-    assert.matches("could not record definition", deps.notifications[#deps.notifications].message, nil, true)
+    assert.same({ "incoming_calls", "outgoing_calls" }, {
+      deps.lsp.starts[1].action_name,
+      deps.lsp.starts[2].action_name,
+    })
   end)
 
   it("deletes rows, clears notes through delete, and refuses the root", function()
@@ -694,6 +826,81 @@ describe("Voyager session lifecycle", function()
     assert.equals(loaded.current_node_id, session:state().flow.current_node_id)
   end)
 
+  it("sanitizes cached call targets before a loaded flow can render", function()
+    local session, deps = new_session()
+    local loaded = Fixtures.new_flow()
+    local action = Actions.get("outgoing_calls")
+    local external = call_location(
+      Fixtures.location("lua/external-callsite.lua", 0, "external"),
+      { kind = "absolute", path = "/dependencies/library.lua" }
+    )
+    local legacy = Fixtures.location("lua/legacy-callsite.lua", 1, "unverifiable")
+    local project = call_location(Fixtures.location("lua/project.lua", 2, "project"))
+    local commit = loaded:commit_navigation({
+      origin_node_id = loaded.root.id,
+      method = action.method,
+      label = action.label,
+      locations = { external, legacy, project },
+      query_status = "complete",
+    })
+    local external_id = commit.node_id_by_identity[external.identity]
+    local legacy_id = commit.node_id_by_identity[legacy.identity]
+    assert.is_true(loaded:set_current(external_id))
+    assert(deps.store:save(loaded))
+    deps.store.save_calls = {}
+
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    deps.store.entries = { entry }
+    deps.store.load_result = loaded
+    local loaded_sidebar = deps:new_sidebar()
+    local render = loaded_sidebar.render
+    function loaded_sidebar:render(flow, status)
+      local cached = assert(flow:action_for(flow.root.id, action.method))
+      assert.same(
+        { project.identity },
+        vim.tbl_map(function(target_id)
+          return Locator.location_key(flow:location(target_id).location)
+        end, flow:action_target_ids(cached))
+      )
+      assert.is_nil(flow:location(external_id))
+      assert.is_nil(flow:location(legacy_id))
+      local rows = Sidebar.project(flow, 80, status, { icons = deps.config.sidebar.icons })
+      for _, row in ipairs(rows) do
+        assert.not_equals(external_id, row.owner_id)
+        assert.not_equals(legacy_id, row.owner_id)
+      end
+      return render(self, flow, status)
+    end
+    deps.next_sidebar = loaded_sidebar
+
+    assert.is_true(session:load())
+    deps.select_callback(entry, 1)
+    assert.equals(loaded.root.id, session:state().flow.current_node_id)
+    assert.is_true(session:state().flow:is_dirty())
+    assert.equals(1, loaded_sidebar.render_count)
+  end)
+
+  it("keeps the active flow when a loaded root is outside the project", function()
+    local session, deps = new_session()
+    open_with_flow(session)
+    local original = session:state().flow
+    local loaded = Fixtures.new_flow()
+    loaded.root.location.locator = { kind = "absolute", path = "/dependencies/main.lua" }
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    deps.store.entries = { entry }
+    deps.store.load_result = loaded
+    local rejected_sidebar = deps:new_sidebar()
+    deps.next_sidebar = rejected_sidebar
+
+    assert.is_true(session:load())
+    deps.select_callback(entry, 1)
+    assert.equals(original, session:state().flow)
+    assert.equals(0, #rejected_sidebar.mount_calls)
+    assert.matches("outside project files", deps.notifications[#deps.notifications].message, nil, true)
+  end)
+
   it("leaves an inactive controller untouched when a selected flow cannot load", function()
     local session, deps = new_session()
     local entry =
@@ -884,6 +1091,32 @@ describe("Voyager session lifecycle", function()
     assert.equals(windows + 1, vim.tbl_count(deps.windows))
   end)
 
+  it("preserves a project-safe saved current from unlinked history", function()
+    local session, deps = new_session()
+    local loaded = Fixtures.new_flow()
+    local result = Fixtures.location("lua/history.lua", 1)
+    local commit = loaded:commit_navigation({
+      origin_node_id = loaded.root.id,
+      method = "textDocument/definition",
+      label = "definition",
+      locations = { result },
+    })
+    local saved_id = commit.node_id_by_identity[result.identity]
+    assert.is_true(loaded:unlink_target(commit.action_id, saved_id))
+    assert.is_true(loaded:set_current(saved_id))
+    assert(deps.store:save(loaded))
+    deps.store.save_calls = {}
+    local entry =
+      { path = "/project/.voyager/flows/main.json", name = "main", display_path = "lua/main.lua", updated_at = "now" }
+    deps.store.entries = { entry }
+    deps.store.load_result = loaded
+
+    assert.is_true(session:load())
+    deps.select_callback(entry, 1)
+    assert.equals(saved_id, session:state().flow.current_node_id)
+    assert.is_false(session:state().flow:is_dirty())
+  end)
+
   it("preserves a saved logical current when no source window is available", function()
     local session, deps = new_session()
     local loaded = Fixtures.new_flow()
@@ -1011,20 +1244,30 @@ describe("Voyager session lifecycle", function()
 
     local row = { kind = "location", owner_id = deps.root_id }
     local calls = {}
-    session.activate_row = function(_, value)
-      calls.activate = value
+    session.activate_row = function(_, value, opts)
+      if opts and opts.stay then
+        calls.activate_stay = value
+      else
+        calls.activate = value
+      end
+    end
+    session.delete_row = function(_, value)
+      calls.delete = value
+    end
+    session.preview_row = function(_, value)
+      calls.preview = value
+    end
+    session.follow_preview = function(_, value)
+      calls.cursor_row = value
+    end
+    session.set_all_collapsed = function(_, value)
+      calls.collapsed = value
     end
     session.edit_note = function(_, value)
       calls.note = value
     end
     session.toggle_row = function(_, value)
       calls.toggle = value
-    end
-    session.show_callers = function(_, value, refresh)
-      calls.callers = { row = value, refresh = refresh }
-    end
-    session.show_callees = function(_, value, refresh)
-      calls.callees = { row = value, refresh = refresh }
     end
     session.save = function()
       calls.save = true
@@ -1040,22 +1283,38 @@ describe("Voyager session lifecycle", function()
     end
 
     captured.sidebar.handlers.activate(row)
+    captured.sidebar.handlers.activate_stay(row)
+    captured.sidebar.handlers.delete(row)
+    captured.sidebar.handlers.preview(row)
+    captured.sidebar.handlers.cursor_row(row)
+    captured.sidebar.handlers.collapse_all()
+    assert.is_true(calls.collapsed)
+    captured.sidebar.handlers.expand_all()
     captured.sidebar.handlers.note(row)
     captured.sidebar.handlers.toggle(row)
-    captured.sidebar.handlers.show_callers(row)
-    captured.sidebar.handlers.show_callees(row)
     captured.sidebar.handlers.save()
     captured.sidebar.handlers.load()
     captured.sidebar.handlers.close()
     assert.equals(row, calls.activate)
+    assert.equals(row, calls.activate_stay)
+    assert.equals(row, calls.delete)
+    assert.equals(row, calls.preview)
+    assert.equals(row, calls.cursor_row)
+    assert.is_false(calls.collapsed)
     assert.equals(row, calls.note)
     assert.equals(row, calls.toggle)
-    assert.same({ row = row, refresh = false }, calls.callers)
-    assert.same({ row = row, refresh = false }, calls.callees)
-    captured.sidebar.handlers.refresh_callers(row)
-    captured.sidebar.handlers.refresh_callees(row)
-    assert.same({ row = row, refresh = true }, calls.callers)
-    assert.same({ row = row, refresh = true }, calls.callees)
+    for _, removed in ipairs({
+      "run_action",
+      "show_callers",
+      "show_callees",
+      "refresh_callers",
+      "refresh_callees",
+      "build_callers",
+      "build_callees",
+      "cancel_build",
+    }) do
+      assert.is_nil(captured.sidebar.handlers[removed])
+    end
     assert.is_true(calls.save)
     assert.is_true(calls.load)
     assert.equals("sidebar", calls.close)

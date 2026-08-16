@@ -10,6 +10,7 @@ function M.new()
     show_count = 0,
     unmount_count = 0,
     update_layout_calls = {},
+    center_calls = {},
     _next_winid = 9000,
   }
 
@@ -18,6 +19,7 @@ function M.new()
     fake.winid = fake._next_winid
     popup.winid = fake.winid
     popup.mounted = true
+    fake.focused = false
   end
 
   fake.factory = function(options)
@@ -46,6 +48,7 @@ function M.new()
       self.winid = nil
       self.mounted = false
       fake.winid = nil
+      fake.focused = false
       if self._winclosed then
         self._winclosed()
       end
@@ -90,8 +93,22 @@ function M.new()
       self.cursor = vim.deepcopy(cursor)
     end
 
+    function popup:center_line(line, line_count)
+      if self.winid == nil then
+        return false
+      end
+      table.insert(fake.center_calls, { line = line, line_count = line_count })
+      self.cursor = { line, 0 }
+      return true
+    end
+
     function popup:focus()
       fake.focus_count = fake.focus_count + 1
+      fake.focused = true
+    end
+
+    function popup:is_focused()
+      return fake.focused == true
     end
 
     fake.press = function(lhs)
@@ -100,6 +117,11 @@ function M.new()
 
     fake.set_cursor_line = function(line)
       popup.cursor = { line, 0 }
+      fake.focused = true
+    end
+
+    fake.blur = function()
+      fake.focused = false
     end
 
     fake.external_close = function()

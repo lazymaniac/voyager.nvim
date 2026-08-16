@@ -17,12 +17,6 @@ function M.check()
     health.error("nui.nvim is not installed", "Install MunifTanjim/nui.nvim")
   end
 
-  if pcall(vim.api.nvim_get_autocmds, { event = "LspRequest" }) then
-    health.ok("LspRequest autocmd is available for passive recording")
-  else
-    health.error("LspRequest autocmd is unavailable; navigation cannot be observed")
-  end
-
   local cwd = vim.fn.getcwd()
   if vim.uv.fs_access(cwd, "W") then
     health.ok("current directory is writable for .voyager/flows storage: " .. cwd)

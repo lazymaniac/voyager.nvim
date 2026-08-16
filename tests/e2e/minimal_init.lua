@@ -57,6 +57,13 @@ function E2E.wait_for_requests(session)
   end)
 end
 
+function E2E.wait_for_graph(session)
+  E2E.wait("automatic Voyager graph creation", function()
+    local state = session:state()
+    return state.graph_build == nil and state.request_count == 0
+  end)
+end
+
 function E2E.action(location, method)
   for _, action in ipairs(location.actions) do
     if action.method == method then
@@ -67,7 +74,8 @@ end
 
 function E2E.result(action, suffix)
   for _, result in ipairs(action.results) do
-    local locator = result.location.locator
+    local location = result.location.query_anchor or result.location
+    local locator = location.locator
     local value = locator.path or locator.uri
     if value:sub(-#suffix) == suffix then
       return result
