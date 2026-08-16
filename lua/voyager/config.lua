@@ -133,7 +133,15 @@ local defaults = {
     indent = 1,
     test_paths = default_test_paths,
   },
-  navigation = { timeout_ms = 10000 },
+  navigation = {
+    timeout_ms = 10000,
+    recursive = {
+      direction = "callees",
+      depth = 3,
+      max_subjects = 32,
+      concurrency = 4,
+    },
+  },
   sidebar_keymaps = {
     jump_or_toggle = "<CR>",
     jump_stay = "o",
@@ -142,6 +150,9 @@ local defaults = {
     show_callees = "d",
     refresh_callers = "U",
     refresh_callees = "D",
+    build_callers = "ru",
+    build_callees = "rd",
+    cancel_build = "rc",
     delete = "x",
     preview = "p",
     note = "n",
@@ -167,7 +178,7 @@ local known = {
     indent = true,
     test_paths = true,
   },
-  navigation = { timeout_ms = true },
+  navigation = { timeout_ms = true, recursive = true },
   sidebar_keymaps = {
     jump_or_toggle = true,
     jump_stay = true,
@@ -176,6 +187,9 @@ local known = {
     show_callees = true,
     refresh_callers = true,
     refresh_callees = true,
+    build_callers = true,
+    build_callees = true,
+    cancel_build = true,
     delete = true,
     preview = true,
     note = true,
@@ -192,6 +206,8 @@ local known = {
 
 local borders = { none = true, single = true, double = true, rounded = true, solid = true, shadow = true }
 local path_styles = { relative = true, filename = true, shortened = true }
+local recursive_directions = { callers = true, callees = true }
+local recursive_keys = { direction = true, depth = true, max_subjects = true, concurrency = true }
 
 local function fail(path, message)
   error("voyager.setup: " .. path .. " " .. message, 0)
@@ -238,6 +254,13 @@ function M.resolve(opts)
       fail(section, "must be a table")
     end
     reject_unknown(section, supplied, known[section])
+  end
+  local supplied_recursive = opts.navigation and opts.navigation.recursive or nil
+  if supplied_recursive ~= nil then
+    if type(supplied_recursive) ~= "table" then
+      fail("navigation.recursive", "must be a table")
+    end
+    reject_unknown("navigation.recursive", supplied_recursive, recursive_keys)
   end
 
   local result = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts)
@@ -287,6 +310,32 @@ function M.resolve(opts)
   local timeout = result.navigation.timeout_ms
   if type(timeout) ~= "number" or timeout % 1 ~= 0 or timeout < 100 or timeout > 120000 then
     fail("navigation.timeout_ms", "must be an integer from 100 through 120000")
+  end
+  local recursive = result.navigation.recursive
+  if type(recursive) ~= "table" then
+    fail("navigation.recursive", "must be a table")
+  end
+  if not recursive_directions[recursive.direction] then
+    fail("navigation.recursive.direction", "must be 'callers' or 'callees'")
+  end
+  if type(recursive.depth) ~= "number" or recursive.depth % 1 ~= 0 or recursive.depth < 1 or recursive.depth > 10 then
+    fail("navigation.recursive.depth", "must be an integer from 1 through 10")
+  end
+  if
+    type(recursive.max_subjects) ~= "number"
+    or recursive.max_subjects % 1 ~= 0
+    or recursive.max_subjects < 1
+    or recursive.max_subjects > 1000
+  then
+    fail("navigation.recursive.max_subjects", "must be an integer from 1 through 1000")
+  end
+  if
+    type(recursive.concurrency) ~= "number"
+    or recursive.concurrency % 1 ~= 0
+    or recursive.concurrency < 1
+    or recursive.concurrency > 16
+  then
+    fail("navigation.recursive.concurrency", "must be an integer from 1 through 16")
   end
   if not path_styles[result.sidebar.path] then
     fail("sidebar.path", "must be 'relative', 'filename', or 'shortened'")

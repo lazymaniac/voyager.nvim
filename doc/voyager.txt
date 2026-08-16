@@ -100,30 +100,37 @@ ones you want:
 
 COMMANDS                                       *voyager-voyager.nvim-commands*
 
-  -----------------------------------------------------------------------
-  Command                             Behavior
-  ----------------------------------- -----------------------------------
-  :VoyagerOpen                        Open a session that records from
-                                      the first navigation, or focus the
-                                      active flow
+  ------------------------------------------------------------------------------
+  Command                                    Behavior
+  ------------------------------------------ -----------------------------------
+  :VoyagerOpen                               Open a session that records from
+                                             the first navigation, or focus the
+                                             active flow
 
-  :VoyagerFocus                       Focus or remount the active sidebar
+  :VoyagerFocus                              Focus or remount the active sidebar
 
-  :VoyagerSave                        Explicitly save or merge the active
-                                      flow
+  :VoyagerSave                               Explicitly save or merge the active
+                                             flow
 
-  :VoyagerLoad                        Pick a saved flow for the current
-                                      project
+  :VoyagerLoad                               Pick a saved flow for the current
+                                             project
 
-  :VoyagerClose                       Close Voyager, prompting when the
-                                      flow is dirty
+  :VoyagerClose                              Close Voyager, prompting when the
+                                             flow is dirty
 
-  :VoyagerToggle                      Open Voyager, or close it when a
-                                      session is active
+  :VoyagerToggle                             Open Voyager, or close it when a
+                                             session is active
 
-  :VoyagerExport                      Send every resolvable flow location
-                                      to the quickfix list
-  -----------------------------------------------------------------------
+  :VoyagerExport                             Send every resolvable flow location
+                                             to the quickfix list
+
+  :VoyagerBuild [callers\|callees] [depth]   Recursively build a bounded call
+                                             graph from the contextual symbol;
+                                             both arguments are optional
+
+  :VoyagerBuildCancel                        Cancel the active recursive build
+                                             while keeping completed relations
+  ------------------------------------------------------------------------------
 
                                                       *voyager-:VoyagerOpen*
 
@@ -165,6 +172,18 @@ COMMANDS                                       *voyager-voyager.nvim-commands*
 
 
 :VoyagerExport                         Send every resolvable flow location to the quickfix list.
+
+
+                                                     *voyager-:VoyagerBuild*
+
+
+:VoyagerBuild                          Usage: `:VoyagerBuild [callers|callees] [depth]`. Recursively build a bounded call graph from the contextual symbol; omitted arguments use `navigation.recursive` defaults.
+
+
+                                               *voyager-:VoyagerBuildCancel*
+
+
+:VoyagerBuildCancel                    Cancel the active recursive build while keeping completed relations.
 
 
 
@@ -224,6 +243,14 @@ SIDEBAR MAPPINGS ~
 
   U, D                                Refresh callers or calls from LSP
 
+  ru                                  Recursively build callers from the
+                                      contextual symbol
+
+  rd                                  Recursively build calls from the
+                                      contextual symbol
+
+  rc                                  Cancel the active recursive build
+
   p                                   Peek at the selected location in a
                                       preview float
 
@@ -260,116 +287,145 @@ CONFIGURATION                             *voyager-voyager.nvim-configuration*
 `setup()` validates every option immediately. Changes made while a flow is open
 apply to the next session.
 
-  ------------------------------------------------------------------------------------------
-  Option                            Type              Default            Description
-  --------------------------------- ----------------- ------------------ -------------------
-  sidebar.width                     integer           42                 Maximum popup
-                                                                         width; must be at
-                                                                         least 20
+  --------------------------------------------------------------------------------------------
+  Option                              Type              Default            Description
+  ----------------------------------- ----------------- ------------------ -------------------
+  sidebar.width                       integer           42                 Maximum popup
+                                                                           width; must be at
+                                                                           least 20
 
-  sidebar.side                      "left" or "right" "right"            Editor edge the
-                                                                         popup is pinned to
+  sidebar.side                        "left" or "right" "right"            Editor edge the
+                                                                           popup is pinned to
 
-  sidebar.border                    string            "rounded"          One of none,
-                                                                         single, double,
-                                                                         rounded, solid, or
-                                                                         shadow
+  sidebar.border                      string            "rounded"          One of none,
+                                                                           single, double,
+                                                                           rounded, solid, or
+                                                                           shadow
 
-  sidebar.icons                     boolean or table  true               true for Nerd Font
-                                                                         icons, false for
-                                                                         plain text, or
-                                                                         per-icon overrides
-                                                                         (including
-                                                                         icons.kinds)
+  sidebar.icons                       boolean or table  true               true for Nerd Font
+                                                                           icons, false for
+                                                                           plain text, or
+                                                                           per-icon overrides
+                                                                           (including
+                                                                           icons.kinds)
 
-  sidebar.path                      string            "relative"         Location paths:
-                                                                         relative, filename,
-                                                                         or shortened
+  sidebar.path                        string            "relative"         Location paths:
+                                                                           relative, filename,
+                                                                           or shortened
 
-  sidebar.preview                   boolean           true               Preview float
-                                                                         follows the sidebar
-                                                                         cursor and closes
-                                                                         on focus loss
+  sidebar.preview                     boolean           true               Preview float
+                                                                           follows the sidebar
+                                                                           cursor and closes
+                                                                           on focus loss
 
-  sidebar.indent                    integer           1                  Accepted for
-                                                                         configuration
-                                                                         compatibility; the
-                                                                         flat ledger does
-                                                                         not indent by depth
+  sidebar.indent                      integer           1                  Accepted for
+                                                                           configuration
+                                                                           compatibility; the
+                                                                           flat ledger does
+                                                                           not indent by depth
 
-  sidebar.test_paths                string list       common test        Lua patterns that
-                                                      layouts            classify a location
-                                                                         as test code
+  sidebar.test_paths                  string list       common test        Lua patterns that
+                                                        layouts            classify a location
+                                                                           as test code
 
-  navigation.timeout_ms             integer           10000              Per-network-stage
-                                                                         timeout from 100
-                                                                         through 120000
-                                                                         milliseconds
+  navigation.timeout_ms               integer           10000              Per-network-stage
+                                                                           timeout from 100
+                                                                           through 120000
+                                                                           milliseconds
 
-  sidebar_keymaps.jump_or_toggle    keymap or false   "<CR>"             Activate a
-                                                                         location/note or
-                                                                         toggle an action
+  navigation.recursive.direction      "callers" or      "callees"          Direction used when
+                                      "callees"                            :VoyagerBuild omits
+                                                                           it
 
-  sidebar_keymaps.jump_stay         keymap or false   "o"                Jump but keep focus
-                                                                         in the sidebar
+  navigation.recursive.depth          integer           3                  Maximum recorded
+                                                                           call-edge depth
+                                                                           from 1 through 10
 
-  sidebar_keymaps.run_action        keymap or false   "a"                Jump to the node
-                                                                         and pick an action
-                                                                         to record
+  navigation.recursive.max_subjects   integer           32                 Recorded call
+                                                                           subjects processed
+                                                                           per build allowance
+                                                                           before pausing,
+                                                                           from 1 through 1000
 
-  sidebar_keymaps.show_callers      keymap or false   "u"                Show or fetch
-                                                                         callers for the
-                                                                         contextual symbol
+  navigation.recursive.concurrency    integer           4                  Maximum concurrent
+                                                                           recursive queries
+                                                                           from 1 through 16
 
-  sidebar_keymaps.show_callees      keymap or false   "d"                Show or fetch calls
-                                                                         from the contextual
-                                                                         symbol
+  sidebar_keymaps.jump_or_toggle      keymap or false   "<CR>"             Activate a
+                                                                           location/note or
+                                                                           toggle an action
 
-  sidebar_keymaps.refresh_callers   keymap or false   "U"                Refresh callers
-                                                                         from LSP
+  sidebar_keymaps.jump_stay           keymap or false   "o"                Jump but keep focus
+                                                                           in the sidebar
 
-  sidebar_keymaps.refresh_callees   keymap or false   "D"                Refresh calls from
-                                                                         LSP
+  sidebar_keymaps.run_action          keymap or false   "a"                Jump to the node
+                                                                           and pick an action
+                                                                           to record
 
-  sidebar_keymaps.preview           keymap or false   "p"                Peek at the
-                                                                         selected location
+  sidebar_keymaps.show_callers        keymap or false   "u"                Show or fetch
+                                                                           callers for the
+                                                                           contextual symbol
 
-  sidebar_keymaps.delete            keymap or false   "x"                Unlink an
-                                                                         occurrence, delete
-                                                                         a relation/history
-                                                                         branch, or clear a
-                                                                         note
+  sidebar_keymaps.show_callees        keymap or false   "d"                Show or fetch calls
+                                                                           from the contextual
+                                                                           symbol
 
-  sidebar_keymaps.note              keymap or false   "n"                Edit a location
-                                                                         note
+  sidebar_keymaps.refresh_callers     keymap or false   "U"                Refresh callers
+                                                                           from LSP
 
-  sidebar_keymaps.save              keymap or false   "s"                Save the flow
+  sidebar_keymaps.refresh_callees     keymap or false   "D"                Refresh calls from
+                                                                           LSP
 
-  sidebar_keymaps.load              keymap or false   "L"                Load a flow
+  sidebar_keymaps.build_callers       keymap or false   "ru"               Recursively build
+                                                                           callers from the
+                                                                           contextual symbol
 
-  sidebar_keymaps.toggle            keymap or false   "za"               Toggle a relation
-                                                                         section
+  sidebar_keymaps.build_callees       keymap or false   "rd"               Recursively build
+                                                                           calls from the
+                                                                           contextual symbol
 
-  sidebar_keymaps.collapse_all      keymap or false   "zM"               Collapse every
-                                                                         relation section
+  sidebar_keymaps.cancel_build        keymap or false   "rc"               Cancel the active
+                                                                           recursive build
 
-  sidebar_keymaps.expand_all        keymap or false   "zR"               Expand every
-                                                                         relation section
+  sidebar_keymaps.preview             keymap or false   "p"                Peek at the
+                                                                           selected location
 
-  sidebar_keymaps.help              keymap or false   "?"                Show the key
-                                                                         reference
+  sidebar_keymaps.delete              keymap or false   "x"                Unlink an
+                                                                           occurrence, delete
+                                                                           a relation/history
+                                                                           branch, or clear a
+                                                                           note
 
-  sidebar_keymaps.close             keymap or false   { "q", "<Esc>" }   Close Voyager
+  sidebar_keymaps.note                keymap or false   "n"                Edit a location
+                                                                           note
 
-  storage.resolve_uri               function or nil   nil                Resolve a non-file
-                                                                         URI to a valid
-                                                                         loaded buffer
+  sidebar_keymaps.save                keymap or false   "s"                Save the flow
 
-  storage.autosave                  boolean           false              Save dirty flows
-                                                                         automatically on
-                                                                         close, load, and
-                                                                         quit
-  ------------------------------------------------------------------------------------------
+  sidebar_keymaps.load                keymap or false   "L"                Load a flow
+
+  sidebar_keymaps.toggle              keymap or false   "za"               Toggle a relation
+                                                                           section
+
+  sidebar_keymaps.collapse_all        keymap or false   "zM"               Collapse every
+                                                                           relation section
+
+  sidebar_keymaps.expand_all          keymap or false   "zR"               Expand every
+                                                                           relation section
+
+  sidebar_keymaps.help                keymap or false   "?"                Show the key
+                                                                           reference
+
+  sidebar_keymaps.close               keymap or false   { "q", "<Esc>" }   Close Voyager
+
+  storage.resolve_uri                 function or nil   nil                Resolve a non-file
+                                                                           URI to a valid
+                                                                           loaded buffer
+
+  storage.autosave                    boolean           false              Save dirty flows
+                                                                           automatically on
+                                                                           close, load, and
+                                                                           quit
+  --------------------------------------------------------------------------------------------
 
                                                      *voyager-sidebar.width*
 
@@ -425,6 +481,30 @@ sidebar.test_paths                     Lua patterns that classify a location as 
 navigation.timeout_ms                  Per-network-stage timeout from 100 through 120000 milliseconds.
 
 
+                                    *voyager-navigation.recursive.direction*
+
+
+navigation.recursive.direction         Default recursive direction; `callers` or `callees`.
+
+
+                                        *voyager-navigation.recursive.depth*
+
+
+navigation.recursive.depth             Maximum recorded call-edge depth; an integer from 1 through 10.
+
+
+                                 *voyager-navigation.recursive.max_subjects*
+
+
+navigation.recursive.max_subjects      Recorded call subjects processed per build allowance before pausing; an integer from 1 through 1000.
+
+
+                                  *voyager-navigation.recursive.concurrency*
+
+
+navigation.recursive.concurrency       Maximum concurrent recursive queries; an integer from 1 through 16.
+
+
                                     *voyager-sidebar_keymaps.jump_or_toggle*
 
 
@@ -465,6 +545,24 @@ sidebar_keymaps.refresh_callers        Refresh callers from LSP; a string, strin
 
 
 sidebar_keymaps.refresh_callees        Refresh calls from LSP; a string, string list, or `false`.
+
+
+                                     *voyager-sidebar_keymaps.build_callers*
+
+
+sidebar_keymaps.build_callers          Recursively build callers from the contextual symbol; a string, string list, or `false`.
+
+
+                                     *voyager-sidebar_keymaps.build_callees*
+
+
+sidebar_keymaps.build_callees          Recursively build calls from the contextual symbol; a string, string list, or `false`.
+
+
+                                      *voyager-sidebar_keymaps.cancel_build*
+
+
+sidebar_keymaps.cancel_build           Cancel the active recursive build; a string, string list, or `false`.
 
 
                                            *voyager-sidebar_keymaps.preview*
@@ -630,6 +728,29 @@ authoritative `(0)` relation. `U`/`D` refresh an existing relation: the old
 targets remain usable during the request and on failure, while a complete
 success replaces them.
 
+Press `ru` or `rd` for a bounded breadth-first build from the contextual
+symbol; location, note, relation, group, and progress rows all resolve to their
+represented symbol. Complete cached relations are reused; missing, partial, and
+failed subjects are queried in the background without jumping source windows.
+Depth counts recorded call edges: depth `1` queries the seed and records its
+direct targets, but does not query those targets. Voyager runs at most
+`navigation.recursive.concurrency` queries together and pauses after each
+`max_subjects` allowance. The stable row beside the seed reports processed
+subjects, reached depth, active work, and issues. Press the same build key on a
+paused row to grant another allowance; pressing a build key while work is
+running simply focuses that row. A different direction while running or paused
+warns and focuses the existing build. `rc` cancels outstanding work.
+Cancellation and issues keep every completed relation; a clean completion
+removes only the progress row, while repeating an issues build starts a retry
+walk over unfinished work. If another command or save reconciliation changes a
+relation already consumed by the active build, Voyager stops the stale
+traversal and keeps the progress row so repeating the build can continue from
+the current graph. The equivalent commands are `:VoyagerBuild [callers|callees]
+[depth]` (both arguments default from `navigation.recursive`) and
+`:VoyagerBuildCancel`. From a source window the command starts at Voyager’s
+logical current symbol; Lua callers can use `require("voyager").build(opts)`
+and `require("voyager").cancel_build()`.
+
 The existing tools remain available: `a` jumps to the selected node and offers
 all seven actions in a picker, `o` jumps while keeping sidebar focus, `p` opens
 a bordered preview, and `x` unlinks a selected relation occurrence without
@@ -742,7 +863,10 @@ have quitting save the flow for you.
 
 Run `:checkhealth voyager` to verify the Neovim version, `nui.nvim`, and
 storage writability. For statuslines, `require("voyager").status()` returns
-`nil` or `{ name, dirty, locations, requests }` for the active flow.
+`nil` or `{ name, dirty, locations, requests, recursive? }` for the active
+flow. `requests` remains the aggregate in-flight LSP count; while a recursive
+build is present, `recursive` is `{ direction, state }`, where `state` is
+`running`, `paused`, `issues`, or `cancelled`.
 
 
 DEVELOPMENT                                 *voyager-voyager.nvim-development*

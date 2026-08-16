@@ -9,6 +9,7 @@ local function fake_sidebar(env)
     bufnr = 9002,
     focus_count = 0,
     focus_relation_calls = {},
+    focus_recursive_calls = {},
     mount_calls = {},
     remount_calls = {},
     render_calls = {},
@@ -95,6 +96,17 @@ local function fake_sidebar(env)
     table.insert(self.focus_relation_calls, { origin_id = origin_id, method = method, key = key })
     self.selected_key_value = key
     return true
+  end
+
+  function sidebar:focus_recursive(seed_id, method)
+    local key = "recursive:" .. seed_id .. ":" .. method
+    table.insert(self.focus_recursive_calls, { seed_id = seed_id, method = method, key = key })
+    self.selected_key_value = key
+    return true
+  end
+
+  function sidebar:selected_row()
+    return vim.deepcopy(self.selected_row_value)
   end
 
   function sidebar:selected_key()
@@ -515,6 +527,16 @@ function M.new(overrides)
     self.scheduled = {}
     for _, callback in ipairs(callbacks) do
       callback()
+    end
+  end
+
+  function env:flush_all_scheduled(limit)
+    limit = limit or 100
+    local rounds = 0
+    while #self.scheduled > 0 do
+      rounds = rounds + 1
+      assert(rounds <= limit, "scheduled callback limit exceeded")
+      self:flush_scheduled()
     end
   end
 

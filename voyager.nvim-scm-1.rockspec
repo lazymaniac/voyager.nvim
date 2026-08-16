@@ -26,6 +26,7 @@ build = {
     ["voyager.store"] = "lua/voyager/store.lua",
     ["voyager.sidebar"] = "lua/voyager/sidebar.lua",
     ["voyager.session"] = "lua/voyager/session.lua",
+    ["voyager.recursive"] = "lua/voyager/recursive.lua",
     ["voyager.symbols"] = "lua/voyager/symbols.lua",
     ["voyager.lsp"] = "lua/voyager/lsp.lua",
     ["voyager.lsp.actions"] = "lua/voyager/lsp/actions.lua",

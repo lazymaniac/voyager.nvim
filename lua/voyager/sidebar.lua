@@ -136,6 +136,10 @@ local function relation_key(origin_id, method)
   return "relation:" .. origin_id .. ":" .. method
 end
 
+local function recursive_key(seed_id, method)
+  return "recursive:" .. seed_id .. ":" .. method
+end
+
 local function group_key(action_id)
   return "group:" .. action_id .. ":tests"
 end
@@ -220,6 +224,61 @@ local function relation_state_segments(value)
   return {}
 end
 
+local function recursive_state(value)
+  local state = value.state
+  if type(state) ~= "string" then
+    if value.cancelled then
+      state = "cancelled"
+    elseif value.paused or value.truncated then
+      state = "paused"
+    else
+      state = "running"
+    end
+  end
+  return state
+end
+
+local function recursive_state_segments(value)
+  local segments = {}
+  local allowance = type(value.allowance) == "number" and value.allowance or value.max_subjects
+  if type(value.processed) == "number" and type(allowance) == "number" then
+    table.insert(segments, segment(string.format(" · %d/%d", value.processed, allowance), "VoyagerCount"))
+  end
+  if type(value.depth) == "number" and type(value.max_depth) == "number" then
+    table.insert(segments, segment(string.format(" · depth %d/%d", value.depth, value.max_depth), "VoyagerCount"))
+  end
+  local state = recursive_state(value)
+  if state == "running" and type(value.active) == "number" then
+    table.insert(segments, segment(string.format(" · %d active", value.active), "VoyagerRequests"))
+  end
+  local has_message = type(value.message) == "string" and value.message ~= ""
+  if type(value.issues) == "number" and value.issues > 0 and not (state == "issues" and has_message) then
+    table.insert(
+      segments,
+      segment(string.format(" · %d issue%s", value.issues, value.issues == 1 and "" or "s"), "VoyagerStale")
+    )
+  end
+
+  if state ~= "running" then
+    local fallback = ({
+      paused = "paused — repeat the build key to continue",
+      issues = "stopped with issues",
+      cancelled = "cancelled",
+      stopped = "stopped",
+    })[state]
+    local message = has_message and value.message or fallback
+    if state == "paused" and has_message and not value.message:lower():find("paused", 1, true) then
+      message = "paused — " .. value.message
+    end
+    if message then
+      table.insert(segments, segment(" · " .. message, "VoyagerStale"))
+    end
+  elseif has_message then
+    table.insert(segments, segment(" · " .. value.message, "VoyagerRequests"))
+  end
+  return segments
+end
+
 function M.project(flow, width, status, display)
   status = status or {}
   assert(type(display) == "table", "Voyager sidebar display options are required")
@@ -265,6 +324,11 @@ function M.project(flow, width, status, display)
       return left.map_key < right.map_key
     end)
   end
+  local recursive_status = type(status.recursive) == "table" and status.recursive or nil
+  if recursive_status and (type(recursive_status.seed_id) ~= "string" or type(recursive_status.method) ~= "string") then
+    recursive_status = nil
+  end
+  local recursive_seen = false
 
   local ancestor_ids = {}
   for _, id in ipairs(flow:path_ids(flow.current_node_id)) do
@@ -429,6 +493,60 @@ function M.project(flow, width, status, display)
     )
   end
 
+  local function recursive_renders_above(value)
+    local _, record = action_record(value.method)
+    if record and record.direction then
+      return record.direction == "incoming"
+    end
+    return value.direction == "callers"
+  end
+
+  local function append_recursive(origin)
+    if recursive_seen or not recursive_status or recursive_status.seed_id ~= origin.id then
+      return
+    end
+    recursive_seen = true
+    local above = recursive_renders_above(recursive_status)
+    local action_name, record = action_record(recursive_status.method)
+    local label = record and record.label or (above and "callers" or "calls")
+    local segments = {
+      segment("  "),
+      segment("  ", "VoyagerDisclosure"),
+      segment(badge(above and icons.caller or icons.callee), above and "VoyagerDirectionUp" or "VoyagerDirectionDown"),
+      segment(badge(action_name and icons[action_name]), "VoyagerIcon"),
+      segment("recursive " .. label .. (above and " of " or " from ") .. origin.location.symbol, "VoyagerActionLabel"),
+    }
+    vim.list_extend(segments, recursive_state_segments(recursive_status))
+    table.insert(
+      rows,
+      row({
+        kind = "recursive",
+        owner_id = origin.id,
+        key = recursive_key(origin.id, recursive_status.method),
+        context_location_id = origin.id,
+        origin_id = origin.id,
+        seed_id = origin.id,
+        method = recursive_status.method,
+        target_ids = {},
+        direction = recursive_status.direction,
+        state = recursive_state(recursive_status),
+        message = recursive_status.message,
+        processed = recursive_status.processed,
+        max_subjects = recursive_status.max_subjects,
+        depth_reached = recursive_status.depth,
+        max_depth = recursive_status.max_depth,
+        active = recursive_status.active,
+        issues = recursive_status.issues,
+        scheduled = recursive_status.scheduled,
+        allowance = recursive_status.allowance,
+        truncated = recursive_status.truncated,
+        paused = recursive_status.paused,
+        cancelled = recursive_status.cancelled,
+        segments = segments,
+      }, width)
+    )
+  end
+
   local function append_relation_status(segments, action, state)
     vim.list_extend(segments, relation_state_segments(state))
     if type(state) ~= "table" and action.query_status == "partial" then
@@ -585,6 +703,9 @@ function M.project(flow, width, status, display)
         append_transient(node, relation)
       end
     end
+    if recursive_status and recursive_status.seed_id == node.id and recursive_renders_above(recursive_status) then
+      append_recursive(node)
+    end
 
     append_location(
       node,
@@ -595,6 +716,10 @@ function M.project(flow, width, status, display)
       }, metadata or {})
     )
     append_note(node, occurrence_key, metadata)
+
+    if recursive_status and recursive_status.seed_id == node.id and not recursive_renders_above(recursive_status) then
+      append_recursive(node)
+    end
 
     for _, action in ipairs(node.actions or {}) do
       if not is_storage_action(action) and not renders_above_method(action.method) then
@@ -993,6 +1118,9 @@ function Sidebar:_bind_keymaps()
     show_callees = self._handlers.show_callees and selected(self._handlers.show_callees) or nil,
     refresh_callers = self._handlers.refresh_callers and selected(self._handlers.refresh_callers) or nil,
     refresh_callees = self._handlers.refresh_callees and selected(self._handlers.refresh_callees) or nil,
+    build_callers = self._handlers.build_callers and selected(self._handlers.build_callers) or nil,
+    build_callees = self._handlers.build_callees and selected(self._handlers.build_callees) or nil,
+    cancel_build = self._handlers.cancel_build,
     delete = selected(self._handlers.delete),
     preview = selected(self._handlers.preview),
     note = selected(self._handlers.note),
@@ -1099,7 +1227,9 @@ function Sidebar:_update_relationship_lens()
       local lines = location_lines[row_value.context_location_id] or {}
       table.insert(lines, line)
       location_lines[row_value.context_location_id] = lines
-    elseif row_value and (row_value.kind == "action" or row_value.kind == "relation") then
+    elseif
+      row_value and (row_value.kind == "action" or row_value.kind == "relation" or row_value.kind == "recursive")
+    then
       table.insert(relation_rows, { line = line, row = row_value })
     end
   end
@@ -1134,7 +1264,12 @@ function Sidebar:_update_relationship_lens()
     end
   end
 
-  if selected.kind == "action" or selected.kind == "relation" or selected.kind == "group" then
+  if
+    selected.kind == "action"
+    or selected.kind == "relation"
+    or selected.kind == "recursive"
+    or selected.kind == "group"
+  then
     mark(selected_line, "VoyagerRelationFocus", 40)
     mark_relation_endpoints(selected)
   elseif selected.kind == "location" or selected.kind == "note" then
@@ -1472,6 +1607,9 @@ local help_entries = {
   { "show_callees", "show calls, querying LSP when missing" },
   { "refresh_callers", "refresh callers from LSP" },
   { "refresh_callees", "refresh calls from LSP" },
+  { "build_callers", "recursively build callers from the contextual symbol" },
+  { "build_callees", "recursively build calls from the contextual symbol" },
+  { "cancel_build", "cancel the active recursive build" },
   { "preview", "peek at the selected location" },
   { "delete", "unlink an occurrence; delete relation/history; clear note" },
   { "note", "add, edit, or remove a note" },
@@ -1547,6 +1685,23 @@ function Sidebar:focus_relation(origin_id, method)
     return false
   end
   local key = relation_key(origin_id, method)
+  for line, row_value in ipairs(self._line_to_row) do
+    if row_value and row_value.key == key then
+      set_popup_cursor(self._popup, { line, 0 })
+      self:focus()
+      self._relationship_lens_active = true
+      self:_update_relationship_lens()
+      return true
+    end
+  end
+  return false
+end
+
+function Sidebar:focus_recursive(seed_id, method)
+  if not self:is_mounted() or type(seed_id) ~= "string" or type(method) ~= "string" then
+    return false
+  end
+  local key = recursive_key(seed_id, method)
   for line, row_value in ipairs(self._line_to_row) do
     if row_value and row_value.key == key then
       set_popup_cursor(self._popup, { line, 0 })

@@ -524,6 +524,80 @@ describe("Voyager sidebar projection", function()
     assert.matches("▼ calls from main · timed out", error_row.text)
   end)
 
+  it("projects recursive progress beside its seed with stable directional placement", function()
+    local flow = Fixtures.new_flow()
+    local outgoing = {
+      seed_id = flow.root.id,
+      method = "callHierarchy/outgoingCalls",
+      direction = "callees",
+      state = "running",
+      processed = 7,
+      max_subjects = 32,
+      depth = 2,
+      max_depth = 3,
+      active = 4,
+      issues = 0,
+    }
+    local rows = Sidebar.project(flow, 120, { recursive = outgoing }, { icons = text_icons })
+    local progress, progress_index = row_for(rows, "recursive", flow.root.id)
+    local _, root_index = row_for(rows, "location", flow.root.id)
+    assert.equals("recursive:" .. flow.root.id .. ":callHierarchy/outgoingCalls", progress.key)
+    assert.equals(flow.root.id, progress.context_location_id)
+    assert.equals(flow.root.id, progress.seed_id)
+    assert.equals("callHierarchy/outgoingCalls", progress.method)
+    assert.equals("running", progress.state)
+    assert.same({}, progress.target_ids)
+    assert.matches("▼ recursive calls from main · 7/32 · depth 2/3 · 4 active", progress.text)
+    assert.is_true(root_index < progress_index)
+
+    local resumed = vim.tbl_extend("force", vim.deepcopy(outgoing), {
+      processed = 40,
+      allowance = 64,
+    })
+    local resumed_rows = Sidebar.project(flow, 120, { recursive = resumed }, { icons = text_icons })
+    assert.matches("recursive calls from main · 40/64", row_for(resumed_rows, "recursive", flow.root.id).text)
+
+    local incoming = vim.tbl_extend("force", vim.deepcopy(outgoing), {
+      method = "callHierarchy/incomingCalls",
+      direction = "callers",
+      state = "paused",
+      processed = 32,
+      depth = 3,
+      active = 0,
+      truncated = true,
+    })
+    rows = Sidebar.project(flow, 160, { recursive = incoming }, { icons = text_icons })
+    progress, progress_index = row_for(rows, "recursive", flow.root.id)
+    _, root_index = row_for(rows, "location", flow.root.id)
+    assert.matches("▲ recursive callers of main · 32/32 · depth 3/3 · paused", progress.text)
+    assert.is_true(progress_index < root_index)
+
+    local stopped = {
+      issues = "2 issues · stopped with issues",
+      cancelled = "cancelled",
+      stopped = "stopped",
+    }
+    for state, expected in pairs(stopped) do
+      incoming.state = state
+      incoming.issues = state == "issues" and 2 or 0
+      local state_rows = Sidebar.project(flow, 160, { recursive = incoming }, { icons = text_icons })
+      assert.matches(expected, row_for(state_rows, "recursive", flow.root.id).text, nil, true)
+    end
+    incoming.state = "issues"
+    incoming.issues = 2
+    incoming.message = "completed with 2 issues"
+    local issue_rows = Sidebar.project(flow, 160, { recursive = incoming }, { icons = text_icons })
+    local issue_text = row_for(issue_rows, "recursive", flow.root.id).text
+    assert.matches("completed with 2 issues", issue_text, nil, true)
+    assert.is_nil(issue_text:find("2 issues · completed", 1, true))
+
+    local without_progress = Sidebar.project(flow, 80, {}, { icons = text_icons })
+    assert.equals(
+      select(2, row_for(without_progress, "location", flow.root.id)),
+      Sidebar.selection_index(without_progress, progress.key, nil, progress)
+    )
+  end)
+
   it("renders relations at a visible cross-link when canonical storage is folded", function()
     local flow = Fixtures.branched_flow()
     local storage_action = flow.root.actions[1]
@@ -728,6 +802,9 @@ describe("Voyager sidebar popup", function()
       show_callees = noop,
       refresh_callers = noop,
       refresh_callees = noop,
+      build_callers = noop,
+      build_callees = noop,
+      cancel_build = noop,
       note = noop,
       save = noop,
       load = noop,
@@ -817,6 +894,15 @@ describe("Voyager sidebar popup", function()
         refresh_callees = function(row)
           calls.refresh_callees = row
         end,
+        build_callers = function(row)
+          calls.build_callers = row
+        end,
+        build_callees = function(row)
+          calls.build_callees = row
+        end,
+        cancel_build = function()
+          calls.cancel_build = true
+        end,
         note = function(row)
           calls.note = row
         end,
@@ -861,15 +947,26 @@ describe("Voyager sidebar popup", function()
     fake.press("d")
     fake.press("U")
     fake.press("D")
+    fake.press("ru")
+    fake.press("rd")
+    fake.press("rc")
     fake.press("n")
     fake.press("za")
     fake.press("s")
     fake.press("L")
     fake.press("q")
     assert.equals("location", calls.activate.kind)
-    for _, name in ipairs({ "show_callers", "show_callees", "refresh_callers", "refresh_callees" }) do
+    for _, name in ipairs({
+      "show_callers",
+      "show_callees",
+      "refresh_callers",
+      "refresh_callees",
+      "build_callers",
+      "build_callees",
+    }) do
       assert.equals(flow.root.id, calls[name].context_location_id)
     end
+    assert.is_true(calls.cancel_build)
     assert.equals(flow.root.id, calls.note.owner_id)
     assert.equals(flow.root.id, calls.toggle.owner_id)
     assert.is_true(calls.save)
@@ -1026,6 +1123,56 @@ describe("Voyager sidebar popup", function()
     assert.equals(committed.action_id, sidebar:selected_row().owner_id)
     assert.equals(1, fake.focus_count)
     assert.is_false(sidebar:focus_relation(flow.root.id, "missing/method"))
+    sidebar:unmount({ owned = true })
+  end)
+
+  it("focuses recursive progress by semantic key and falls back to its seed", function()
+    local fake = FakePopup.new()
+    local sidebar_config = Config.resolve({ sidebar = { icons = false } }).sidebar
+    local sidebar = Sidebar.new({
+      sidebar = sidebar_config,
+      keymaps = {},
+      handlers = noop_handlers(),
+      popup_factory = fake.factory,
+      ui_state = ui_state,
+      notify = function() end,
+    })
+    assert.is_true(sidebar:mount({ tabpage = 1, focus = false }))
+
+    local flow = Fixtures.new_flow()
+    local method = "callHierarchy/outgoingCalls"
+    local key = "recursive:" .. flow.root.id .. ":" .. method
+    sidebar:render(flow, {
+      recursive = {
+        seed_id = flow.root.id,
+        method = method,
+        direction = "callees",
+        state = "running",
+        processed = 1,
+        max_subjects = 32,
+        depth = 1,
+        max_depth = 3,
+        active = 2,
+        issues = 0,
+      },
+    })
+    assert.is_true(sidebar:focus_recursive(flow.root.id, method))
+    assert.equals(key, sidebar:selected_key())
+    assert.equals("recursive", sidebar:selected_row().kind)
+    assert.equals(1, fake.focus_count)
+    local lens_namespace = vim.api.nvim_create_namespace("voyager-sidebar-relations")
+    local lens = vim.api.nvim_buf_get_extmarks(fake.bufnr, lens_namespace, 0, -1, { details = true })
+    local lens_groups = {}
+    for _, mark in ipairs(lens) do
+      lens_groups[mark[4].line_hl_group] = true
+    end
+    assert.is_true(lens_groups.VoyagerRelationFocus)
+    assert.is_true(lens_groups.VoyagerRelationOrigin)
+
+    sidebar:render(flow, {})
+    assert.equals("location", sidebar:selected_row().kind)
+    assert.equals(flow.root.id, sidebar:selected_row().owner_id)
+    assert.is_false(sidebar:focus_recursive(flow.root.id, "missing/method"))
     sidebar:unmount({ owned = true })
   end)
 
@@ -1248,6 +1395,9 @@ describe("Voyager sidebar popup", function()
     assert.matches("d%s+show calls, querying LSP when missing", help)
     assert.matches("U%s+refresh callers from LSP", help)
     assert.matches("D%s+refresh calls from LSP", help)
+    assert.matches("ru%s+recursively build callers from the contextual symbol", help)
+    assert.matches("rd%s+recursively build calls from the contextual symbol", help)
+    assert.matches("rc%s+cancel the active recursive build", help)
     sidebar:unmount({ owned = true })
     assert.equals(windows_before, #vim.api.nvim_list_wins())
   end)

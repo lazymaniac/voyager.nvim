@@ -82,6 +82,8 @@ vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 | `:VoyagerClose` | Close Voyager, prompting when the flow is dirty |
 | `:VoyagerToggle` | Open Voyager, or close it when a session is active |
 | `:VoyagerExport` | Send every resolvable flow location to the quickfix list |
+| `:VoyagerBuild [callers\|callees] [depth]` | Recursively build a bounded call graph from the contextual symbol; both arguments are optional |
+| `:VoyagerBuildCancel` | Cancel the active recursive build while keeping completed relations |
 
 <!-- panvimdoc-include-comment
 
@@ -105,6 +107,12 @@ vim.keymap.set("n", "<leader>vl", "<cmd>VoyagerLoad<cr>")
 
 :VoyagerExport
 : Send every resolvable flow location to the quickfix list.
+
+:VoyagerBuild
+: Usage: `:VoyagerBuild [callers|callees] [depth]`. Recursively build a bounded call graph from the contextual symbol; omitted arguments use `navigation.recursive` defaults.
+
+:VoyagerBuildCancel
+: Cancel the active recursive build while keeping completed relations.
 
 -->
 
@@ -151,6 +159,9 @@ up to `sidebar.width` columns and the available editor height.
 | `u` | Show callers; query LSP automatically when they are not recorded |
 | `d` | Show calls from the symbol; query LSP automatically when missing |
 | `U`, `D` | Refresh callers or calls from LSP |
+| `ru` | Recursively build callers from the contextual symbol |
+| `rd` | Recursively build calls from the contextual symbol |
+| `rc` | Cancel the active recursive build |
 | `p` | Peek at the selected location in a preview float |
 | `x` | Unlink an occurrence, delete a relation/history branch, or clear a note |
 | `n` | Add, edit, or remove a note on the selected location |
@@ -183,6 +194,10 @@ apply to the next session.
 | `sidebar.indent` | integer | `1` | Accepted for configuration compatibility; the flat ledger does not indent by depth |
 | `sidebar.test_paths` | string list | common test layouts | Lua patterns that classify a location as test code |
 | `navigation.timeout_ms` | integer | `10000` | Per-network-stage timeout from 100 through 120000 milliseconds |
+| `navigation.recursive.direction` | `"callers"` or `"callees"` | `"callees"` | Direction used when `:VoyagerBuild` omits it |
+| `navigation.recursive.depth` | integer | `3` | Maximum recorded call-edge depth from 1 through 10 |
+| `navigation.recursive.max_subjects` | integer | `32` | Recorded call subjects processed per build allowance before pausing, from 1 through 1000 |
+| `navigation.recursive.concurrency` | integer | `4` | Maximum concurrent recursive queries from 1 through 16 |
 | `sidebar_keymaps.jump_or_toggle` | keymap or false | `"<CR>"` | Activate a location/note or toggle an action |
 | `sidebar_keymaps.jump_stay` | keymap or false | `"o"` | Jump but keep focus in the sidebar |
 | `sidebar_keymaps.run_action` | keymap or false | `"a"` | Jump to the node and pick an action to record |
@@ -190,6 +205,9 @@ apply to the next session.
 | `sidebar_keymaps.show_callees` | keymap or false | `"d"` | Show or fetch calls from the contextual symbol |
 | `sidebar_keymaps.refresh_callers` | keymap or false | `"U"` | Refresh callers from LSP |
 | `sidebar_keymaps.refresh_callees` | keymap or false | `"D"` | Refresh calls from LSP |
+| `sidebar_keymaps.build_callers` | keymap or false | `"ru"` | Recursively build callers from the contextual symbol |
+| `sidebar_keymaps.build_callees` | keymap or false | `"rd"` | Recursively build calls from the contextual symbol |
+| `sidebar_keymaps.cancel_build` | keymap or false | `"rc"` | Cancel the active recursive build |
 | `sidebar_keymaps.preview` | keymap or false | `"p"` | Peek at the selected location |
 | `sidebar_keymaps.delete` | keymap or false | `"x"` | Unlink an occurrence, delete a relation/history branch, or clear a note |
 | `sidebar_keymaps.note` | keymap or false | `"n"` | Edit a location note |
@@ -232,6 +250,18 @@ sidebar.test_paths
 navigation.timeout_ms
 : Per-network-stage timeout from 100 through 120000 milliseconds.
 
+navigation.recursive.direction
+: Default recursive direction; `callers` or `callees`.
+
+navigation.recursive.depth
+: Maximum recorded call-edge depth; an integer from 1 through 10.
+
+navigation.recursive.max_subjects
+: Recorded call subjects processed per build allowance before pausing; an integer from 1 through 1000.
+
+navigation.recursive.concurrency
+: Maximum concurrent recursive queries; an integer from 1 through 16.
+
 sidebar_keymaps.jump_or_toggle
 : Activate a location/note or toggle an action; a string, string list, or `false`.
 
@@ -252,6 +282,15 @@ sidebar_keymaps.refresh_callers
 
 sidebar_keymaps.refresh_callees
 : Refresh calls from LSP; a string, string list, or `false`.
+
+sidebar_keymaps.build_callers
+: Recursively build callers from the contextual symbol; a string, string list, or `false`.
+
+sidebar_keymaps.build_callees
+: Recursively build calls from the contextual symbol; a string, string list, or `false`.
+
+sidebar_keymaps.cancel_build
+: Cancel the active recursive build; a string, string list, or `false`.
 
 sidebar_keymaps.preview
 : Peek at the selected location; a string, string list, or `false`.
@@ -377,6 +416,30 @@ empty response is recorded as an authoritative `(0)` relation.
 `U`/`D` refresh an existing relation: the old targets remain usable during the
 request and on failure, while a complete success replaces them.
 
+Press `ru` or `rd` for a bounded breadth-first build from the contextual
+symbol; location, note, relation, group, and progress rows all resolve to their
+represented symbol. Complete cached relations are reused; missing, partial,
+and failed subjects are queried in the background without jumping source
+windows. Depth counts recorded call edges: depth `1` queries the seed and
+records its direct targets, but does not query those targets. Voyager runs at
+most `navigation.recursive.concurrency` queries together and pauses after each
+`max_subjects` allowance. The stable row beside the seed reports processed
+subjects, reached depth, active work, and issues. Press the same build key on a
+paused row to grant another allowance; pressing a build key while work is
+running simply focuses that row. A different direction while running or paused
+warns and focuses the existing build. `rc` cancels outstanding work.
+Cancellation and issues keep every completed relation; a clean completion
+removes only the progress row, while repeating an issues build starts a retry
+walk over unfinished work. If another command or save reconciliation changes a
+relation already consumed by the active build, Voyager stops the stale
+traversal and keeps the progress row so repeating the build can continue from
+the current graph.
+The equivalent commands are `:VoyagerBuild [callers|callees] [depth]` (both
+arguments default from `navigation.recursive`) and `:VoyagerBuildCancel`. From
+a source window the command starts at Voyager's logical current symbol; Lua
+callers can use `require("voyager").build(opts)` and
+`require("voyager").cancel_build()`.
+
 The existing tools remain available: `a` jumps to the selected node and offers
 all seven actions in a picker, `o` jumps while keeping sidebar focus, `p` opens
 a bordered preview, and `x` unlinks a selected relation occurrence without
@@ -485,7 +548,10 @@ have quitting save the flow for you.
 
 Run `:checkhealth voyager` to verify the Neovim version, `nui.nvim`, and
 storage writability. For statuslines, `require("voyager").status()` returns
-`nil` or `{ name, dirty, locations, requests }` for the active flow.
+`nil` or `{ name, dirty, locations, requests, recursive? }` for the active
+flow. `requests` remains the aggregate in-flight LSP count; while a recursive
+build is present, `recursive` is `{ direction, state }`, where `state` is
+`running`, `paused`, `issues`, or `cancelled`.
 
 ## Development
 

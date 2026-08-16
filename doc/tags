@@ -1,3 +1,5 @@
+voyager-:VoyagerBuild	voyager.txt	/*voyager-:VoyagerBuild*
+voyager-:VoyagerBuildCancel	voyager.txt	/*voyager-:VoyagerBuildCancel*
 voyager-:VoyagerClose	voyager.txt	/*voyager-:VoyagerClose*
 voyager-:VoyagerExport	voyager.txt	/*voyager-:VoyagerExport*
 voyager-:VoyagerFocus	voyager.txt	/*voyager-:VoyagerFocus*
@@ -5,6 +7,10 @@ voyager-:VoyagerLoad	voyager.txt	/*voyager-:VoyagerLoad*
 voyager-:VoyagerOpen	voyager.txt	/*voyager-:VoyagerOpen*
 voyager-:VoyagerSave	voyager.txt	/*voyager-:VoyagerSave*
 voyager-:VoyagerToggle	voyager.txt	/*voyager-:VoyagerToggle*
+voyager-navigation.recursive.concurrency	voyager.txt	/*voyager-navigation.recursive.concurrency*
+voyager-navigation.recursive.depth	voyager.txt	/*voyager-navigation.recursive.depth*
+voyager-navigation.recursive.direction	voyager.txt	/*voyager-navigation.recursive.direction*
+voyager-navigation.recursive.max_subjects	voyager.txt	/*voyager-navigation.recursive.max_subjects*
 voyager-navigation.timeout_ms	voyager.txt	/*voyager-navigation.timeout_ms*
 voyager-sidebar.border	voyager.txt	/*voyager-sidebar.border*
 voyager-sidebar.icons	voyager.txt	/*voyager-sidebar.icons*
@@ -14,6 +20,9 @@ voyager-sidebar.preview	voyager.txt	/*voyager-sidebar.preview*
 voyager-sidebar.side	voyager.txt	/*voyager-sidebar.side*
 voyager-sidebar.test_paths	voyager.txt	/*voyager-sidebar.test_paths*
 voyager-sidebar.width	voyager.txt	/*voyager-sidebar.width*
+voyager-sidebar_keymaps.build_callees	voyager.txt	/*voyager-sidebar_keymaps.build_callees*
+voyager-sidebar_keymaps.build_callers	voyager.txt	/*voyager-sidebar_keymaps.build_callers*
+voyager-sidebar_keymaps.cancel_build	voyager.txt	/*voyager-sidebar_keymaps.cancel_build*
 voyager-sidebar_keymaps.close	voyager.txt	/*voyager-sidebar_keymaps.close*
 voyager-sidebar_keymaps.collapse_all	voyager.txt	/*voyager-sidebar_keymaps.collapse_all*
 voyager-sidebar_keymaps.delete	voyager.txt	/*voyager-sidebar_keymaps.delete*
